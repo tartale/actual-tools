@@ -72,17 +72,22 @@ while true; do
       continue
     fi
 
-    budget=$(( spent * -1 ))
-    echo "Updating category; month: ${month}; name: ${name}; setting budgeted = ${budget}"
+    new_budgeted=$(( spent * -1 ))
+    if [[ "${new_budgeted}" == "${budgeted}" ]]; then
+      echo "No update needed for category; month: ${month}; name: ${name}; budgeted = ${budgeted}"
+      continue
+    fi
 
-    # curl -s -X PATCH \
-    #   "${BASE_URL}/budgets/${BUDGET_ID}/months/${month}/categories/${id}" \
-    #   -H "accept: application/json" \
-    #   -H "x-api-key: ${API_KEY}" \
-    #   -H "Content-Type: application/json" \
-    #   -d "$(jq -n --argjson spent "${spent}" --argjson budget "${budget}" \
-    #         '{category: {budgeted: $budget}}')" \
-    # >/dev/null
+    echo "Updating category; month: ${month}; name: ${name}; setting budgeted = ${new_budgeted}"
+
+    curl -s -X PATCH \
+      "${BASE_URL}/budgets/${BUDGET_ID}/months/${month}/categories/${id}" \
+      -H "accept: application/json" \
+      -H "x-api-key: ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n --argjson spent "${spent}" --argjson budget "${budget}" \
+            '{category: {budgeted: $budget}}')" \
+    >/dev/null
   done
 
   echo "All categories updated for month ${month}."
