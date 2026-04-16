@@ -31,23 +31,61 @@ function checkDependencies() {
   echo "$dateCommand"
 }
 
+# Function to display usage and exit
+function usage() {
+  cat >&2 <<EOF
+usage: ${0} [-c CATEGORY]... [-i] yyyy-mm [yyyy-mm]
+
+Options:
+  -c, --category CATEGORY   Only update the specified category name or ID. Can be used multiple times.
+  -i, --interactive         Ask for confirmation before each update.
+EOF
+  exit 1
+}
+
 # Function to parse and validate command-line arguments
 function parseArguments() {
-  if [[ $# -lt 1 || $# -gt 2 ]]; then
-    echo "usage: ${0} yyyy-mm [yyyy-mm]" >&2
-    exit 1
+  PARSE_CATEGORIES=()
+  PARSE_INTERACTIVE=false
+  local args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -c|--category)
+        shift
+        if [[ -z "${1:-}" || "${1:0:1}" == "-" ]]; then
+          echo "Missing argument for --category" >&2
+          usage
+        fi
+        PARSE_CATEGORIES+=("$1")
+        ;;
+      -i|--interactive)
+        PARSE_INTERACTIVE=true
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -* )
+        echo "Unknown option: $1" >&2
+        usage
+        ;;
+      *)
+        args+=("$1")
+        ;;
+    esac
+    shift
+  done
+
+  if [[ ${#args[@]} -lt 1 || ${#args[@]} -gt 2 ]]; then
+    usage
   fi
 
-  local startMonth="${1}"
-  local endMonth="${1}"
-  if [[ $# -eq 2 ]]; then
-    endMonth="${2}"
-  fi
+  PARSE_START_MONTH="${args[0]}"
+  PARSE_END_MONTH="${args[1]:-${args[0]}}"
 
-  validateMonthFormat "$startMonth" "start month"
-  validateMonthFormat "$endMonth" "end month"
-
-  echo "$startMonth" "$endMonth"
+  validateMonthFormat "$PARSE_START_MONTH" "start month"
+  validateMonthFormat "$PARSE_END_MONTH" "end month"
 }
 
 # Function to validate month format
@@ -58,6 +96,50 @@ function validateMonthFormat() {
     echo "Invalid format for $label: $month" >&2
     exit 1
   fi
+}
+
+# Function to determine whether a category should be updated
+function shouldUpdateCategory() {
+  local id="$1"
+  local name="$2"
+  if [[ ${#PARSE_CATEGORIES[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  for filter in "${PARSE_CATEGORIES[@]}"; do
+    if [[ "$filter" == "$id" || "$filter" == "$name" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Function to confirm a pending update
+function confirmUpdate() {
+  local month="$1"
+  local name="$2"
+  local new_budgeted="$3"
+  if [[ "$PARSE_INTERACTIVE" != "true" ]]; then
+    return 0
+  fi
+
+  while true; do
+    echo -n "Confirm update for month ${month}, category ${name}, new value ${new_budgeted}? [y/N] "
+    read -r answer < /dev/tty
+    case "$(echo "$answer" | tr '[:upper:]' '[:lower:]')" in
+      y|yes)
+        return 0
+        ;;
+      n|no|"")
+        echo "Skipping category; month: ${month}; name: ${name}"
+        return 1
+        ;;
+      *)
+        echo "Please answer y or n."
+        ;;
+    esac
+  done
 }
 
 # Function to update a single category
@@ -76,9 +158,17 @@ function updateCategory() {
     return
   fi
 
+  if ! shouldUpdateCategory "$id" "$name"; then
+    return
+  fi
+
   local new_budgeted=$(( spent * -1 ))
   if [[ "${new_budgeted}" == "${budgeted}" ]]; then
     echo "No update needed for category; month: ${month}; name: ${name}; budgeted = ${budgeted}"
+    return
+  fi
+
+  if ! confirmUpdate "$month" "$name" "$new_budgeted"; then
     return
   fi
 
@@ -118,9 +208,9 @@ function processMonth() {
 # Main function
 function main() {
   local dateCommand=$(checkDependencies)
-  local args=($(parseArguments "$@"))
-  local startMonth="${args[0]}"
-  local endMonth="${args[1]}"
+  parseArguments "$@"
+  local startMonth="${PARSE_START_MONTH}"
+  local endMonth="${PARSE_END_MONTH}"
 
   local current="$startMonth"
   local increment="-1 month"
