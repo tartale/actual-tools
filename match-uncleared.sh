@@ -36,7 +36,7 @@ function usage() {
 usage: ${0} [-s YYYY-MM-DD]
 
 Finds uncleared transactions that match a cleared transaction within 5 days
-and tags both with a #cleared-XXXX identifier in their notes.
+and tags both with #cleared in their notes.
 
 Options:
   -s, --since YYYY-MM-DD   Fetch transactions on or after this date (default: 14 days ago)
@@ -138,8 +138,12 @@ function collectAllTransactions() {
   echo "${all}"
 }
 
-function randomId() {
-  dd if=/dev/urandom bs=128 count=1 2>/dev/null | tr -dc 'a-z0-9' | cut -c1-4
+function formatAmount() {
+  local amount="$1"
+  awk -v amt="${amount}" 'BEGIN {
+    if (amt < 0) printf "-$%.2f", -amt/100
+    else printf "$%.2f", amt/100
+  }'
 }
 
 function addDays() {
@@ -182,15 +186,21 @@ function patchTransactionNote() {
   patchBody=$(jq -n --arg notes "${newNotes}" '{"transaction": {"notes": $notes}}')
 
   local response
-  response=$(curl -sk -X PATCH \
+  local responseBody
+  local responseStatusCode
+  response=$(curlWithStatus -sk -X PATCH \
     "${BASE_URL}/budgets/${BUDGET_ID}/transactions/${id}" \
     -H "accept: application/json" \
     -H "x-api-key: ${API_KEY}" \
     -H "Content-Type: application/json" \
     -d "${patchBody}")
-
-  if ! echo "${response}" | jq -e '.data.transaction' > /dev/null 2>&1; then
-    echo "Warning: PATCH may have failed for transaction ${id}: ${response}" >&2
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    return 0
+  fi
+  responseBody=$(echo "${response}" | jq -r '.[0]')
+  responseStatusCode=$(echo "${response}" | jq -r '.[1].statusCode')
+  if [[ "${responseStatusCode}" != "200" ]]; then
+    echo "Warning: PATCH failed for transaction ${id}: ${responseBody}" >&2
     return 1
   fi
 }
@@ -201,7 +211,7 @@ function tagPair() {
   local tag="$3"
 
   local unclearedId unclearedDate unclearedPayee unclearedNotes unclearedAmount
-  local clearedId clearedDate clearedPayee clearedNotes
+  local clearedId clearedDate clearedPayee clearedNotes clearedAmount
 
   unclearedId=$(echo "${unclearedTx}"    | jq -r '.id')
   unclearedDate=$(echo "${unclearedTx}"  | jq -r '.date')
@@ -209,24 +219,23 @@ function tagPair() {
   unclearedNotes=$(echo "${unclearedTx}" | jq -r '.notes // ""')
   unclearedAmount=$(echo "${unclearedTx}" | jq -r '.amount')
 
-  clearedId=$(echo "${clearedTx}"    | jq -r '.id')
-  clearedDate=$(echo "${clearedTx}"  | jq -r '.date')
-  clearedPayee=$(echo "${clearedTx}" | jq -r '.imported_payee // ""')
-  clearedNotes=$(echo "${clearedTx}" | jq -r '.notes // ""')
+  clearedId=$(echo "${clearedTx}"     | jq -r '.id')
+  clearedDate=$(echo "${clearedTx}"   | jq -r '.date')
+  clearedPayee=$(echo "${clearedTx}"  | jq -r '.imported_payee // ""')
+  clearedNotes=$(echo "${clearedTx}"  | jq -r '.notes // ""')
+  clearedAmount=$(echo "${clearedTx}" | jq -r '.amount')
 
   local newUnclearedNotes="${tag}${unclearedNotes:+ ${unclearedNotes}}"
-  local newClearedNotes="${tag}${clearedNotes:+ ${clearedNotes}}"
 
-  printf "Matched %s:\n  uncleared: %s | %-40s | amount: %s\n  cleared:   %s | %-40s\n" \
+  printf "Matched %s:\n  uncleared: %s | %-40s | amount: %s\n  cleared:   %s | %-40s | amount: %s\n" \
     "${tag}" \
-    "${unclearedDate}" "${unclearedPayee}" "${unclearedAmount}" \
-    "${clearedDate}"   "${clearedPayee}"
+    "${unclearedDate}" "${unclearedPayee}" "$(formatAmount "${unclearedAmount}")" \
+    "${clearedDate}"   "${clearedPayee}"   "$(formatAmount "${clearedAmount}")"
 
   if ! patchTransactionNote "${unclearedId}" "${newUnclearedNotes}"; then
     echo "Warning: failed to patch uncleared transaction ${unclearedId}; skipping pair." >&2
     return 1
   fi
-  patchTransactionNote "${clearedId}" "${newClearedNotes}"
 }
 
 function main() {
@@ -253,8 +262,8 @@ function main() {
   echo "Collected ${totalCount} transaction(s) total."
 
   local unclearedJson clearedJson
-  unclearedJson=$(echo "${allTxns}" | jq '[.[] | select(.cleared == false and (.notes // "" | startswith("#cleared-") | not))]')
-  clearedJson=$(echo "${allTxns}"   | jq '[.[] | select(.cleared == true  and (.notes // "" | startswith("#cleared-") | not))]')
+  unclearedJson=$(echo "${allTxns}" | jq '[.[] | select(.cleared == false and (.notes // "" | startswith("#cleared") | not))]')
+  clearedJson=$(echo "${allTxns}"   | jq '[.[] | select(.cleared == true  and (.notes // "" | startswith("#cleared") | not))]')
 
   local unclearedCount
   unclearedCount=$(echo "${unclearedJson}" | jq 'length')
@@ -271,10 +280,7 @@ function main() {
     match=$(findMatch "${tx}" "${clearedJson}" "${maxDate}")
 
     if [[ -n "${match}" ]]; then
-      local tag
-      tag="#cleared-$(randomId)"
-
-      if tagPair "${tx}" "${match}" "${tag}"; then
+      if tagPair "${tx}" "${match}" "#cleared"; then
         local matchedId
         matchedId=$(echo "${match}" | jq -r '.id')
         clearedJson=$(echo "${clearedJson}" | jq --arg id "${matchedId}" '[.[] | select(.id != $id)]')
@@ -283,7 +289,7 @@ function main() {
     fi
   done < <(echo "${unclearedJson}" | jq -c '.[]')
 
-  echo "Tagged ${matched} pair(s)."
+  echo "Tagged ${matched} cleared transaction(s)."
 }
 
 main "$@"
