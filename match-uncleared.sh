@@ -194,7 +194,7 @@ function patchTransactionNote() {
     -H "x-api-key: ${API_KEY}" \
     -H "Content-Type: application/json" \
     -d "${patchBody}")
-  if [[ "${DRY_RUN}" == "true" ]]; then
+  if [[ "${DRY_RUN:-}" == "true" ]]; then
     return 0
   fi
   responseBody=$(echo "${response}" | jq -r '.[0]')
