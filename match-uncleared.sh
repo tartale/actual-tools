@@ -161,20 +161,24 @@ function findMatch() {
   local payee
   local accountId
   local txDate
+  local unclearedAmount
   payee=$(echo "${tx}" | jq -r '.imported_payee // "" | ascii_downcase | gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ")')
   accountId=$(echo "${tx}" | jq -r '.account')
   txDate=$(echo "${tx}" | jq -r '.date')
+  unclearedAmount=$(echo "${tx}" | jq -r '.amount')
 
   echo "${clearedJson}" | jq -rc \
     --arg payee "${payee}" \
     --arg account "${accountId}" \
     --arg from "${txDate}" \
     --arg to "${maxDate}" \
-    'first(.[] | select(
+    --argjson amount "${unclearedAmount}" \
+    'first(.[] | def abs: if . < 0 then - . else . end; select(
        .account == $account
        and (.imported_payee // "" | ascii_downcase | gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ")) == $payee
-       and .date >= $from
+       and .date > $from
        and .date <= $to
+       and ((.amount | abs) <= ($amount | abs * 1.3))
      )) // empty'
 }
 
