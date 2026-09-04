@@ -46,11 +46,11 @@ export function isAction(value: string): value is Action {
 
 // Function to load and validate required environment variables
 export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): ActualConfig {
-  const baseUrl = env.BASE_URL
-  const budgetId = env.BUDGET_ID
-  const apiKey = env.API_KEY
+  const baseUrl = env.AB_BASE_URL
+  const budgetId = env.AB_BUDGET_ID
+  const apiKey = env.AB_API_KEY
   if (!baseUrl || !budgetId || !apiKey) {
-    throw new Error("Environment variables BASE_URL, BUDGET_ID, and API_KEY must be set.")
+    throw new Error("Environment variables AB_BASE_URL, AB_BUDGET_ID, and AB_API_KEY must be set.")
   }
   return { baseUrl, budgetId, apiKey }
 }

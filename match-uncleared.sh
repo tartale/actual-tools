@@ -3,8 +3,8 @@
 set -euo pipefail
 
 function checkDependencies() {
-  if [[ -z "${BASE_URL:-}" || -z "${BUDGET_ID:-}" || -z "${API_KEY:-}" ]]; then
-    echo "Environment variables BASE_URL, BUDGET_ID, and API_KEY must be set." >&2
+  if [[ -z "${AB_BASE_URL:-}" || -z "${AB_BUDGET_ID:-}" || -z "${AB_API_KEY:-}" ]]; then
+    echo "Environment variables AB_BASE_URL, AB_BUDGET_ID, and AB_API_KEY must be set." >&2
     exit 1
   fi
 
@@ -42,9 +42,9 @@ Options:
   -s, --since YYYY-MM-DD   Fetch transactions on or after this date (default: 14 days ago)
 
 Environment variables required:
-  BASE_URL    e.g. https://actualbudget.example.com/v1
-  BUDGET_ID   UUID of the budget
-  API_KEY     API key for authentication
+  AB_BASE_URL    e.g. https://actualbudget.example.com/v1
+  AB_BUDGET_ID   UUID of the budget
+  AB_API_KEY     API key for authentication
 EOF
   exit 1
 }
@@ -88,9 +88,9 @@ function parseArguments() {
 function fetchAccounts() {
   local response
   response=$(curl -sk -X GET \
-    "${BASE_URL}/budgets/${BUDGET_ID}/accounts" \
+    "${AB_BASE_URL}/budgets/${AB_BUDGET_ID}/accounts" \
     -H "accept: application/json" \
-    -H "x-api-key: ${API_KEY}")
+    -H "x-api-key: ${AB_API_KEY}")
 
   if ! echo "${response}" | jq -e '.data' > /dev/null 2>&1; then
     echo "Error: unexpected response from GET accounts: ${response}" >&2
@@ -106,9 +106,9 @@ function fetchTransactions() {
 
   local response
   response=$(curl -sk -X GET \
-    "${BASE_URL}/budgets/${BUDGET_ID}/accounts/${accountId}/transactions?since_date=${sinceDate}" \
+    "${AB_BASE_URL}/budgets/${AB_BUDGET_ID}/accounts/${accountId}/transactions?since_date=${sinceDate}" \
     -H "accept: application/json" \
-    -H "x-api-key: ${API_KEY}")
+    -H "x-api-key: ${AB_API_KEY}")
 
   if ! echo "${response}" | jq -e '.data' > /dev/null 2>&1; then
     echo "Error: unexpected response from GET transactions for account ${accountId}: ${response}" >&2
@@ -193,12 +193,12 @@ function patchTransactionNote() {
   local responseBody
   local responseStatusCode
   response=$(curlWithStatus -sk -X PATCH \
-    "${BASE_URL}/budgets/${BUDGET_ID}/transactions/${id}" \
+    "${AB_BASE_URL}/budgets/${AB_BUDGET_ID}/transactions/${id}" \
     -H "accept: application/json" \
-    -H "x-api-key: ${API_KEY}" \
+    -H "x-api-key: ${AB_API_KEY}" \
     -H "Content-Type: application/json" \
     -d "${patchBody}")
-  if [[ "${DRY_RUN:-}" == "true" ]]; then
+  if [[ "${AB_DRY_RUN:-}" == "true" ]]; then
     return 0
   fi
   responseBody=$(echo "${response}" | jq -r '.[0]')

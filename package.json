@@ -5,6 +5,12 @@
   "type": "module",
   "description": "Command-line tools for a self-hosted Actual Budget instance",
   "license": "MIT",
+  "bin": {
+    "set-budget": "./src/set-budget.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

@@ -7,19 +7,19 @@ instance, talking to its REST API wrapper.
 
 All tools read the same environment variables:
 
-| Variable    | Description                                        |
-| ----------- | -------------------------------------------------- |
-| `BASE_URL`  | API base URL, e.g. `http://host:5007/v1`           |
-| `BUDGET_ID` | Budget (sync) ID                                    |
-| `API_KEY`   | API key, sent as the `x-api-key` header             |
-| `DRY_RUN`   | `true` to report changes without writing them       |
+| Variable       | Description                                    |
+| -------------- | ---------------------------------------------- |
+| `AB_BASE_URL`  | API base URL, e.g. `http://host:5007/v1`       |
+| `AB_BUDGET_ID` | Budget (sync) ID                               |
+| `AB_API_KEY`   | API key, sent as the `x-api-key` header        |
+| `AB_DRY_RUN`   | `true` to report changes without writing them  |
 
-## `set-budget.ts`
+## `src/set-budget.ts`
 
 Sets category budgets for a month, or an inclusive range of months.
 
 ```
-set-budget.ts [-c CATEGORY]... [-i] [-n] ACTION yyyy-mm [yyyy-mm]
+src/set-budget.ts [-c CATEGORY]... [-i] [-n] ACTION yyyy-mm [yyyy-mm]
 ```
 
 Actions:
@@ -45,9 +45,9 @@ Options:
 Examples:
 
 ```sh
-./set-budget.ts balance 2026-08                            # zero every balance
-./set-budget.ts -c Groceries previous-3 2026-08            # 3-month average
-./set-budget.ts -n -c "Monthly Expenses (Fixed)" previous 2026-08 2026-01
+./src/set-budget.ts balance 2026-08                        # zero every balance
+./src/set-budget.ts -c Groceries previous-3 2026-08        # 3-month average
+./src/set-budget.ts -n -c "Monthly Expenses (Fixed)" previous 2026-08 2026-01
 ```
 
 This replaces the earlier `balance-to-zero.sh`, whose behaviour is now the
@@ -57,9 +57,19 @@ This replaces the earlier `balance-to-zero.sh`, whose behaviour is now the
 
 Finds uncleared transactions that match a cleared one and tags the pair.
 
+## Layout
+
+```
+src/                     TypeScript sources and their tests
+  actual-helpers.ts      typed Actual REST client + pure helpers
+  actual-helpers.test.ts vitest unit tests
+  set-budget.ts          executable CLI
+match-uncleared.sh       standalone bash tool, no shared code
+```
+
 ## Development
 
-`set-budget.ts` runs directly under Node (≥ 22.18) — TypeScript is stripped at
+`src/set-budget.ts` runs directly under Node (≥ 22.18) — TypeScript is stripped at
 runtime, so there is no build step and no runtime dependencies. The dev
 dependencies are only needed for checks:
 

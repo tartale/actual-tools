@@ -44,7 +44,7 @@ Options:
                              parent category group (name or ID). Can be used multiple times.
   -i, --interactive         Ask for confirmation before each update.
   -n, --dry-run             Report what would change without writing anything.
-                             Also enabled by setting DRY_RUN=true.`
+                             Also enabled by setting AB_DRY_RUN=true.`
 
 // Function to report a usage error and exit
 function usage(message: string): never {
@@ -56,7 +56,7 @@ function usage(message: string): never {
 function parseArguments(argv: readonly string[]): Options {
   const categories: string[] = []
   let interactive = false
-  let dryRun = process.env.DRY_RUN === "true"
+  let dryRun = process.env.AB_DRY_RUN === "true"
   const positional: string[] = []
 
   for (let i = 0; i < argv.length; i++) {

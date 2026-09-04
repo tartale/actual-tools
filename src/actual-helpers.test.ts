@@ -68,7 +68,7 @@ afterEach(() => {
 
 describe("loadConfigFromEnv", () => {
   it("returns the config when every variable is set", () => {
-    expect(loadConfigFromEnv({ BASE_URL: "https://a/v1", BUDGET_ID: "b", API_KEY: "k" })).toEqual({
+    expect(loadConfigFromEnv({ AB_BASE_URL: "https://a/v1", AB_BUDGET_ID: "b", AB_API_KEY: "k" })).toEqual({
       baseUrl: "https://a/v1",
       budgetId: "b",
       apiKey: "k",
@@ -76,8 +76,8 @@ describe("loadConfigFromEnv", () => {
   })
 
   it("throws when a variable is missing", () => {
-    expect(() => loadConfigFromEnv({ BASE_URL: "https://a/v1", BUDGET_ID: "b" })).toThrow(
-      "Environment variables BASE_URL, BUDGET_ID, and API_KEY must be set.",
+    expect(() => loadConfigFromEnv({ AB_BASE_URL: "https://a/v1", AB_BUDGET_ID: "b" })).toThrow(
+      "Environment variables AB_BASE_URL, AB_BUDGET_ID, and AB_API_KEY must be set.",
     )
   })
 })

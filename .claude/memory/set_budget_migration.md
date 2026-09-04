@@ -38,15 +38,16 @@ The rewrite moved from bash to TypeScript. Decision drivers:
 tool, and Node's native TS support means there's no real cost (no build
 step, no extra runtime deps) to making this switch now.
 
-**Status (2026-09-04): implemented and verified, not yet committed.**
-`actual-helpers.ts`, `set-budget.ts`, `actual-helpers.test.ts` (39 vitest
-tests), `package.json`, `tsconfig.json` are in place; `balance-to-zero.sh` is
+**Status (2026-09-04): implemented, verified and pushed to main.**
+The TypeScript sources live under `src/` (`actual-helpers.ts`,
+`set-budget.ts`, `actual-helpers.test.ts` — 39 vitest tests) with
+`package.json`/`tsconfig.json` at the root; `balance-to-zero.sh` is
 `git rm`'d; `match-uncleared.sh` untouched. Typecheck and tests pass, and the
 four actions plus category/group filtering were verified live against the
 real budget.
 
 One addition beyond the original plan: a `-n`/`--dry-run` flag that also
-honours `DRY_RUN=true` (the convention `match-uncleared.sh` and `.envrc`
+honours `AB_DRY_RUN=true` (the convention `match-uncleared.sh` and `.envrc`
 already use). Added after a live smoke test wrote a real budget value — the
 write was correct per spec and was reverted immediately, but there was no
 safe way to exercise the write path without it.

@@ -8,11 +8,13 @@ metadata:
   modified: 2026-09-04T19:09:40.247Z
 ---
 
-`BASE_URL`/`BUDGET_ID`/`API_KEY` (from `.env`, not committed) point at a
+`AB_BASE_URL`/`AB_BUDGET_ID`/`AB_API_KEY` (from `.env`, not committed) point at a
 self-hosted "actualbudget-api"-style REST wrapper (`.../v1`), not the
-official `@actual-app/api` package. Both `balance-to-zero.sh` (now being
-replaced by `set-budget.ts`, see [[set-budget-migration]]) and
-`match-uncleared.sh` talk to it via `curl` + `x-api-key` header.
+official `@actual-app/api` package. Both `src/set-budget.ts` (which replaced `balance-to-zero.sh`, see
+[[set-budget-migration]]) and `match-uncleared.sh` talk to it with the
+`x-api-key` header. The unprefixed `BASE_URL`/`BUDGET_ID`/`API_KEY` names
+were retired on 2026-09-04; everything is `AB_`-prefixed now, including
+`AB_DRY_RUN`.
 
 Confirmed live shape (all amounts in cents):
 - `GET /budgets/{budgetId}/categorygroups` → `{ data: [{ id, name,
