@@ -209,9 +209,12 @@ function updateCategory() {
     return
   fi
 
-  local new_budgeted=$(( spent * -1 ))
+  local new_budgeted=$(( budgeted - balance ))
   if [[ "${new_budgeted}" == "${budgeted}" ]]; then
-    echo "No update needed for category; month: ${month}; name: ${name}; budgeted = $(formatUsd "${budgeted}")"
+    local budgetedCol balanceCol
+    printf -v budgetedCol '%-12s' "$(formatUsd "${budgeted}")"
+    printf -v balanceCol '%-12s' "$(formatUsd "${balance}")"
+    echo "No update needed for category; budgeted = ${budgetedCol}; balance = ${balanceCol}; name: ${name}; month: ${month}"
     return
   fi
 
