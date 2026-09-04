@@ -1,3 +1,7 @@
+> **Status: implemented on 2026-09-04.** Kept as the record of the design
+> decisions; see `.claude/memory/set_budget_migration.md` for what changed
+> during implementation (notably the added `--dry-run` flag).
+
 # Replace balance-to-zero.sh with set-budget.ts (TypeScript)
 
 ## Context

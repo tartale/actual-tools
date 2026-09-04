@@ -1,11 +1,11 @@
 ---
 name: set-budget-migration
-description: "Status/decisions for replacing balance-to-zero.sh with a TypeScript set-budget.ts, and why"
+description: "Status/decisions for the completed replacement of balance-to-zero.sh with a TypeScript set-budget.ts, and why"
 metadata: 
   node_type: memory
   type: project
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-04T19:09:30.919Z
+  modified: 2026-09-04T19:30:00.000Z
 ---
 
 `balance-to-zero.sh` is being fully replaced (no backward compat) by
@@ -18,7 +18,9 @@ original spec wording was ambiguous/typo-like); all history-based actions
 use actual **spending**, not what was previously **budgeted**.
 
 The rewrite moved from bash to TypeScript. Decision drivers:
-- Node 26 (installed) runs `.ts` files **natively** — direct shebang exec
+- Node runs `.ts` files **natively** (type stripping is on by default from
+  Node 22.18; the sandbox has v22.23.1, so the earlier "Node 26" note in the
+  plan is wrong about the version but right about the capability) — direct shebang exec
   (`#!/usr/bin/env node` on a `.ts` file), relative imports with explicit
   `.ts` extensions, types/interfaces fully erased at runtime. No
   `tsx`/`ts-node`/build step needed to run the script, and no
@@ -36,12 +38,23 @@ The rewrite moved from bash to TypeScript. Decision drivers:
 tool, and Node's native TS support means there's no real cost (no build
 step, no extra runtime deps) to making this switch now.
 
-**How to apply**: when resuming this work, read the full plan at
-`~/.claude/plans/idempotent-scribbling-gosling.md` (file layout: flat
-`actual-helpers.ts` + `set-budget.ts` + `actual-helpers.test.ts` at repo
-root, mirroring the existing bash scripts' convention; `match-uncleared.sh`
-stays bash, untouched). `actual-helpers.ts` has an exploratory WIP draft
-already committed (not yet finalized/wired to a CLI or tests) — treat it as
-a starting point, not final. The [[actual-budget-api-shape]] memory has the
-live REST API details this module wraps. Work is continuing in a
-claude-sandbox environment (config added under `.claude/sandbox/`).
+**Status (2026-09-04): implemented and verified, not yet committed.**
+`actual-helpers.ts`, `set-budget.ts`, `actual-helpers.test.ts` (39 vitest
+tests), `package.json`, `tsconfig.json` are in place; `balance-to-zero.sh` is
+`git rm`'d; `match-uncleared.sh` untouched. Typecheck and tests pass, and the
+four actions plus category/group filtering were verified live against the
+real budget.
+
+One addition beyond the original plan: a `-n`/`--dry-run` flag that also
+honours `DRY_RUN=true` (the convention `match-uncleared.sh` and `.envrc`
+already use). Added after a live smoke test wrote a real budget value — the
+write was correct per spec and was reverted immediately, but there was no
+safe way to exercise the write path without it.
+
+**How to apply**: the full plan snapshot is at
+`.claude/plans/set-budget-migration.md` in the repo (the machine-local copy
+`~/.claude/plans/idempotent-scribbling-gosling.md` does not exist in the
+sandbox). The [[actual-budget-api-shape]] memory has the live REST API
+details `actual-helpers.ts` wraps — that module is the piece meant to be
+reused by any future FIRE forecasting tool. Work happened in a claude-sandbox
+environment (config under `.claude/sandbox/`).

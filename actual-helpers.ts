@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs"
+import { accessSync, constants, createReadStream } from "node:fs"
 import { createInterface } from "node:readline/promises"
 
 export interface Category {
@@ -221,12 +221,12 @@ export async function patchCategoryBudget(config: ActualConfig, month: string, c
 
 // Function to prompt for interactive confirmation via the controlling terminal
 export async function confirmViaTty(promptText: string): Promise<boolean> {
-  let ttyIn
   try {
-    ttyIn = createReadStream("/dev/tty")
+    accessSync("/dev/tty", constants.R_OK)
   } catch {
     throw new Error("--interactive requires a terminal for confirmation.")
   }
+  const ttyIn = createReadStream("/dev/tty")
   const rl = createInterface({ input: ttyIn, output: process.stderr })
   try {
     while (true) {

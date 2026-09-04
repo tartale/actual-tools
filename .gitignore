@@ -2,3 +2,5 @@
 .envrc
 nohub.out
 .DS_Store
+node_modules
+.tmp

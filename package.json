@@ -1,0 +1,17 @@
+{
+  "name": "actual-tools",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Command-line tools for a self-hosted Actual Budget instance",
+  "license": "MIT",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^7",
+    "vitest": "^5"
+  }
+}
