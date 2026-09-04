@@ -7,6 +7,7 @@ import {
   computeHistoricalBudget,
   confirmViaTty,
   fetchCategoryGroups,
+  findIncomeFilterMatches,
   formatCategoryLine,
   formatUsd,
   getCachedMonthCategories,
@@ -125,8 +126,17 @@ async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2))
   const config = loadConfigFromEnv()
 
-  const groupNames =
-    options.categories.length > 0 ? groupNameById(await fetchCategoryGroups(config)) : new Map<string, string>()
+  let groupNames = new Map<string, string>()
+  if (options.categories.length > 0) {
+    const groups = await fetchCategoryGroups(config)
+    const incomeFilters = findIncomeFilterMatches(options.categories, groups)
+    if (incomeFilters.length > 0) {
+      throw new Error(
+        `-c matched an income category or group, which is never a valid update target: ${incomeFilters.join(", ")}`,
+      )
+    }
+    groupNames = groupNameById(groups)
+  }
 
   const monthCache = new Map<string, CategoryMonth[]>()
 

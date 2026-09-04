@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-04T19:09:40.247Z
+  modified: 2026-09-04T22:41:00.939Z
 ---
 
 `AB_BASE_URL`/`AB_BUDGET_ID`/`AB_API_KEY` (from `.env`, not committed) point at a
@@ -23,14 +23,21 @@ Confirmed live shape (all amounts in cents):
   group_id }] }] }` — category **groups** = "parent categories"; only
   endpoint that returns group names (the months/categories endpoint below
   only has `group_id`, not the name).
-- `GET /budgets/{budgetId}/months/{month}/categories` → `{ data: [{ id,
-  name, is_income, hidden, group_id, budgeted, spent, balance, carryover
-  }] }`. `spent` is negative for outflows. `balance` is NOT always
-  `budgeted + spent` — when a category has `carryover: true`, `balance`
-  also includes rollover from prior months, so "zero the balance" must use
-  `newBudgeted = budgeted - balance`, not `newBudgeted = -spent` (the
-  latter silently fails to zero carryover categories — this was a real bug
-  found and fixed in `balance-to-zero.sh` this session).
+- `GET /budgets/{budgetId}/months/{month}/categories` → for a normal
+  (non-income) category: `{ id, name, is_income: false, hidden, group_id,
+  budgeted, spent, balance, carryover }`. `spent` is negative for outflows.
+  `balance` is NOT always `budgeted + spent` — when a category has
+  `carryover: true`, `balance` also includes rollover from prior months, so
+  "zero the balance" must use `newBudgeted = budgeted - balance`, not
+  `newBudgeted = -spent` (the latter silently fails to zero carryover
+  categories — this was a real bug found and fixed in `balance-to-zero.sh`
+  this session). **An income category (`is_income: true`) has a completely
+  different, incompatible shape**: `{ id, name, is_income: true, hidden,
+  group_id, received }` — no `budgeted`/`spent`/`balance`/`carryover` at
+  all. Any code that reads those fields unconditionally across all
+  categories will get `undefined` for income ones (e.g. `computeBalanceBudget`
+  → `NaN`). `set-budget.ts` now excludes income categories entirely before
+  that math ever runs — see [[set-budget-migration]].
 - `PATCH /budgets/{budgetId}/months/{month}/categories/{id}` with body
   `{ category: { budgeted: <cents> } }` to set a category's budgeted
   amount for that month.

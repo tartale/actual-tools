@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-04T19:30:00.000Z
+  modified: 2026-09-04T22:40:50.228Z
 ---
 
 `balance-to-zero.sh` is being fully replaced (no backward compat) by
@@ -55,6 +55,18 @@ safe way to exercise the write path without it.
 All tasks now run through the `./actual` dispatcher at the repo root
 (`build`, `lint`, `test`, `budget set-values`, `budget match-uncleared`);
 `budget match-uncleared` still execs the bash script pending its port.
+
+**Income categories are a hard exclusion in `set-values`** (2026-09-04):
+`shouldUpdateCategory` returns false unconditionally for any category with
+`is_income: true`, regardless of `-c` filters — this also fixed a latent bug
+where a no-filter sweep would have hit income categories and computed NaN
+budgets, since the Actual API returns `received` for income categories
+instead of `budgeted`/`spent`/`balance`. On top of that, an explicit `-c`
+that names an income category or its parent group (by id or name) is a
+fail-fast error via `findIncomeFilterMatches`, checked before any month data
+is fetched — the user wants a no-filter sweep to skip income silently, but
+an explicit filter naming income to be a hard, immediate error rather than a
+silent no-op.
 
 **How to apply**: the full plan snapshot is at
 `.claude/plans/set-budget-migration.md` in the repo (the machine-local copy

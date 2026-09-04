@@ -12,7 +12,7 @@ All tools read the same environment variables:
 | `AB_BASE_URL`  | API base URL, e.g. `http://host:5007/v1`       |
 | `AB_BUDGET_ID` | Budget (sync) ID                               |
 | `AB_API_KEY`   | API key, sent as the `x-api-key` header        |
-| `DRY_RUN`   | `true` to report changes without writing them  |
+| `DRY_RUN`      | `true` to report changes without writing them  |
 
 ## `./actual`
 
@@ -53,6 +53,11 @@ Options:
   or parent category group, by name or ID. Repeatable.
 - `-i`, `--interactive` — ask for confirmation before each update.
 - `-n`, `--dry-run` — report what would change without writing anything.
+
+Income categories are never updated. A run with no `-c` filter skips them
+silently while sweeping every other category; an explicit `-c` that names an
+income category or its parent group is an immediate error instead, since
+that's a mistake worth surfacing rather than quietly ignoring.
 
 Examples:
 

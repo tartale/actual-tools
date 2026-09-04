@@ -7,6 +7,7 @@ import {
   computeHistoricalBudget,
   fetchCategoryGroups,
   fetchMonthCategories,
+  findIncomeFilterMatches,
   formatCategoryLine,
   formatUsd,
   getCachedMonthCategories,
@@ -163,7 +164,7 @@ describe("groupNameById", () => {
 })
 
 describe("shouldUpdateCategory", () => {
-  const category = { id: "cat-1", name: "Groceries", group_id: "group-1" }
+  const category = { id: "cat-1", name: "Groceries", group_id: "group-1", is_income: false }
   const groupNames = new Map([["group-1", "Monthly Expenses"]])
 
   it("matches everything when no filters are given", () => {
@@ -186,6 +187,58 @@ describe("shouldUpdateCategory", () => {
 
   it("does not match a group name that is not indexed", () => {
     expect(shouldUpdateCategory(category, ["Monthly Expenses"], new Map())).toBe(false)
+  })
+
+  it("never matches an income category, even with no filters", () => {
+    const income = { ...category, is_income: true }
+    expect(shouldUpdateCategory(income, [], groupNames)).toBe(false)
+  })
+
+  it("never matches an income category, even when explicitly named by -c", () => {
+    const income = { ...category, is_income: true }
+    for (const filter of ["cat-1", "Groceries", "group-1", "Monthly Expenses"]) {
+      expect(shouldUpdateCategory(income, [filter], groupNames)).toBe(false)
+    }
+  })
+})
+
+describe("findIncomeFilterMatches", () => {
+  const groups = [
+    {
+      id: "group-expenses",
+      name: "Monthly Expenses",
+      is_income: false,
+      hidden: false,
+      categories: [{ id: "cat-groceries", name: "Groceries", is_income: false, hidden: false, group_id: "group-expenses" }],
+    },
+    {
+      id: "group-income",
+      name: "Income",
+      is_income: true,
+      hidden: false,
+      categories: [
+        { id: "cat-income", name: "Income", is_income: true, hidden: false, group_id: "group-income" },
+        { id: "cat-reimbursement", name: "Reimbursement", is_income: true, hidden: false, group_id: "group-income" },
+      ],
+    },
+  ] satisfies CategoryGroup[]
+
+  it("returns nothing when no filter targets income", () => {
+    expect(findIncomeFilterMatches(["Groceries", "group-expenses"], groups)).toEqual([])
+  })
+
+  it("flags a filter matching an income category by id or name", () => {
+    expect(findIncomeFilterMatches(["cat-income"], groups)).toEqual(["cat-income"])
+    expect(findIncomeFilterMatches(["Reimbursement"], groups)).toEqual(["Reimbursement"])
+  })
+
+  it("flags a filter matching the income group itself by id or name", () => {
+    expect(findIncomeFilterMatches(["group-income"], groups)).toEqual(["group-income"])
+    expect(findIncomeFilterMatches(["Income"], groups)).toEqual(["Income"])
+  })
+
+  it("flags only the offending filters out of a mixed set", () => {
+    expect(findIncomeFilterMatches(["Groceries", "Income", "Reimbursement"], groups)).toEqual(["Income", "Reimbursement"])
   })
 })
 

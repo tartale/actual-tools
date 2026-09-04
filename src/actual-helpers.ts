@@ -98,16 +98,35 @@ export function groupNameById(groups: CategoryGroup[]): Map<string, string> {
 
 // Function to determine whether a category matches the given category/parent-group filters
 export function shouldUpdateCategory(
-  category: Pick<Category, "id" | "name" | "group_id">,
+  category: Pick<Category, "id" | "name" | "group_id" | "is_income">,
   filters: readonly string[],
   groupNames: ReadonlyMap<string, string>,
 ): boolean {
+  // Income categories are never touched, even by an explicit -c match on the
+  // category itself or its parent group.
+  if (category.is_income) {
+    return false
+  }
   if (filters.length === 0) {
     return true
   }
   const groupName = groupNames.get(category.group_id)
   return filters.some(
     (filter) => filter === category.id || filter === category.name || filter === category.group_id || filter === groupName,
+  )
+}
+
+// Function to find which -c filters explicitly target an income category or its parent
+// group, by id or name. Income categories are never valid update targets, so a filter that
+// names one is a user error, not something to silently skip like the unfiltered sweep does.
+export function findIncomeFilterMatches(filters: readonly string[], groups: readonly CategoryGroup[]): string[] {
+  return filters.filter((filter) =>
+    groups.some((group) => {
+      if (group.is_income && (filter === group.id || filter === group.name)) {
+        return true
+      }
+      return group.categories.some((category) => category.is_income && (filter === category.id || filter === category.name))
+    }),
   )
 }
 
