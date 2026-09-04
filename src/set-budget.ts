@@ -29,7 +29,7 @@ interface Options {
   dryRun: boolean
 }
 
-const USAGE = `usage: set-budget.ts [-c CATEGORY]... [-i] ACTION yyyy-mm [yyyy-mm]
+const USAGE = `usage: ./actual budget set-values [-c CATEGORY]... [-i] [-n] ACTION yyyy-mm [yyyy-mm]
 
 Actions:
   ${ACTIONS.join(", ")}
@@ -44,7 +44,8 @@ Options:
                              parent category group (name or ID). Can be used multiple times.
   -i, --interactive         Ask for confirmation before each update.
   -n, --dry-run             Report what would change without writing anything.
-                             Also enabled by setting AB_DRY_RUN=true.`
+                             Also enabled by setting AB_DRY_RUN=true.
+  -h, --help                Show this message.`
 
 // Function to report a usage error and exit
 function usage(message: string): never {
@@ -72,6 +73,9 @@ function parseArguments(argv: readonly string[]): Options {
       interactive = true
     } else if (arg === "-n" || arg === "--dry-run") {
       dryRun = true
+    } else if (arg === "-h" || arg === "--help") {
+      process.stdout.write(`${USAGE}\n`)
+      process.exit(0)
     } else if (arg === "--") {
       positional.push(...argv.slice(i + 1))
       break

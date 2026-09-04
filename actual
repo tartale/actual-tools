@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${THIS_SCRIPT_DIR}"
+
+# Function to display usage and exit
+function usage() {
+  cat >&2 <<'USAGE'
+usage: ./actual COMMAND [ARGS]
+
+Commands:
+  build                     Install dependencies if needed and type-check the sources.
+  lint                      Run eslint over the TypeScript and shellcheck over the shell scripts.
+  test                      Run the unit test suite.
+
+  budget set-values ARGS    Set category budgets. See './actual budget set-values --help'.
+  budget match-uncleared ARGS
+                            Tag uncleared transactions that match a cleared one.
+
+Every command runs from the repository root, whatever directory you invoke it from.
+USAGE
+  exit 1
+}
+
+# Function to install node dependencies if they are not already present
+function ensureDependencies() {
+  if [[ ! -d node_modules ]]; then
+    echo "Installing dependencies..." >&2
+    npm install
+  fi
+}
+
+# Function to type-check the TypeScript sources
+function commandBuild() {
+  ensureDependencies
+  npm run --silent typecheck
+  echo "Build OK."
+}
+
+# Function to lint every language in the repo
+function commandLint() {
+  ensureDependencies
+  npm run --silent lint
+
+  if ! command -v shellcheck &> /dev/null; then
+    echo "Warning: shellcheck not installed; skipping shell script linting." >&2
+    return 0
+  fi
+
+  local shellScripts=()
+  while IFS= read -r script; do
+    shellScripts+=("${script}")
+  done < <(git ls-files '*.sh' actual)
+  shellcheck "${shellScripts[@]}"
+
+  echo "Lint OK."
+}
+
+# Function to run the unit tests
+function commandTest() {
+  ensureDependencies
+  npm run --silent test
+}
+
+# Function to dispatch the budget subcommands
+function commandBudget() {
+  local subcommand="${1:-}"
+  if [[ -z "${subcommand}" ]]; then
+    echo "Missing subcommand for 'budget'." >&2
+    usage
+  fi
+  shift
+
+  case "${subcommand}" in
+    set-values)
+      exec ./src/set-budget.ts "$@"
+      ;;
+    match-uncleared)
+      # Still the original bash implementation; slated for a TypeScript port.
+      exec ./match-uncleared.sh "$@"
+      ;;
+    *)
+      echo "Unknown budget subcommand: ${subcommand}" >&2
+      usage
+      ;;
+  esac
+}
+
+# Main function
+function main() {
+  local command="${1:-}"
+  if [[ -z "${command}" ]]; then
+    usage
+  fi
+  shift
+
+  case "${command}" in
+    build) commandBuild "$@" ;;
+    lint) commandLint "$@" ;;
+    test) commandTest "$@" ;;
+    budget) commandBudget "$@" ;;
+    -h|--help|help) usage ;;
+    *)
+      echo "Unknown command: ${command}" >&2
+      usage
+      ;;
+  esac
+}
+
+# Run main function with all arguments
+main "$@"

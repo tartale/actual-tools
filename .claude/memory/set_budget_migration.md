@@ -52,6 +52,10 @@ already use). Added after a live smoke test wrote a real budget value — the
 write was correct per spec and was reverted immediately, but there was no
 safe way to exercise the write path without it.
 
+All tasks now run through the `./actual` dispatcher at the repo root
+(`build`, `lint`, `test`, `budget set-values`, `budget match-uncleared`);
+`budget match-uncleared` still execs the bash script pending its port.
+
 **How to apply**: the full plan snapshot is at
 `.claude/plans/set-budget-migration.md` in the repo (the machine-local copy
 `~/.claude/plans/idempotent-scribbling-gosling.md` does not exist in the

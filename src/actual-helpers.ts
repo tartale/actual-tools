@@ -134,8 +134,8 @@ export function formatCategoryLine(month: string, status: string, budgetedCents:
 }
 
 function extractErrorMessage(body: unknown): string | undefined {
-  if (body && typeof body === "object" && "error" in body && typeof (body as { error: unknown }).error === "string") {
-    return (body as { error: string }).error
+  if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
+    return body.error
   }
   return undefined
 }

@@ -223,9 +223,15 @@ function tagPair() {
   unclearedNotes=$(echo "${unclearedTx}" | jq -r '.notes // ""')
   unclearedAmount=$(echo "${unclearedTx}" | jq -r '.amount')
 
+  # The cleared side of the pair is read but never patched: the usage text says
+  # both transactions get tagged, yet patchTransactionNote is only called for the
+  # uncleared one. Kept pending the TypeScript port rather than silently dropping
+  # these or starting to write to transactions that were never touched before.
+  # shellcheck disable=SC2034
   clearedId=$(echo "${clearedTx}"     | jq -r '.id')
   clearedDate=$(echo "${clearedTx}"   | jq -r '.date')
   clearedPayee=$(echo "${clearedTx}"  | jq -r '.imported_payee // ""')
+  # shellcheck disable=SC2034
   clearedNotes=$(echo "${clearedTx}"  | jq -r '.notes // ""')
   clearedAmount=$(echo "${clearedTx}" | jq -r '.amount')
 

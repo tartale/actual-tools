@@ -14,12 +14,24 @@ All tools read the same environment variables:
 | `AB_API_KEY`   | API key, sent as the `x-api-key` header        |
 | `AB_DRY_RUN`   | `true` to report changes without writing them  |
 
-## `src/set-budget.ts`
+## `./actual`
+
+Every task in this repo runs through one dispatcher, from any directory:
+
+```
+./actual build                       # install deps if needed, then type-check
+./actual lint                        # eslint over TypeScript, shellcheck over shell
+./actual test                        # unit tests
+./actual budget set-values ARGS      # set category budgets
+./actual budget match-uncleared ARGS # tag matching uncleared transactions
+```
+
+## `./actual budget set-values`
 
 Sets category budgets for a month, or an inclusive range of months.
 
 ```
-src/set-budget.ts [-c CATEGORY]... [-i] [-n] ACTION yyyy-mm [yyyy-mm]
+./actual budget set-values [-c CATEGORY]... [-i] [-n] ACTION yyyy-mm [yyyy-mm]
 ```
 
 Actions:
@@ -45,26 +57,30 @@ Options:
 Examples:
 
 ```sh
-./src/set-budget.ts balance 2026-08                        # zero every balance
-./src/set-budget.ts -c Groceries previous-3 2026-08        # 3-month average
-./src/set-budget.ts -n -c "Monthly Expenses (Fixed)" previous 2026-08 2026-01
+./actual budget set-values balance 2026-08                 # zero every balance
+./actual budget set-values -c Groceries previous-3 2026-08 # 3-month average
+./actual budget set-values -n -c "Monthly Expenses (Fixed)" previous 2026-08 2026-01
 ```
 
 This replaces the earlier `balance-to-zero.sh`, whose behaviour is now the
 `balance` action.
 
-## `match-uncleared.sh`
+## `./actual budget match-uncleared`
 
-Finds uncleared transactions that match a cleared one and tags the pair.
+Finds uncleared transactions that match a cleared one and tags them. Still the
+original bash implementation (`match-uncleared.sh`), slated for a TypeScript
+port; the dispatcher passes arguments straight through to it.
 
 ## Layout
 
 ```
+actual                   task dispatcher, the entry point for everything
 src/                     TypeScript sources and their tests
   actual-helpers.ts      typed Actual REST client + pure helpers
   actual-helpers.test.ts vitest unit tests
   set-budget.ts          executable CLI
-match-uncleared.sh       standalone bash tool, no shared code
+match-uncleared.sh       standalone bash tool, no shared code yet
+eslint.config.js         flat config, type-aware rules via typescript-eslint
 ```
 
 ## Development
@@ -74,7 +90,11 @@ runtime, so there is no build step and no runtime dependencies. The dev
 dependencies are only needed for checks:
 
 ```sh
-npm install
-npm run typecheck
-npm test
+./actual build
+./actual lint
+./actual test
 ```
+
+TypeScript is held at 5.x because `typescript-eslint` does not yet support the
+7.x native port (its peer range caps at `<6.1.0`). The sandbox image is pinned
+to the same major via `LANGUAGE_VERSIONS="typescript-5"`.
