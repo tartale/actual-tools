@@ -1,0 +1,2 @@
+- [set-budget migration](set_budget_migration.md) — bash→TS rewrite in progress, driven partly by a possible future FIRE forecasting add-on
+- [Actual Budget API shape](actual_budget_api_shape.md) — live REST shape of the self-hosted API these scripts call, incl. the carryover balance bug/fix
