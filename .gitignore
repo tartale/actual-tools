@@ -1,3 +1,4 @@
 .env
 .envrc
 nohub.out
+.DS_Store
