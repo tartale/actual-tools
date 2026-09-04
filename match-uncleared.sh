@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/cli-format.sh
+source "${THIS_SCRIPT_DIR}/lib/cli-format.sh"
+
 function checkDependencies() {
   if [[ -z "${AB_BASE_URL:-}" || -z "${AB_BUDGET_ID:-}" || -z "${AB_API_KEY:-}" ]]; then
     echo "Environment variables AB_BASE_URL, AB_BUDGET_ID, and AB_API_KEY must be set." >&2
@@ -31,22 +35,23 @@ function checkDependencies() {
   echo "${dateCommand}"
 }
 
+# Function to display usage and exit. Takes the exit code: 0 for an explicit --help, 1 for an error.
 function usage() {
-  cat >&2 <<EOF
-usage: ${0} [-s YYYY-MM-DD]
-
-Finds uncleared transactions that match a cleared transaction within 5 days
-and tags both with #cleared in their notes.
-
-Options:
-  -s, --since YYYY-MM-DD   Fetch transactions on or after this date (default: 14 days ago)
-
-Environment variables required:
-  AB_BASE_URL    e.g. https://actualbudget.example.com/v1
-  AB_BUDGET_ID   UUID of the budget
-  AB_API_KEY     API key for authentication
-EOF
-  exit 1
+  local exitCode="${1:-1}"
+  cliUsage "./actual budget match-uncleared [OPTIONS]"
+  echo >&2
+  echo "Finds uncleared transactions that match a cleared transaction within 5 days" >&2
+  echo "and tags both with #cleared in their notes." >&2
+  echo >&2
+  cliSection "Options" \
+    "-s, --since YYYY-MM-DD" "Fetch transactions on or after this date (default: 14 days ago)." \
+    "-h, --help" "Show this message and exit."
+  echo >&2
+  cliSection "Environment variables required" \
+    "AB_BASE_URL" "e.g. https://actualbudget.example.com/v1" \
+    "AB_BUDGET_ID" "UUID of the budget" \
+    "AB_API_KEY" "API key for authentication"
+  exit "${exitCode}"
 }
 
 function validateDateFormat() {
@@ -71,6 +76,9 @@ function parseArguments() {
         fi
         PARSE_SINCE_DATE="$1"
         validateDateFormat "${PARSE_SINCE_DATE}" "--since"
+        ;;
+      -h|--help)
+        usage 0
         ;;
       -*)
         echo "Unknown option: $1" >&2

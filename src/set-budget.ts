@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import {
-  ACTIONS,
   HISTORY_MONTHS,
   computeBalanceBudget,
   computeHistoricalBudget,
@@ -20,6 +19,8 @@ import {
   validateMonthFormat,
 } from "./actual-helpers.ts"
 import type { Action, CategoryMonth } from "./actual-helpers.ts"
+import { renderHelp } from "./cli-format.ts"
+import type { HelpPage } from "./cli-format.ts"
 
 interface Options {
   action: Action
@@ -30,27 +31,41 @@ interface Options {
   dryRun: boolean
 }
 
-const USAGE = `usage: ./actual budget set-values [-c CATEGORY]... [-i] [-n] ACTION yyyy-mm [yyyy-mm]
-
-Actions:
-  ${ACTIONS.join(", ")}
-
-  balance       Set the budget so the category's balance for the month becomes zero.
-  previous      Set the budget to the previous month's actual spending.
-  previous-3    Set the budget to the average actual spending of the previous 3 months.
-  previous-12   Set the budget to the average actual spending of the previous 12 months.
-
-Options:
-  -c, --category CATEGORY   Only update categories matching the specified category or
-                             parent category group (name or ID). Can be used multiple times.
-  -i, --interactive         Ask for confirmation before each update.
-  -n, --dry-run             Report what would change without writing anything.
-                             Also enabled by setting DRY_RUN=true.
-  -h, --help                Show this message.`
+const HELP_PAGE: HelpPage = {
+  usage: "./actual budget set-values [OPTIONS] ACTION START_MONTH [END_MONTH]",
+  description: "Sets category budgets for a month, or an inclusive range of months.",
+  sections: [
+    {
+      label: "Actions",
+      entries: [
+        { name: "balance", description: "Set the budget so the category's balance for the month becomes zero." },
+        { name: "previous", description: "Set the budget to the previous month's actual spending." },
+        { name: "previous-3", description: "Set the budget to the average actual spending of the previous 3 months." },
+        { name: "previous-12", description: "Set the budget to the average actual spending of the previous 12 months." },
+      ],
+    },
+    {
+      label: "Options",
+      entries: [
+        {
+          name: "-c, --category CATEGORY",
+          description:
+            "Only update categories matching this category or parent category group (name or ID). Can be used multiple times.",
+        },
+        { name: "-i, --interactive", description: "Ask for confirmation before each update." },
+        {
+          name: "-n, --dry-run",
+          description: "Report what would change without writing anything. Also enabled by setting DRY_RUN=true.",
+        },
+        { name: "-h, --help", description: "Show this message and exit." },
+      ],
+    },
+  ],
+}
 
 // Function to report a usage error and exit
 function usage(message: string): never {
-  process.stderr.write(`${message}\n${USAGE}\n`)
+  process.stderr.write(`${message}\n\n${renderHelp(process.stderr, HELP_PAGE)}\n`)
   process.exit(1)
 }
 
@@ -75,7 +90,7 @@ function parseArguments(argv: readonly string[]): Options {
     } else if (arg === "-n" || arg === "--dry-run") {
       dryRun = true
     } else if (arg === "-h" || arg === "--help") {
-      process.stdout.write(`${USAGE}\n`)
+      process.stdout.write(`${renderHelp(process.stdout, HELP_PAGE)}\n`)
       process.exit(0)
     } else if (arg === "--") {
       positional.push(...argv.slice(i + 1))

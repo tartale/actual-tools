@@ -80,13 +80,22 @@ port; the dispatcher passes arguments straight through to it.
 
 ```
 actual                   task dispatcher, the entry point for everything
+lib/cli-format.sh        shared bash help-text formatting, used by actual and match-uncleared.sh
 src/                     TypeScript sources and their tests
   actual-helpers.ts      typed Actual REST client + pure helpers
-  actual-helpers.test.ts vitest unit tests
+  cli-format.ts          shared TypeScript help-text formatting
   set-budget.ts          executable CLI
-match-uncleared.sh       standalone bash tool, no shared code yet
+  *.test.ts              vitest unit tests
+match-uncleared.sh       standalone bash tool
 eslint.config.js         flat config, type-aware rules via typescript-eslint
 ```
+
+Every `--help` in this repo (`./actual`, `./actual budget`, and each subcommand)
+renders in the same style: a bold `Usage:` line and labelled sections, colour
+applied only when the output is a real terminal (never when piped or
+redirected). `src/cli-format.ts` does this for the TypeScript CLI via
+`node:util`'s built-in `styleText`; `lib/cli-format.sh` does the bash
+equivalent for `actual` and `match-uncleared.sh`. Neither needs a dependency.
 
 ## Development
 

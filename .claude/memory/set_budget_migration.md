@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-04T22:40:50.228Z
+  modified: 2026-09-04T23:06:00.381Z
 ---
 
 `balance-to-zero.sh` is being fully replaced (no backward compat) by
@@ -67,6 +67,26 @@ fail-fast error via `findIncomeFilterMatches`, checked before any month data
 is fetched — the user wants a no-filter sweep to skip income silently, but
 an explicit filter naming income to be a hard, immediate error rather than a
 silent no-op.
+
+**Every `--help` in this repo shares one typer/rich-inspired look** (2026-09-04),
+per the user's request: a bold `Usage:` line, then labelled `─ Section ────`
+rules with a name/description column aligned per-section. Checked for an
+existing Node library first (per the user's explicit preference to reuse one
+over hand-rolling); none matched without a real downside — `citty` was
+closest but doesn't auto-detect non-TTY output (colour leaks into redirected
+files unless the caller sets `NO_COLOR`), and the framework-style libraries
+(commander, gunshi) don't produce this layout by default at all. Landed on
+hand-rolling with zero new dependencies: `src/cli-format.ts` (`renderHelp`)
+for the TypeScript CLI, using `node:util`'s built-in `styleText` — confirmed
+it does per-stream TTY/color-depth detection correctly on its own (stdout and
+stderr judged independently), so no manual TTY-check code was needed there.
+`lib/cli-format.sh` is the bash equivalent (`cliUsage`/`cliRule`/`cliSection`),
+sourced by both `actual` and `match-uncleared.sh`, checking `[[ -t 2 ]]` and
+`NO_COLOR` by hand since bash has no equivalent built-in. `./actual budget`
+gained its own `--help` (a "Subcommands" list) where before it only errored
+with no subcommand given. Along the way, fixed `-h`/`--help` to exit 0 (was
+exiting 1, i.e. treated as an error) in `actual` and added `-h`/`--help` to
+`match-uncleared.sh`, which previously had no help flag at all.
 
 **How to apply**: the full plan snapshot is at
 `.claude/plans/set-budget-migration.md` in the repo (the machine-local copy
