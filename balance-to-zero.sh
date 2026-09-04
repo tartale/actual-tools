@@ -24,6 +24,7 @@ function checkDependencies() {
   if [[ ${osName} == "Darwin" ]]; then
     if ! command -v gdate &> /dev/null; then
       echo "gdate is required but not installed. Please install gdate." >&2
+      echo "brew install coreutils" >&2
       exit 1
     fi
     dateCommand="gdate"
@@ -37,7 +38,8 @@ function usage() {
 usage: ${0} [-c CATEGORY]... [-i] yyyy-mm [yyyy-mm]
 
 Options:
-  -c, --category CATEGORY   Only update the specified category name or ID. Can be used multiple times.
+  -c, --category CATEGORY   Only update categories matching the specified category or
+                             parent category group (name or ID). Can be used multiple times.
   -i, --interactive         Ask for confirmation before each update.
 EOF
   exit 1
@@ -98,16 +100,50 @@ function validateMonthFormat() {
   fi
 }
 
+# Function to fetch category groups (parent categories) and index them by ID
+function fetchCategoryGroups() {
+  local response
+  response=$(curl -sS -X GET \
+    "${BASE_URL}/budgets/${BUDGET_ID}/categorygroups" \
+    -H "accept: application/json" \
+    -H "x-api-key: ${API_KEY}")
+
+  if ! echo "${response}" | jq -e '(.data | type) == "array"' > /dev/null 2>&1; then
+    local errorMessage
+    errorMessage=$(echo "${response}" | jq -r '.error // "unexpected response from API"' 2>/dev/null || echo "invalid JSON response")
+    echo "Error: could not fetch category groups: ${errorMessage}" >&2
+    exit 1
+  fi
+
+  declare -gA GROUP_NAME_BY_ID=()
+  while read -r group; do
+    local groupId=$(echo "${group}" | jq -r '.id')
+    local groupName=$(echo "${group}" | jq -r '.name')
+    GROUP_NAME_BY_ID["$groupId"]="$groupName"
+  done < <(echo "${response}" | jq -c '.data[]')
+}
+
+# Function to format a cent amount as a USD string, e.g. -415295 -> -$4152.95
+function formatUsd() {
+  local cents="$1"
+  awk -v c="$cents" 'BEGIN {
+    if (c < 0) { printf "-$%.2f", -c / 100 } else { printf "$%.2f", c / 100 }
+  }'
+}
+
 # Function to determine whether a category should be updated
 function shouldUpdateCategory() {
   local id="$1"
   local name="$2"
+  local groupId="$3"
   if [[ ${#PARSE_CATEGORIES[@]} -eq 0 ]]; then
     return 0
   fi
 
+  local groupName="${GROUP_NAME_BY_ID[$groupId]:-}"
+
   for filter in "${PARSE_CATEGORIES[@]}"; do
-    if [[ "$filter" == "$id" || "$filter" == "$name" ]]; then
+    if [[ "$filter" == "$id" || "$filter" == "$name" || "$filter" == "$groupId" || "$filter" == "$groupName" ]]; then
       return 0
     fi
   done
@@ -124,9 +160,19 @@ function confirmUpdate() {
     return 0
   fi
 
+  if [[ ! -r /dev/tty ]]; then
+    echo "Error: --interactive requires a terminal for confirmation." >&2
+    return 1
+  fi
+
   while true; do
-    echo -n "Confirm update for month ${month}, category ${name}, new value ${new_budgeted}? [y/N] "
-    read -r answer < /dev/tty
+    printf "Confirm update for month %s, category %s, new value %s? [y/N] " \
+      "${month}" "${name}" "$(formatUsd "${new_budgeted}")" >&2
+    if ! read -r answer < /dev/tty; then
+      echo >&2
+      echo "Error: could not read interactive confirmation." >&2
+      return 1
+    fi
     case "$(echo "$answer" | tr '[:upper:]' '[:lower:]')" in
       y|yes)
         return 0
@@ -150,6 +196,7 @@ function updateCategory() {
   local budgeted="$4"
   local spent="$5"
   local balance="$6"
+  local groupId="$7"
 
   if [[ -z "${spent}" || "${spent}" == "null" ]]; then
     return
@@ -158,13 +205,13 @@ function updateCategory() {
     return
   fi
 
-  if ! shouldUpdateCategory "$id" "$name"; then
+  if ! shouldUpdateCategory "$id" "$name" "$groupId"; then
     return
   fi
 
   local new_budgeted=$(( spent * -1 ))
   if [[ "${new_budgeted}" == "${budgeted}" ]]; then
-    echo "No update needed for category; month: ${month}; name: ${name}; budgeted = ${budgeted}"
+    echo "No update needed for category; month: ${month}; name: ${name}; budgeted = $(formatUsd "${budgeted}")"
     return
   fi
 
@@ -172,7 +219,7 @@ function updateCategory() {
     return
   fi
 
-  echo "Updating category; month: ${month}; name: ${name}; setting budgeted = ${new_budgeted}"
+  echo "Updating category; month: ${month}; name: ${name}; setting budgeted = $(formatUsd "${new_budgeted}")"
 
   curl -s -X PATCH \
     "${BASE_URL}/budgets/${BUDGET_ID}/months/${month}/categories/${id}" \
@@ -187,20 +234,29 @@ function updateCategory() {
 # Function to process categories for a given month
 function processMonth() {
   local month="$1"
-  local response=$(curl -s -X GET \
+  local response
+  response=$(curl -sS -X GET \
     "${BASE_URL}/budgets/${BUDGET_ID}/months/${month}/categories" \
     -H "accept: application/json" \
     -H "x-api-key: ${API_KEY}")
 
-  echo "${response}" | jq -c '.data | .[]' | while read -r category; do
+  if ! echo "${response}" | jq -e '(.data | type) == "array"' > /dev/null 2>&1; then
+    local errorMessage
+    errorMessage=$(echo "${response}" | jq -r '.error // "unexpected response from API"' 2>/dev/null || echo "invalid JSON response")
+    echo "Error: could not fetch categories for month ${month}: ${errorMessage}" >&2
+    return 1
+  fi
+
+  while read -r category; do
     local id=$(echo "${category}" | jq -r '.id')
     local name=$(echo "${category}" | jq -r '.name')
     local budgeted=$(echo "${category}" | jq -r '.budgeted')
     local spent=$(echo "${category}" | jq -r '.spent')
     local balance=$(echo "$category" | jq -r '.balance')
+    local groupId=$(echo "${category}" | jq -r '.group_id')
 
-    updateCategory "$month" "$id" "$name" "$budgeted" "$spent" "$balance"
-  done
+    updateCategory "$month" "$id" "$name" "$budgeted" "$spent" "$balance" "$groupId"
+  done < <(echo "${response}" | jq -c '.data[]')
 
   echo "All categories updated for month ${month}."
 }
@@ -209,6 +265,12 @@ function processMonth() {
 function main() {
   local dateCommand=$(checkDependencies)
   parseArguments "$@"
+
+  declare -gA GROUP_NAME_BY_ID=()
+  if [[ ${#PARSE_CATEGORIES[@]} -gt 0 ]]; then
+    fetchCategoryGroups
+  fi
+
   local startMonth="${PARSE_START_MONTH}"
   local endMonth="${PARSE_END_MONTH}"
 
