@@ -131,6 +131,21 @@ function formatUsd() {
   }'
 }
 
+# Function to print a consistently formatted category status line
+function printCategoryLine() {
+  local month="$1"
+  local status="$2"
+  local budgeted="$3"
+  local balance="$4"
+  local name="$5"
+
+  local statusCol budgetedCol balanceCol
+  printf -v statusCol '%-18s' "$status"
+  printf -v budgetedCol '%-11s' "$(formatUsd "${budgeted}")"
+  printf -v balanceCol '%-11s' "$(formatUsd "${balance}")"
+  echo "${statusCol}; month: ${month}; budgeted = ${budgetedCol}; balance = ${balanceCol}; name: ${name}"
+}
+
 # Function to determine whether a category should be updated
 function shouldUpdateCategory() {
   local id="$1"
@@ -156,6 +171,8 @@ function confirmUpdate() {
   local month="$1"
   local name="$2"
   local new_budgeted="$3"
+  local budgeted="$4"
+  local balance="$5"
   if [[ "$PARSE_INTERACTIVE" != "true" ]]; then
     return 0
   fi
@@ -178,7 +195,7 @@ function confirmUpdate() {
         return 0
         ;;
       n|no|"")
-        echo "Skipping category; month: ${month}; name: ${name}"
+        printCategoryLine "$month" "Update skipped" "$budgeted" "$balance" "$name"
         return 1
         ;;
       *)
@@ -211,18 +228,15 @@ function updateCategory() {
 
   local new_budgeted=$(( budgeted - balance ))
   if [[ "${new_budgeted}" == "${budgeted}" ]]; then
-    local budgetedCol balanceCol
-    printf -v budgetedCol '%-12s' "$(formatUsd "${budgeted}")"
-    printf -v balanceCol '%-12s' "$(formatUsd "${balance}")"
-    echo "No update needed for category; budgeted = ${budgetedCol}; balance = ${balanceCol}; name: ${name}; month: ${month}"
+    printCategoryLine "$month" "Update not needed" "$budgeted" "$balance" "$name"
     return
   fi
 
-  if ! confirmUpdate "$month" "$name" "$new_budgeted"; then
+  if ! confirmUpdate "$month" "$name" "$new_budgeted" "$budgeted" "$balance"; then
     return
   fi
 
-  echo "Updating category; month: ${month}; name: ${name}; setting budgeted = $(formatUsd "${new_budgeted}")"
+  printCategoryLine "$month" "Update applied" "$new_budgeted" "$balance" "$name"
 
   curl -s -X PATCH \
     "${BASE_URL}/budgets/${BUDGET_ID}/months/${month}/categories/${id}" \
