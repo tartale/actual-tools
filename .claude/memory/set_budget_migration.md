@@ -47,7 +47,7 @@ four actions plus category/group filtering were verified live against the
 real budget.
 
 One addition beyond the original plan: a `-n`/`--dry-run` flag that also
-honours `AB_DRY_RUN=true` (the convention `match-uncleared.sh` and `.envrc`
+honours `DRY_RUN=true` (the convention `match-uncleared.sh` and `.envrc`
 already use). Added after a live smoke test wrote a real budget value — the
 write was correct per spec and was reverted immediately, but there was no
 safe way to exercise the write path without it.

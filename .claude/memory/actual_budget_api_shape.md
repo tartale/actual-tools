@@ -13,8 +13,9 @@ self-hosted "actualbudget-api"-style REST wrapper (`.../v1`), not the
 official `@actual-app/api` package. Both `src/set-budget.ts` (which replaced `balance-to-zero.sh`, see
 [[set-budget-migration]]) and `match-uncleared.sh` talk to it with the
 `x-api-key` header. The unprefixed `BASE_URL`/`BUDGET_ID`/`API_KEY` names
-were retired on 2026-09-04; everything is `AB_`-prefixed now, including
-`AB_DRY_RUN`.
+were retired on 2026-09-04. `DRY_RUN` (unprefixed) was deliberately kept
+un-namespaced per the user: they use `DRY_RUN` as a universal convention
+across every tool they build, not specific to this project.
 
 Confirmed live shape (all amounts in cents):
 - `GET /budgets/{budgetId}/categorygroups` → `{ data: [{ id, name,

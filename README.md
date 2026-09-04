@@ -12,7 +12,7 @@ All tools read the same environment variables:
 | `AB_BASE_URL`  | API base URL, e.g. `http://host:5007/v1`       |
 | `AB_BUDGET_ID` | Budget (sync) ID                               |
 | `AB_API_KEY`   | API key, sent as the `x-api-key` header        |
-| `AB_DRY_RUN`   | `true` to report changes without writing them  |
+| `DRY_RUN`   | `true` to report changes without writing them  |
 
 ## `./actual`
 
