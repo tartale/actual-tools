@@ -155,7 +155,7 @@ session, and writes it to `config.json`. Replaces the old
 longer flow, not the whole thing).
 
 ```
-./actual configure [-f PATH] [-d PATH]
+./actual configure [-f PATH] [-d PATH] [-i PATH]
 ```
 
 - `-f`, `--config PATH` — path to the config file to read defaults from and
@@ -163,6 +163,9 @@ longer flow, not the whole thing).
 - `-d`, `--dashboard PATH` — path to a previously generated dashboard JSON
   (default: `fire-dashboard.json`) — see "Picking up dashboard changes"
   below.
+- `-i`, `--irs-limits PATH` — path to the IRS contribution limits reference
+  file (default: `irs-limits.json`) — see "IRS contribution limits" below.
+  Missing is fine; that context is just skipped.
 
 ### Account classification
 
@@ -201,6 +204,13 @@ both used by the Monte Carlo widget:
 What's an estimate of the stock/bond mix for this account? [2: equity-80]:
 Monthly contribution to this account, in dollars (0 for none) [0]:
 ```
+
+For a retirement or HSA account, the contribution question is preceded by
+the current IRS annual contribution limit(s) for reference (see "IRS
+contribution limits" below) — e.g. for a `retirement-tax-deferred` account,
+since that category covers both a 401(k)-type plan and a traditional IRA
+and this tool can't tell which one a given account actually is, both limits
+are shown so you can pick the one that applies.
 
 Every run rewrites the account list from scratch, covering every
 currently-open account — running it again is the normal way to fix a wrong
@@ -290,6 +300,31 @@ the missing sections are just treated as unconfigured and backfilled with
 the defaults shown above. This is structured, personal data, so it's a
 separate file rather than more `AB_*` environment variables. You won't
 normally hand-edit it — `./actual configure` both reads and writes it.
+
+### IRS contribution limits
+
+`irs-limits.json` (committed — it's generic reference data, not personal)
+holds this tax year's annual contribution limits, shown next to the
+monthly-contribution question for retirement/HSA accounts:
+
+```json
+{
+  "taxYear": 2026,
+  "source": "https://www.irs.gov/newsroom/401k-limit-increases-to-24500-for-2026-ira-limit-increases-to-7500 (401k/IRA) and IRS Revenue Procedure 2025-19 (HSA)",
+  "employerPlan": { "standard": 2450000, "catchUp50": 800000, "catchUp60to63": 1125000 },
+  "ira": { "standard": 750000, "catchUp50": 110000 },
+  "hsa": { "selfOnly": 440000, "family": 875000, "catchUp55": 100000 }
+}
+```
+
+There's no IRS API for this data — only annual news releases and Revenue
+Procedure PDFs — so it's a small, hand-updated file rather than fetched
+live. `configure` warns if the calendar year has moved past `taxYear`
+rather than silently showing outdated figures. Missing or malformed is
+never fatal — this is advisory context for a prompt, not required data —
+it just means that context is skipped. To refresh it for a new tax year,
+ask an assistant to re-verify the figures against irs.gov (a real lookup,
+not a guess) and update the file.
 
 ## `./actual reports fire`
 
@@ -396,6 +431,7 @@ src/                     TypeScript sources and their tests
   cli-format.ts          shared TypeScript help-text formatting
   fire-accounts.ts       account classification (heuristics + config.json overrides) and the FireConfig schema
   fire-dashboard.ts      builds Actual-native dashboard widget JSON (vendored widget types) + two-way config/dashboard merge
+  irs-limits.ts          loads irs-limits.json, the IRS contribution limits reference file
   set-budget.ts          executable CLI
   anomalies.ts           executable CLI
   match-uncleared.ts     executable CLI

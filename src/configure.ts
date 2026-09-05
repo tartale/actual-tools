@@ -31,9 +31,11 @@ import {
   traitsForCategory,
   writeFireConfig,
 } from "./fire-accounts.ts"
-import type { FireAccountOverride, FireConfig } from "./fire-accounts.ts"
+import type { FireAccountCategory, FireAccountOverride, FireConfig } from "./fire-accounts.ts"
 import { extractConfigFromDashboard } from "./fire-dashboard.ts"
 import type { ExistingDashboard, MonteCarloTaxBandMeta, MonteCarloWithdrawalRuleMeta } from "./fire-dashboard.ts"
+import { DEFAULT_IRS_LIMITS_PATH, isIrsLimitsStale, loadIrsLimits } from "./irs-limits.ts"
+import type { IrsLimits } from "./irs-limits.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
 
@@ -47,6 +49,7 @@ const DEFAULT_DASHBOARD_PATH = "fire-dashboard.json"
 interface Options {
   configPath: string
   dashboardPath: string
+  irsLimitsPath: string
 }
 
 const HELP_PAGE: HelpPage = {
@@ -71,10 +74,24 @@ const HELP_PAGE: HelpPage = {
             `Path to a previously generated dashboard JSON (default: ${DEFAULT_DASHBOARD_PATH}) -- if it looks newer ` +
             "than the config file, offers to import its assumptions first.",
         },
+        {
+          name: "-i, --irs-limits PATH",
+          description:
+            `Path to the IRS contribution limits reference file (default: ${DEFAULT_IRS_LIMITS_PATH}) -- shown next to ` +
+            "retirement/HSA contribution questions. Missing is fine, just skips that context.",
+        },
         { name: "-h, --help", description: "Show this message and exit." },
       ],
     },
   ],
+}
+
+// Function to print a line of context before a question -- the CLI equivalent of the "?" tooltip
+// Actual's own configuration UI shows next to each of these fields. Wording below is adapted from
+// that real tooltip text (Crossover.tsx, MonteCarloConfiguration.tsx, and friends), not invented,
+// so the explanation here matches what a person would see clicking the same field in Actual itself.
+function explain(text: string): void {
+  process.stderr.write(`${text}\n`)
 }
 
 // Function to report a usage error and exit
@@ -87,6 +104,7 @@ function usage(message: string): never {
 function parseArguments(argv: readonly string[]): Options {
   let configPath = DEFAULT_CONFIG_PATH
   let dashboardPath = DEFAULT_DASHBOARD_PATH
+  let irsLimitsPath = DEFAULT_IRS_LIMITS_PATH
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string
@@ -104,6 +122,13 @@ function parseArguments(argv: readonly string[]): Options {
       }
       dashboardPath = value
       i++
+    } else if (arg === "-i" || arg === "--irs-limits") {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith("-")) {
+        usage("Missing argument for --irs-limits")
+      }
+      irsLimitsPath = value
+      i++
     } else if (arg === "-h" || arg === "--help") {
       process.stdout.write(`${renderHelp(process.stdout, HELP_PAGE)}\n`)
       process.exit(0)
@@ -112,7 +137,7 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  return { configPath, dashboardPath }
+  return { configPath, dashboardPath, irsLimitsPath }
 }
 
 // Function to read a dashboard JSON file, tolerating anything that doesn't parse as one -- this is
@@ -155,11 +180,49 @@ async function maybeImportFromDashboard(tty: TtyInterface, configPath: string, d
   return importIt ? extractConfigFromDashboard(dashboard, config) : config
 }
 
+// Function to print the relevant IRS annual contribution limit(s) as reference context before the
+// monthly-contribution question, for the categories that actually have an IRS limit. "retirement-
+// tax-deferred"/"retirement-roth" cover both an employer plan (401(k)/403(b)/etc.) and an IRA --
+// this tool's heuristic can't tell which one a given account actually is, so both are shown and
+// the person picks the number that applies. No-op if the reference file isn't present -- this is
+// advisory context, never required.
+function explainIrsLimits(category: FireAccountCategory, limits: IrsLimits | null): void {
+  if (limits === null) {
+    return
+  }
+  const staleWarning = isIrsLimitsStale(limits) ? ` -- these are ${limits.taxYear} figures and may be out of date` : ""
+  const employerPlanLine =
+    `401(k)/403(b)/457/TSP ${formatUsd(limits.employerPlan.standard)}/yr ` +
+    `(${formatUsd(limits.employerPlan.standard + limits.employerPlan.catchUp50)} if 50-59 or 64+, ` +
+    `${formatUsd(limits.employerPlan.standard + limits.employerPlan.catchUp60to63)} if 60-63)`
+  const iraLine = `IRA ${formatUsd(limits.ira.standard)}/yr (${formatUsd(limits.ira.standard + limits.ira.catchUp50)} if 50+)`
+
+  if (category === "retirement-tax-deferred") {
+    explain(`IRS ${limits.taxYear} annual limit, whichever this account actually is${staleWarning}: ${employerPlanLine}; Traditional ${iraLine}.`)
+  } else if (category === "retirement-roth") {
+    explain(
+      `IRS ${limits.taxYear} annual limit${staleWarning}: Roth ${iraLine} (income limits may reduce or eliminate eligibility); ` +
+        `Roth 401(k) shares the employer-plan limit with a traditional 401(k): ${employerPlanLine}.`,
+    )
+  } else if (category === "hsa") {
+    explain(
+      `IRS ${limits.taxYear} annual limit${staleWarning}: ${formatUsd(limits.hsa.selfOnly)}/yr self-only coverage, ` +
+        `${formatUsd(limits.hsa.family)}/yr family coverage (+${formatUsd(limits.hsa.catchUp55)} if 55+).`,
+    )
+  }
+}
+
 // Function to interactively classify one account: shows its name and balance, offers an existing
 // override or an inferred heuristic guess as the default (in that order of preference), and forces
 // an explicit choice when neither is available. Portfolio accounts additionally get an allocation
 // and a monthly contribution question.
-async function classifyOneAccount(tty: TtyInterface, account: Account, balanceCents: number, existingConfig: FireConfig): Promise<FireAccountOverride> {
+async function classifyOneAccount(
+  tty: TtyInterface,
+  account: Account,
+  balanceCents: number,
+  existingConfig: FireConfig,
+  irsLimits: IrsLimits | null,
+): Promise<FireAccountOverride> {
   const override = findOverride(account, existingConfig)
   const heuristic = classifyByHeuristic(account.name)
   const defaultCategory = override?.category ?? heuristic?.category ?? null
@@ -194,6 +257,8 @@ async function classifyOneAccount(tty: TtyInterface, account: Account, balanceCe
     )
     allocationPreset = MONTE_CARLO_ALLOCATION_PRESETS[presetIndex] as (typeof MONTE_CARLO_ALLOCATION_PRESETS)[number]
 
+    explain("Paid in at the start of each year (grown to an annual amount) and invested alongside the account's own balance from then on.")
+    explainIrsLimits(category, irsLimits)
     const defaultMonthlyDollars = carryOver?.monthlyContribution ? carryOver.monthlyContribution / 100 : 0
     const monthlyDollars = await promptNumber(tty, "Monthly contribution to this account, in dollars (0 for none)", defaultMonthlyDollars)
     monthlyContribution = monthlyDollars > 0 ? Math.round(monthlyDollars * 100) : undefined
@@ -240,11 +305,22 @@ async function askPlanToAge(tty: TtyInterface, existing: FireConfig): Promise<nu
 async function askCrossoverAssumptions(tty: TtyInterface, existing: FireConfig): Promise<FireConfig["crossover"]> {
   const current = existing.crossover
 
-  const safeWithdrawalRatePct = await promptNumber(tty, "\nSafe withdrawal rate, as a percent (e.g. 4 for 4%)", current.safeWithdrawalRate * 100)
-  const estimatedReturnPct = await promptNumber(
-    tty,
-    "Estimated annual return, as a percent (0 to let Actual compute its own historical estimate)",
-    current.estimatedReturn === null ? 0 : current.estimatedReturn * 100,
+  explain(
+    "\nSafe withdrawal rate: the amount you plan to withdraw from your investable portfolio each " +
+      "year to fund your living expenses (see the \"4% rule\").",
+  )
+  const safeWithdrawalRatePct = await promptNumber(tty, "Safe withdrawal rate, as a percent (e.g. 4 for 4%)", current.safeWithdrawalRate * 100)
+
+  explain(
+    "Estimated return: the expected annual return rate for your investments, used to project " +
+      "portfolio growth. Leave at 0 to let Actual compute its own historical estimate instead.",
+  )
+  const estimatedReturnPct = await promptNumber(tty, "Estimated annual return, as a percent (0 for Actual's own estimate)", current.estimatedReturn === null ? 0 : current.estimatedReturn * 100)
+
+  explain(
+    "Expense projection method -- how past expenses are projected into the future. Hampel " +
+      "Filtered Median: filters out outliers before taking the median. Median: uses the median " +
+      "without filtering. Mean: uses the plain average.",
   )
   const projectionTypeIndex = await promptChoice(
     tty,
@@ -252,14 +328,22 @@ async function askCrossoverAssumptions(tty: TtyInterface, existing: FireConfig):
     CROSSOVER_PROJECTION_TYPES,
     CROSSOVER_PROJECTION_TYPES.indexOf(current.projectionType),
   )
-  const expenseAdjustmentFactor = await promptNumber(tty, "Expense adjustment factor (1 = use expenses as-is)", current.expenseAdjustmentFactor)
+
+  explain(
+    "Target income, as a percent of your projected expenses (Actual's own label for this field). " +
+      "100 = plan for retirement income equal to your projected expenses. Above 100 = plan to " +
+      "spend more in retirement (e.g. 110 pads expenses by 10%). Below 100 = plan to spend less " +
+      "(e.g. 90, if you expect no more commuting or a paid-off mortgage).",
+  )
+  const expenseAdjustmentFactorPct = await promptNumber(tty, "Target income, as a percent of projected expenses", current.expenseAdjustmentFactor * 100)
+
   const showHiddenCategories = await confirmOnTty(tty, "Show hidden categories in the category selector?", current.showHiddenCategories)
 
   return {
     safeWithdrawalRate: safeWithdrawalRatePct / 100,
     estimatedReturn: estimatedReturnPct > 0 ? estimatedReturnPct / 100 : null,
     projectionType: CROSSOVER_PROJECTION_TYPES[projectionTypeIndex] as (typeof CROSSOVER_PROJECTION_TYPES)[number],
-    expenseAdjustmentFactor,
+    expenseAdjustmentFactor: expenseAdjustmentFactorPct / 100,
     showHiddenCategories,
   }
 }
@@ -279,6 +363,12 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
     return { type }
   }
   if (type === "guardrails") {
+    explain(
+      "Guardrails (Guyton-Klinger). Capital preservation rule: if the withdrawal rate rises more " +
+        "than the trigger above the planned rate, cut withdrawals by the cut percent. Prosperity " +
+        "rule: if the rate falls more than the trigger below the planned rate, raise withdrawals " +
+        "by the increase percent.",
+    )
     const prosperityTriggerPct = await promptNumber(tty, "Prosperity trigger, as a percent below the initial rate", (current.prosperityTriggerPct ?? 0.2) * 100)
     const prosperityIncreasePct = await promptNumber(tty, "Prosperity increase, as a percent", (current.prosperityIncreasePct ?? 0.1) * 100)
     const preservationTriggerPct = await promptNumber(tty, "Preservation trigger, as a percent above the initial rate", (current.preservationTriggerPct ?? 0.2) * 100)
@@ -292,17 +382,31 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
     }
   }
   if (type === "ratcheting") {
+    explain(
+      "Ratcheting (Kitces). If the accessible balance stays above the threshold multiple of its " +
+        "starting level for this many years in a row, raise withdrawals by the increase percent.",
+    )
     const balanceThresholdMultiple = await promptNumber(tty, "Balance threshold multiple (e.g. 1.5 = 150% of initial)", current.balanceThresholdMultiple ?? 1.5)
     const consecutiveYears = await promptNumber(tty, "Consecutive years above threshold before ratcheting up", current.consecutiveYears ?? 3)
     const ratchetIncreasePct = await promptNumber(tty, "Ratchet increase, as a percent", (current.ratchetIncreasePct ?? 0.05) * 100)
     return { type, balanceThresholdMultiple, consecutiveYears, ratchetIncreasePct: ratchetIncreasePct / 100 }
   }
   if (type === "floor-ceiling") {
+    explain(
+      "Floor & ceiling (Bengen). Each year, withdraw the starting rate's share of the current " +
+        "accessible balance, but never more than the ceiling above, or less than the floor below, " +
+        "the inflation-adjusted planned amount.",
+    )
     const floorPct = await promptNumber(tty, "Floor, as a percent below the inflation-adjusted initial withdrawal", (current.floorPct ?? 0.15) * 100)
     const ceilingPct = await promptNumber(tty, "Ceiling, as a percent above the inflation-adjusted initial withdrawal", (current.ceilingPct ?? 0.2) * 100)
     return { type, floorPct: floorPct / 100, ceilingPct: ceilingPct / 100 }
   }
   // boundaries
+  explain(
+    "Boundaries. If the withdrawal rate rises above the upper threshold, cut withdrawals by the " +
+      "upper cut percent. If it falls below the lower threshold, raise withdrawals by the lower " +
+      "increase percent.",
+  )
   const upperRateThreshold = await promptNumber(tty, "Upper withdrawal-rate threshold, as a percent", (current.upperRateThreshold ?? 0.06) * 100)
   const upperCutPct = await promptNumber(tty, "Cut when the upper threshold is hit, as a percent", (current.upperCutPct ?? 0.1) * 100)
   const lowerRateThreshold = await promptNumber(tty, "Lower withdrawal-rate threshold, as a percent", (current.lowerRateThreshold ?? 0.04) * 100)
@@ -337,31 +441,65 @@ async function askTaxBands(tty: TtyInterface, existing: readonly MonteCarloTaxBa
 async function askMonteCarloAssumptions(tty: TtyInterface, existing: FireConfig): Promise<FireConfig["monteCarlo"]> {
   const current = existing.monteCarlo
 
+  explain(
+    "\nWithdrawal strategy -- how the annual withdrawal is taken when you have more than one pot. " +
+      "Proportional: split across pots based on their current balances. Sequential: drain the " +
+      "first pot before touching the next. Best performer first: each year, drain the pot with " +
+      "the highest return last year (spend cash after a crash, stocks in boom years). Target mix: " +
+      "withdraw from whichever pots have grown above their share of your starting mix, pulling the " +
+      "portfolio back toward it. A pot not yet at its access age is always skipped until it unlocks.",
+  )
   const strategyIndex = await promptChoice(
     tty,
-    "\nWithdrawal strategy across pots",
+    "Withdrawal strategy across pots",
     MONTE_CARLO_WITHDRAWAL_STRATEGIES,
     MONTE_CARLO_WITHDRAWAL_STRATEGIES.indexOf(current.withdrawalStrategy),
   )
   const withdrawalStrategy = MONTE_CARLO_WITHDRAWAL_STRATEGIES[strategyIndex] as (typeof MONTE_CARLO_WITHDRAWAL_STRATEGIES)[number]
 
+  explain(
+    "Return model -- how each simulated year's investment return is generated. Normal: drawn from " +
+      "a normal distribution around each pot's expected return and volatility. Historical, " +
+      "shuffled: drawn from actual US market years (1928 onwards) in random order. Historical " +
+      "sequences: replays real market history, one scenario per starting year.",
+  )
   const returnModelIndex = await promptChoice(tty, "Return model", MONTE_CARLO_RETURN_MODELS, MONTE_CARLO_RETURN_MODELS.indexOf(current.returnModel))
   const returnModel = MONTE_CARLO_RETURN_MODELS[returnModelIndex] as (typeof MONTE_CARLO_RETURN_MODELS)[number]
 
+  explain(
+    "Dynamic withdrawal rule -- adjusts your withdrawal each year based on how the pots are doing, " +
+      "instead of always taking the same inflation-adjusted amount. None keeps it fixed.",
+  )
   const withdrawalRule = await askWithdrawalRule(tty, current.withdrawalRule)
 
+  explain(
+    "Minimum withdrawal: the annual withdrawal never drops below this amount, no matter what the " +
+      "rule says. Only applies in years with planned spending (a $0 spending phase still takes " +
+      "nothing). Rises with inflation like your planned spending. 0 = no floor.",
+  )
   const minimumWithdrawalDollars = await promptNumber(tty, "Minimum annual withdrawal, in dollars (0 for no floor)", current.minimumWithdrawal / 100)
+
+  explain("Mean inflation: your planned spending grows with it each year so its buying power is maintained. 0 = flat, uninflated withdrawals.")
   const inflationMeanPct = await promptNumber(
     tty,
     "Mean yearly inflation, as a percent (0 for flat, uninflated withdrawals)",
     current.inflationMean === null ? 0 : current.inflationMean * 100,
   )
+
+  explain("Inflation volatility: real-world inflation bounces around year to year rather than staying fixed -- when set, each simulated year draws its own rate around the mean.")
   const inflationStdDevPct = await promptNumber(tty, "Yearly inflation volatility, as a percent", current.inflationStdDev * 100)
 
+  explain(
+    "Tax model -- your yearly spending is what you keep after tax; the simulation withdraws extra " +
+      "to cover it. Flat: each pot has one effective tax rate on its withdrawals. Bands: enter " +
+      "your own progressive bands, and each pot declares how much of a withdrawal counts as " +
+      "taxable income.",
+  )
   const taxModelIndex = await promptChoice(tty, "Tax model", MONTE_CARLO_TAX_MODELS, MONTE_CARLO_TAX_MODELS.indexOf(current.taxModel))
   const taxModel = MONTE_CARLO_TAX_MODELS[taxModelIndex] as (typeof MONTE_CARLO_TAX_MODELS)[number]
   const taxBands = taxModel === "bands" ? await askTaxBands(tty, current.taxBands) : current.taxBands
 
+  explain("Simulation count: how many random scenarios to run. More gives a steadier result but takes slightly longer.")
   const simulationCount = await promptNumber(tty, "Number of simulations to run", current.simulationCount)
 
   return {
@@ -384,6 +522,7 @@ async function main(): Promise<void> {
   const accounts = await fetchAllOpenAccounts(actualConfig)
   const { config: loadedConfig } = loadFireConfig(options.configPath)
   const balances = await Promise.all(accounts.map((account) => fetchAccountBalance(actualConfig, account.id, BALANCE_SINCE_DATE)))
+  const irsLimits = loadIrsLimits(options.irsLimitsPath)
 
   const tty = openTtyInterface()
   try {
@@ -391,7 +530,7 @@ async function main(): Promise<void> {
 
     const overrides: FireAccountOverride[] = []
     for (const [index, account] of accounts.entries()) {
-      overrides.push(await classifyOneAccount(tty, account, balances[index] as number, existingConfig))
+      overrides.push(await classifyOneAccount(tty, account, balances[index] as number, existingConfig, irsLimits))
       // Write after every step, not just at the very end, so an interrupted session (ctrl-c, a
       // crash) keeps everything answered so far instead of losing it all.
       writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides })

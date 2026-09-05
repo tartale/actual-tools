@@ -1,0 +1,7 @@
+{
+  "taxYear": 2026,
+  "source": "https://www.irs.gov/newsroom/401k-limit-increases-to-24500-for-2026-ira-limit-increases-to-7500 (401k/IRA) and IRS Revenue Procedure 2025-19 (HSA)",
+  "employerPlan": { "standard": 2450000, "catchUp50": 800000, "catchUp60to63": 1125000 },
+  "ira": { "standard": 750000, "catchUp50": 110000 },
+  "hsa": { "selfOnly": 440000, "family": 875000, "catchUp55": 100000 }
+}
