@@ -9,8 +9,10 @@ import {
   buildNetWorthWidget,
   buildPot,
   buildSpendingPhases,
+  mergeGeneratedDashboard,
   portfolioAccountIds,
 } from "./fire-dashboard.ts"
+import type { ExistingDashboard } from "./fire-dashboard.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 
 // Function to build a classified account with sensible defaults for the fields a test ignores
@@ -234,5 +236,146 @@ describe("buildMonteCarloWidgets", () => {
     const widgets = buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [45, 60], 90, 500000)
     expect(widgets[0]?.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 45, 500000))
     expect(widgets[1]?.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 60, 500000))
+  })
+})
+
+describe("mergeGeneratedDashboard", () => {
+  const portfolioAccount = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" })
+
+  it("returns the generated dashboard unchanged when there's no existing file", () => {
+    const generated = buildFireDashboard(["cat-1"], ["a1"])
+    expect(mergeGeneratedDashboard(generated, null)).toEqual(generated)
+  })
+
+  it("preserves a net-worth-card customization outright -- it has no owned fields", () => {
+    const generated = buildFireDashboard(["cat-1"], ["a1"])
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [{ type: "net-worth-card", x: 0, y: 0, width: 12, height: 2, meta: { name: "My Net Worth", mode: "stacked" } }],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing)
+    expect(merged.widgets[0]?.meta).toEqual({ name: "My Net Worth", mode: "stacked" })
+  })
+
+  it("always refreshes crossover's account/category ids but preserves a customized assumption", () => {
+    const generated = buildFireDashboard(["new-cat"], ["new-acct"])
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: {
+            name: "FIRE Crossover",
+            expenseCategoryIds: ["stale-cat"],
+            incomeAccountIds: ["stale-acct"],
+            safeWithdrawalRate: 0.035,
+            estimatedReturn: null,
+            expectedContribution: null,
+            projectionType: "hampel",
+            expenseAdjustmentFactor: 1,
+          },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing)
+    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
+    expect(crossover?.meta).toMatchObject({
+      expenseCategoryIds: ["new-cat"],
+      incomeAccountIds: ["new-acct"],
+      safeWithdrawalRate: 0.035,
+    })
+  })
+
+  it("refreshes a pot's account-derived fields but preserves an extra fee field", () => {
+    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000) }
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "monte-carlo-card",
+          x: 0,
+          y: 6,
+          width: 12,
+          height: 4,
+          meta: {
+            name: "Monte Carlo",
+            pots: [{ id: "a1", accountId: "a1", allocationPreset: "equity-40", annualFeeRate: 0.001 }],
+            spendingPhases: [],
+            currentAge: 40,
+            targetAge: 90,
+            withdrawalStrategy: "sequential",
+            returnModel: "historical-sample",
+          },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing)
+    const meta = merged.widgets[0]?.meta as Record<string, unknown>
+    const pot = (meta.pots as Record<string, unknown>[])[0] as Record<string, unknown>
+    expect(pot.allocationPreset).toBe("equity-80") // refreshed from accounts.json, not the stale existing value
+    expect(pot.annualFeeRate).toBe(0.001) // extra field preserved
+    expect(meta).toMatchObject({ currentAge: 45, targetAge: 100, withdrawalStrategy: "sequential", returnModel: "historical-sample" })
+  })
+
+  it("keeps an extra hand-added spending phase but refreshes the owned ones", () => {
+    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000) }
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "monte-carlo-card",
+          x: 0,
+          y: 6,
+          width: 12,
+          height: 4,
+          meta: {
+            name: "Monte Carlo",
+            pots: [],
+            spendingPhases: [
+              { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 999 },
+              { id: "downsize", name: "Downsize the house", fromAge: 75, annualWithdrawal: 300000 },
+            ],
+            currentAge: 45,
+            targetAge: 100,
+          },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing)
+    const meta = merged.widgets[0]?.meta as Record<string, unknown>
+    const phases = meta.spendingPhases as { id: string; annualWithdrawal: number }[]
+    expect(phases.map((phase) => phase.id)).toEqual(["pre-retirement", "retirement-spending", "downsize"])
+    expect(phases[0]?.annualWithdrawal).toBe(0) // owned id refreshed, not the stale 999
+  })
+
+  it("drops a monte-carlo-card whose retirement age is no longer requested", () => {
+    // both fixtures request 2+ ages, so the "Monte Carlo — Retire at N" naming (see
+    // buildMonteCarloWidgets) is identical for the ages that carry over between them
+    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60, 65], 100, 500000) }
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        ...(buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [53, 60, 65], 100, 500000) as unknown as ExistingDashboard["widgets"]),
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing)
+    expect(merged.widgets.map((widget) => (widget.meta as { name?: string } | null)?.name)).toEqual([
+      "Monte Carlo — Retire at 60",
+      "Monte Carlo — Retire at 65",
+    ])
+  })
+
+  it("carries through untouched a widget of a type it never generates", () => {
+    const generated = buildFireDashboard(["cat-1"], ["a1"])
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [{ type: "custom-note-card", x: 0, y: 20, width: 12, height: 2, meta: { text: "hand-added" } }],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing)
+    expect(merged.widgets).toContainEqual({ type: "custom-note-card", x: 0, y: 20, width: 12, height: 2, meta: { text: "hand-added" } })
   })
 })

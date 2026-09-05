@@ -308,3 +308,121 @@ export function buildMonteCarloWidgets(
     )
   })
 }
+
+// --- Merging a freshly generated dashboard with an existing file on disk ---
+//
+// Regenerating always recomputes the real-data fields (account/category ids, pot values from
+// accounts.json, current age, retirement-age-driven spending), but a person may have hand-edited
+// the previous output -- tweaked an assumption (safeWithdrawalRate, returnModel, withdrawalRule,
+// contributions, ...), added an extra pot field (fees), or added an extra spending phase -- after
+// opening it in Actual and copying settings back, or just by editing the JSON directly. Merging
+// preserves all of that instead of silently discarding it on every regeneration.
+
+// A widget as read back from an existing dashboard file -- not guaranteed to match this module's
+// current FireWidgetType union (an older or hand-edited file may have a type this version no
+// longer generates, e.g. the removed spending-card), so `type` stays a plain string here.
+export interface ExistingDashboardWidget {
+  type: string
+  x: number
+  y: number
+  width: number
+  height: number
+  meta: Record<string, unknown> | null
+}
+
+export interface ExistingDashboard {
+  version: number
+  widgets: ExistingDashboardWidget[]
+}
+
+const OWNED_WIDGET_TYPES: readonly FireWidgetType[] = ["net-worth-card", "crossover-card", "monte-carlo-card"]
+
+// Function to build a stable identity key for matching a freshly generated widget against one
+// already present in an existing file. net-worth-card and crossover-card are singletons;
+// monte-carlo-card is disambiguated by its name, which always encodes the retirement age it
+// represents (see buildMonteCarloWidgets) -- a retirement age no longer requested simply has no
+// generated widget to match against, so its old widget is dropped, not carried forward.
+function widgetKey(widget: { type: string; meta: unknown }): string {
+  if (widget.type === "monte-carlo-card") {
+    const name = (widget.meta as { name?: unknown } | null)?.name
+    return `monte-carlo-card:${typeof name === "string" ? name : ""}`
+  }
+  return widget.type
+}
+
+// Function to merge one pot's fresh, account-derived fields over any extra fields (fees, a custom
+// taxableFraction, ...) an existing pot with the same account id already had. A pot with no
+// existing counterpart (a newly classified portfolio account) is used exactly as generated.
+function mergePots(generatedPots: MonteCarloPotMeta[], existingPotsRaw: unknown): MonteCarloPotMeta[] {
+  const existingPots = Array.isArray(existingPotsRaw) ? (existingPotsRaw as Record<string, unknown>[]) : []
+  const existingById = new Map(existingPots.filter((pot) => typeof pot.id === "string").map((pot) => [pot.id as string, pot]))
+  return generatedPots.map((pot) => ({ ...existingById.get(pot.id), ...pot }))
+}
+
+// The spending phase ids this module generates (see buildSpendingPhases) -- these are always fully
+// refreshed (fromAge/annualWithdrawal come straight from the current retirement age and trailing
+// spend), so a stale one (e.g. "pre-retirement" left over from a since-removed future retirement
+// age) is dropped rather than carried forward. Any other phase id is untouched, hand-added content.
+const OWNED_SPENDING_PHASE_IDS = new Set(["pre-retirement", "retirement-spending"])
+
+function mergeSpendingPhases(generatedPhases: MonteCarloSpendingPhaseMeta[], existingPhasesRaw: unknown): MonteCarloSpendingPhaseMeta[] {
+  const existingPhases = Array.isArray(existingPhasesRaw) ? (existingPhasesRaw as MonteCarloSpendingPhaseMeta[]) : []
+  const extraPhases = existingPhases.filter((phase) => !OWNED_SPENDING_PHASE_IDS.has(phase?.id))
+  return [...generatedPhases, ...extraPhases]
+}
+
+// Fields always refreshed from real data/this run's inputs on a monte-carlo-card, never preserved
+// from an existing file: pots and spendingPhases (merged field-by-field above), currentAge (from
+// the birth date), targetAge (from --plan-to-age), and name (encodes the retirement age).
+// Everything else (withdrawalStrategy, inflationMean, taxModel, returnModel, withdrawalRule,
+// contributions, minimumWithdrawal, inflationStdDev, simulationCount, taxBands, ...) is preserved
+// from the existing file when present.
+function mergeMonteCarloMeta(generatedMeta: Record<string, unknown>, existingMeta: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...generatedMeta,
+    ...existingMeta,
+    name: generatedMeta.name,
+    currentAge: generatedMeta.currentAge,
+    targetAge: generatedMeta.targetAge,
+    pots: mergePots(generatedMeta.pots as MonteCarloPotMeta[], existingMeta.pots),
+    spendingPhases: mergeSpendingPhases(generatedMeta.spendingPhases as MonteCarloSpendingPhaseMeta[], existingMeta.spendingPhases),
+  }
+}
+
+// Function to merge one freshly generated widget with its match (if any) from an existing file.
+// Layout (x/y/width/height) always comes from the fresh generation, since it's a function of how
+// many widgets this run produces, not something meaningful to hand-tune in the file.
+function mergeWidget(generated: ExportImportDashboardWidget, existingWidget: ExistingDashboardWidget | undefined): ExportImportDashboardWidget {
+  if (existingWidget?.meta == null || generated.meta === null) {
+    return generated
+  }
+  const generatedMeta = generated.meta as Record<string, unknown>
+  const existingMeta = existingWidget.meta
+  let meta: Record<string, unknown>
+  if (generated.type === "monte-carlo-card") {
+    meta = mergeMonteCarloMeta(generatedMeta, existingMeta)
+  } else if (generated.type === "crossover-card") {
+    // expenseCategoryIds/incomeAccountIds are real data (see buildCrossoverWidget); every other
+    // field (safeWithdrawalRate, estimatedReturn, projectionType, ...) is a preservable assumption.
+    meta = { ...generatedMeta, ...existingMeta, expenseCategoryIds: generatedMeta.expenseCategoryIds, incomeAccountIds: generatedMeta.incomeAccountIds }
+  } else {
+    // net-worth-card has no real-data fields at all -- an existing customization wins outright.
+    meta = { ...generatedMeta, ...existingMeta }
+  }
+  return { ...generated, meta }
+}
+
+// Function to merge a freshly generated dashboard with the one already on disk, if any: preserves
+// any customization to a still-generated widget (see mergeWidget), drops a generated-type widget
+// that's no longer produced this run (e.g. a removed retirement age), and carries through untouched
+// any widget whose type this tool has never generated (hand-added content, never this tool's to
+// manage). Pass `existing: null` for a first run / no file yet -- returns `generated` unchanged.
+export function mergeGeneratedDashboard(generated: ExportImportDashboard, existing: ExistingDashboard | null): ExportImportDashboard {
+  if (existing === null) {
+    return generated
+  }
+  const existingByKey = new Map(existing.widgets.map((widget) => [widgetKey(widget), widget]))
+  const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget))))
+  const foreignWidgets = existing.widgets.filter((widget) => !OWNED_WIDGET_TYPES.includes(widget.type as FireWidgetType))
+  return { version: generated.version, widgets: [...widgets, ...(foreignWidgets as ExportImportDashboardWidget[])] }
+}

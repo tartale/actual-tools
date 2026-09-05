@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 
 import {
   ageFromBirthDate,
@@ -13,7 +13,8 @@ import {
   validateDateFormat,
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
-import { buildFireDashboard, buildMonteCarloWidgets, portfolioAccountIds } from "./fire-dashboard.ts"
+import { buildFireDashboard, buildMonteCarloWidgets, mergeGeneratedDashboard, portfolioAccountIds } from "./fire-dashboard.ts"
+import type { ExistingDashboard } from "./fire-dashboard.ts"
 import { DEFAULT_ACCOUNTS_CONFIG_PATH, loadClassifiedAccounts } from "./fire-accounts.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
@@ -37,12 +38,13 @@ interface Options {
 const HELP_PAGE: HelpPage = {
   usage: "./actual reports fire -r N [OPTIONS]",
   description:
-    "Builds an Actual-native FIRE dashboard (net worth, trailing-12-month spending, a " +
-    "safe-withdrawal-rate crossover projection, and a Monte Carlo retirement simulation -- " +
-    "experimental in Actual, enable it under Settings > Advanced > Experimental features first) " +
-    "from your real account and category data, and writes it as a dashboard JSON file. Import it " +
-    "into Actual yourself: create a NEW, empty dashboard page first (e.g. \"FIRE\") -- importing " +
-    "REPLACES every widget already on the target page.",
+    "Builds an Actual-native FIRE dashboard (net worth, a safe-withdrawal-rate crossover " +
+    "projection, and a Monte Carlo retirement simulation -- experimental in Actual, enable it " +
+    "under Settings > Advanced > Experimental features first) from your real account and category " +
+    "data, and writes it as a dashboard JSON file. Regenerating over an existing output file " +
+    "preserves any customization you've made to it (see README). Import it into Actual yourself: " +
+    "create a NEW, empty dashboard page first (e.g. \"FIRE\") -- importing REPLACES every widget " +
+    "already on the target page.",
   sections: [
     {
       label: "Options",
@@ -162,6 +164,28 @@ function currentMonth(): string {
   return new Date().toISOString().slice(0, 7)
 }
 
+// Function to read a previously written dashboard file, if any, so mergeGeneratedDashboard can
+// preserve customizations made to it. A missing file is normal (first run) and returns null
+// silently; a present-but-unreadable/malformed file (never written by this tool, or corrupted)
+// warns and falls back to a fresh generation rather than failing the whole run.
+function loadExistingDashboard(path: string): ExistingDashboard | null {
+  if (!existsSync(path)) {
+    return null
+  }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
+    if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { widgets?: unknown }).widgets)) {
+      throw new Error("missing a widgets array")
+    }
+    return parsed as ExistingDashboard
+  } catch (error) {
+    console.warn(
+      `Warning: couldn't read existing ${path} to preserve customizations (${error instanceof Error ? error.message : String(error)}); writing fresh.`,
+    )
+    return null
+  }
+}
+
 // Function to sum the trailing-12-month average spend across every given category, for the
 // console sanity-check numbers only -- not fed into the widget itself, which computes its own
 // live figures once imported into Actual.
@@ -213,10 +237,13 @@ async function main(): Promise<void> {
   console.log(`Portfolio accounts (${portfolioIds.length}): current total ${formatUsd(portfolioTotal)}`)
   console.log(`Expense categories (${expenseCategoryIds.length}): trailing 12-month spend ${formatUsd(annualSpend)}/yr`)
 
-  const dashboard = buildFireDashboard(expenseCategoryIds, portfolioIds)
-  dashboard.widgets.push(
+  const generated = buildFireDashboard(expenseCategoryIds, portfolioIds)
+  generated.widgets.push(
     ...buildMonteCarloWidgets(0, 6, accounts, currentAge, options.retirementAges, options.planToAge, annualSpend),
   )
+
+  const existing = loadExistingDashboard(options.outputPath)
+  const dashboard = mergeGeneratedDashboard(generated, existing)
   const json = JSON.stringify(dashboard, null, 2)
 
   if (options.dryRun) {
@@ -227,6 +254,9 @@ async function main(): Promise<void> {
 
   writeFileSync(options.outputPath, `${json}\n`)
   console.log(`\nWrote ${options.outputPath} (${dashboard.widgets.length} widgets: ${dashboard.widgets.map((widget) => widget.type).join(", ")}).`)
+  if (existing) {
+    console.log(`Preserved customizations from the existing ${options.outputPath} where present.`)
+  }
   console.log(
     "\nThe Monte Carlo widget is an experimental Actual feature: enable it under Settings > " +
       "Advanced > Experimental features > Monte Carlo Analysis Report before importing, or the " +

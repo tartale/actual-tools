@@ -308,6 +308,22 @@ undo/ctrl-z covers a bad import), never your main dashboard. Re-running
 `reports fire` and re-importing onto that same page is the normal way to
 refresh it, not a mistake to avoid.
 
+**Regenerating preserves customizations to the existing output file.** If
+`-o`/`--output` already exists, its widgets are merged with the freshly
+generated ones rather than being overwritten wholesale:
+
+- Real-data fields always refresh: account/category ids, each pot's values
+  from `accounts.json`, your current age, and the retirement-age-driven
+  spending amounts.
+- Everything else on a still-generated widget is preserved if you changed
+  it — a tweaked assumption (`safeWithdrawalRate`, `returnModel`,
+  `withdrawalRule`, `contributions`, ...), an extra pot field (a fee), or
+  an extra hand-added spending phase.
+- A Monte Carlo widget for a retirement age you stop passing is dropped
+  (regeneration reflects exactly what you ask for that run).
+- A widget of a type this tool has never generated (something you added by
+  hand) is left completely untouched.
+
 ```sh
 ./actual reports fire -r 60                # AB_BIRTH_DATE set in the environment
 ./actual reports fire -r 55 -r 60 -r 65    # compare three retirement ages
