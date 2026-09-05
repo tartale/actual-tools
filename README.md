@@ -232,10 +232,10 @@ both reads and writes it.
 ## `./actual reports fire`
 
 Builds an Actual-native FIRE (Financial Independence, Retire Early)
-dashboard from real account and spending data: a net-worth widget, a
-trailing-12-month spending widget, a safe-withdrawal-rate "crossover"
-projection, and a Monte Carlo retirement simulation — using Actual's own
-built-in dashboard widgets rather than reimplementing FIRE math.
+dashboard from real account and spending data: a full-width net-worth
+widget, a safe-withdrawal-rate "crossover" projection, and a Monte Carlo
+retirement simulation — using Actual's own built-in dashboard widgets
+rather than reimplementing FIRE math.
 
 ```
 ./actual reports fire -r N [-b YYYY-MM-DD] [-p N] [-o PATH] [-f PATH] [-n]

@@ -9,7 +9,6 @@ import {
   buildNetWorthWidget,
   buildPot,
   buildSpendingPhases,
-  buildSpendingWidget,
   portfolioAccountIds,
 } from "./fire-dashboard.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
@@ -53,26 +52,15 @@ describe("portfolioAccountIds", () => {
 })
 
 describe("buildNetWorthWidget", () => {
-  it("has no account/category filter", () => {
+  it("has no account/category filter and spans the full page width", () => {
     const widget = buildNetWorthWidget(0, 0)
     expect(widget).toEqual({
       type: "net-worth-card",
       x: 0,
       y: 0,
-      width: 6,
+      width: 12,
       height: 2,
       meta: { name: "Net Worth", mode: "trend" },
-    })
-  })
-})
-
-describe("buildSpendingWidget", () => {
-  it("uses a trailing-12-month average", () => {
-    const widget = buildSpendingWidget(6, 0)
-    expect(widget.meta).toEqual({
-      name: "Trailing 12-Month Spending",
-      mode: "average",
-      averageRange: { mode: "last-n-months", months: 12 },
     })
   })
 })
@@ -101,16 +89,14 @@ describe("buildCrossoverWidget", () => {
 })
 
 describe("buildFireDashboard", () => {
-  it("assembles all three widgets on non-overlapping grid coordinates", () => {
+  it("assembles both widgets on non-overlapping grid coordinates", () => {
     const dashboard = buildFireDashboard(["cat-1"], ["acct-1"])
     expect(dashboard.version).toBe(1)
-    expect(dashboard.widgets.map((widget) => widget.type)).toEqual(["net-worth-card", "spending-card", "crossover-card"])
+    expect(dashboard.widgets.map((widget) => widget.type)).toEqual(["net-worth-card", "crossover-card"])
 
-    const [netWorth, spending, crossover] = dashboard.widgets
-    // net worth and spending sit side by side on row 0, each 6 wide (12-column grid)
-    expect(netWorth).toMatchObject({ x: 0, y: 0, width: 6 })
-    expect(spending).toMatchObject({ x: 6, y: 0, width: 6 })
-    expect(netWorth!.x + netWorth!.width).toBe(spending!.x)
+    const [netWorth, crossover] = dashboard.widgets
+    // net worth spans the full page width on row 0
+    expect(netWorth).toMatchObject({ x: 0, y: 0, width: 12 })
     // crossover sits full-width on the row below
     expect(crossover).toMatchObject({ x: 0, y: 2, width: 12 })
   })

@@ -42,14 +42,6 @@ export interface NetWorthCardMeta {
   mode?: "trend" | "stacked"
 }
 
-export type SpendingAverageRange = { mode: "last-n-months"; months: 3 | 6 | 12 } | { mode: "year-to-date" } | { mode: "all-time" }
-
-export interface SpendingCardMeta {
-  name?: string
-  mode?: "single-month" | "budget" | "average"
-  averageRange?: SpendingAverageRange
-}
-
 export interface CrossoverCardMeta {
   name?: string
   // Never leave this empty -- Actual's crossover projection zeroes out historical expense data
@@ -68,7 +60,7 @@ export interface CrossoverCardMeta {
   expenseAdjustmentFactor: number
 }
 
-export type FireWidgetType = "net-worth-card" | "spending-card" | "crossover-card" | "monte-carlo-card"
+export type FireWidgetType = "net-worth-card" | "crossover-card" | "monte-carlo-card"
 
 export interface ExportImportDashboardWidget<Meta = unknown> {
   type: FireWidgetType
@@ -84,26 +76,12 @@ export interface ExportImportDashboard {
   widgets: ExportImportDashboardWidget[]
 }
 
-// Function to build the net-worth-card widget. Deliberately no account filter: an unfiltered net
-// worth (meta.conditions omitted) is a valid Actual default -- its own DEFAULT_DASHBOARD_STATE
-// uses exactly this for the same widget -- and true net worth across every account is what a FIRE
-// dashboard wants.
+// Function to build the net-worth-card widget, spanning the full page width. Deliberately no
+// account filter: an unfiltered net worth (meta.conditions omitted) is a valid Actual default --
+// its own DEFAULT_DASHBOARD_STATE uses exactly this for the same widget -- and true net worth
+// across every account is what a FIRE dashboard wants.
 export function buildNetWorthWidget(x: number, y: number): ExportImportDashboardWidget<NetWorthCardMeta> {
-  return { type: "net-worth-card", x, y, width: 6, height: 2, meta: { name: "Net Worth", mode: "trend" } }
-}
-
-// Function to build the spending-card widget, showing the trailing-12-month average -- the same
-// spend history this tool's report-fire CLI uses for its own sanity-check numbers, shown here for
-// visual cross-checking against the crossover-card.
-export function buildSpendingWidget(x: number, y: number): ExportImportDashboardWidget<SpendingCardMeta> {
-  return {
-    type: "spending-card",
-    x,
-    y,
-    width: 6,
-    height: 2,
-    meta: { name: "Trailing 12-Month Spending", mode: "average", averageRange: { mode: "last-n-months", months: 12 } },
-  }
+  return { type: "net-worth-card", x, y, width: 12, height: 2, meta: { name: "Net Worth", mode: "trend" } }
 }
 
 // Function to build the crossover-card widget -- the FIRE date/nest-egg projection. Field
@@ -142,12 +120,12 @@ export function portfolioAccountIds(accounts: readonly ClassifiedAccount[]): str
   return portfolioAccounts(accounts).map((account) => account.id)
 }
 
-// Function to assemble the full three-widget FIRE dashboard on Actual's 12-column grid: net worth
-// and spending side by side on the first row, crossover full-width on the row below.
+// Function to assemble the base FIRE dashboard on Actual's 12-column grid: net worth full-width on
+// the first row, crossover full-width on the row below.
 export function buildFireDashboard(nonIncomeCategoryIds: string[], accountIds: string[]): ExportImportDashboard {
   return {
     version: 1,
-    widgets: [buildNetWorthWidget(0, 0), buildSpendingWidget(6, 0), buildCrossoverWidget(0, 2, nonIncomeCategoryIds, accountIds)],
+    widgets: [buildNetWorthWidget(0, 0), buildCrossoverWidget(0, 2, nonIncomeCategoryIds, accountIds)],
   }
 }
 
