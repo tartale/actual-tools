@@ -527,3 +527,43 @@ export async function promptChoice(
     process.stderr.write(`Please enter a number from 1 to ${options.length}.\n`)
   }
 }
+
+// Function to prompt for one free-text number, via an already-open TTY interface. When
+// `defaultValue` is given, pressing Enter with no input accepts it; when null, a value is
+// required. Re-prompts on anything that doesn't parse as a plain finite number.
+export async function promptNumber(tty: TtyInterface, promptText: string, defaultValue: number | null): Promise<number> {
+  const defaultLabel = defaultValue === null ? "" : ` [${defaultValue}]`
+  const question = `${promptText}${defaultLabel}: `
+
+  while (true) {
+    const answer = (await tty.question(question)).trim()
+    if (answer === "" && defaultValue !== null) {
+      return defaultValue
+    }
+    const value = Number(answer)
+    if (answer !== "" && Number.isFinite(value)) {
+      return value
+    }
+    process.stderr.write("Please enter a number.\n")
+  }
+}
+
+// Function to prompt for a yes/no confirmation, via an already-open TTY interface (see
+// promptChoice above) -- confirmViaTty opens and closes its own session per call, which would
+// reopen /dev/tty on every question in a multi-question flow like ./actual configure's.
+export async function confirmOnTty(tty: TtyInterface, promptText: string, defaultValue = false): Promise<boolean> {
+  const defaultLabel = defaultValue ? "Y/n" : "y/N"
+  while (true) {
+    const answer = (await tty.question(`${promptText} [${defaultLabel}]: `)).trim().toLowerCase()
+    if (answer === "") {
+      return defaultValue
+    }
+    if (answer === "y" || answer === "yes") {
+      return true
+    }
+    if (answer === "n" || answer === "no") {
+      return false
+    }
+    process.stderr.write("Please answer y or n.\n")
+  }
+}

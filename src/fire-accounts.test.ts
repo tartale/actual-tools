@@ -6,6 +6,9 @@ import { readFileSync, writeFileSync } from "node:fs"
 
 import {
   CATEGORY_TRAITS,
+  DEFAULT_CROSSOVER_CONFIG,
+  DEFAULT_MONTE_CARLO_CONFIG,
+  DEFAULT_PLAN_TO_AGE,
   FIRE_ACCOUNT_CATEGORIES,
   MONTE_CARLO_ALLOCATION_PRESETS,
   classifyAccounts,
@@ -13,15 +16,29 @@ import {
   findOverride,
   isPortfolioCategory,
   loadClassifiedAccounts,
-  loadFireAccountsConfig,
+  loadFireConfig,
   portfolioAccounts,
   traitsForCategory,
-  writeFireAccountsConfig,
+  writeFireConfig,
 } from "./fire-accounts.ts"
-import type { ClassifiedAccount, FireAccountsConfig } from "./fire-accounts.ts"
+import type { ClassifiedAccount, FireConfig } from "./fire-accounts.ts"
 import type { ActualConfig } from "./actual-helpers.ts"
 
 const config: ActualConfig = { baseUrl: "https://actual.test/v1", budgetId: "budget-1", apiKey: "secret-key" }
+
+// Function to build a full, valid FireConfig from just its accounts -- most tests only care about
+// account-matching/classification behavior, not the plan-wide/assumption sections.
+function fireConfig(accounts: FireConfig["accounts"]): FireConfig {
+  return {
+    version: 1,
+    birthDate: null,
+    retirementAges: [],
+    planToAge: DEFAULT_PLAN_TO_AGE,
+    accounts,
+    crossover: DEFAULT_CROSSOVER_CONFIG,
+    monteCarlo: DEFAULT_MONTE_CARLO_CONFIG,
+  }
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -97,10 +114,10 @@ describe("classifyByHeuristic", () => {
 
 describe("findOverride", () => {
   const account = { id: "acct-1", name: "My Weird Nickname" }
-  const config: FireAccountsConfig = {
-    version: 1,
-    accounts: [{ match: "acct-1", category: "investment-taxable" }, { match: "Other Account", category: "debt" }],
-  }
+  const config = { accounts: [{ match: "acct-1", category: "investment-taxable" }, { match: "Other Account", category: "debt" }] } as Pick<
+    FireConfig,
+    "accounts"
+  >
 
   it("matches by account id", () => {
     expect(findOverride(account, config)?.category).toBe("investment-taxable")
@@ -118,60 +135,90 @@ describe("findOverride", () => {
 describe("classifyAccounts", () => {
   it("prefers an override over the heuristic", () => {
     const accounts = [{ id: "acct-1", name: "Fidelity 401k", offbudget: true }]
-    const config: FireAccountsConfig = { version: 1, accounts: [{ match: "acct-1", category: "investment-taxable", taxTreatment: "taxable" }] }
+    const config = { accounts: [{ match: "acct-1", category: "investment-taxable", taxTreatment: "taxable" }] } as Pick<FireConfig, "accounts">
     const [result] = classifyAccounts(accounts, config)
     expect(result).toMatchObject({ category: "investment-taxable", taxTreatment: "taxable", source: "override" })
   })
 
   it("falls back to the heuristic when there's no override", () => {
     const accounts = [{ id: "acct-1", name: "E*Trade Roth IRA", offbudget: true }]
-    const [result] = classifyAccounts(accounts, { version: 1, accounts: [] })
+    const [result] = classifyAccounts(accounts, { accounts: [] })
     expect(result).toMatchObject({ category: "retirement-roth", source: "heuristic" })
   })
 
   it("falls back to 'other' when nothing matches, flagged as a default", () => {
     const accounts = [{ id: "acct-1", name: "Ally Checking", offbudget: false }]
-    const [result] = classifyAccounts(accounts, { version: 1, accounts: [] })
+    const [result] = classifyAccounts(accounts, { accounts: [] })
     expect(result).toMatchObject({ category: "other", taxTreatment: "none", accessAge: null, source: "default" })
   })
 
   it("passes through id/name/offbudget unchanged", () => {
     const accounts = [{ id: "acct-1", name: "Ally Checking", offbudget: false }]
-    const [result] = classifyAccounts(accounts, { version: 1, accounts: [] })
+    const [result] = classifyAccounts(accounts, { accounts: [] })
     expect(result).toMatchObject({ id: "acct-1", name: "Ally Checking", offbudget: false })
   })
 
-  it("defaults an override's missing taxTreatment/accessAge to none/null", () => {
+  it("defaults an override's missing taxTreatment/accessAge/monthlyContribution to none/null", () => {
     const accounts = [{ id: "acct-1", name: "Whatever", offbudget: true }]
-    const config: FireAccountsConfig = { version: 1, accounts: [{ match: "acct-1", category: "debt" }] }
+    const config = { accounts: [{ match: "acct-1", category: "debt" }] } as Pick<FireConfig, "accounts">
     const [result] = classifyAccounts(accounts, config)
-    expect(result).toMatchObject({ taxTreatment: "none", accessAge: null })
+    expect(result).toMatchObject({ taxTreatment: "none", accessAge: null, monthlyContribution: null })
+  })
+
+  it("carries an override's monthlyContribution through", () => {
+    const accounts = [{ id: "acct-1", name: "Whatever", offbudget: true }]
+    const config = { accounts: [{ match: "acct-1", category: "investment-taxable", monthlyContribution: 50000 }] } as Pick<FireConfig, "accounts">
+    const [result] = classifyAccounts(accounts, config)
+    expect(result).toMatchObject({ monthlyContribution: 50000 })
+  })
+
+  it("has no monthlyContribution for a heuristic or default classification", () => {
+    const accounts = [{ id: "acct-1", name: "E*Trade Roth IRA", offbudget: true }]
+    const [result] = classifyAccounts(accounts, { accounts: [] })
+    expect(result?.monthlyContribution).toBeNull()
   })
 })
 
-describe("loadFireAccountsConfig", () => {
-  it("returns an empty config, found: false, when the file doesn't exist", () => {
+describe("loadFireConfig", () => {
+  it("returns an empty, fully-defaulted config, found: false, when the file doesn't exist", () => {
     vi.mocked(readFileSync).mockImplementation(() => {
       throw new Error("ENOENT")
     })
-    const result = loadFireAccountsConfig("/nonexistent/path/accounts.json")
-    expect(result).toEqual({ config: { version: 1, accounts: [] }, found: false })
+    const result = loadFireConfig("/nonexistent/path/config.json")
+    expect(result).toEqual({ config: fireConfig([]), found: false })
   })
 
   it("throws on malformed JSON", () => {
     vi.mocked(readFileSync).mockReturnValue("not json")
-    expect(() => loadFireAccountsConfig("/fake/path")).toThrow("Invalid JSON")
+    expect(() => loadFireConfig("/fake/path")).toThrow("Invalid JSON")
   })
 
   it("throws when the shape doesn't match", () => {
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ foo: "bar" }))
-    expect(() => loadFireAccountsConfig("/fake/path")).toThrow("Invalid accounts config")
+    expect(() => loadFireConfig("/fake/path")).toThrow("Invalid config")
   })
 
-  it("returns the parsed config, found: true, when valid", () => {
-    const validConfig = { version: 1, accounts: [{ match: "x", category: "debt" }] }
+  it("backfills defaults for an old-shape file missing the newer top-level sections", () => {
+    // e.g. an accounts.json from before this schema grew birthDate/retirementAges/planToAge/
+    // crossover/monteCarlo -- treated as "not yet configured," not an error.
+    const oldShapeConfig = { version: 1 as const, accounts: [{ match: "x", category: "debt" as const }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(oldShapeConfig))
+    expect(loadFireConfig("/fake/path")).toEqual({ config: fireConfig(oldShapeConfig.accounts), found: true })
+  })
+
+  it("returns the parsed config, found: true, when every section is already present", () => {
+    const validConfig = fireConfig([{ match: "x", category: "debt" }])
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
-    expect(loadFireAccountsConfig("/fake/path")).toEqual({ config: validConfig, found: true })
+    expect(loadFireConfig("/fake/path")).toEqual({ config: validConfig, found: true })
+  })
+
+  it("merges a partial withdrawalRule over the default, keeping the default's other rule types' fields absent", () => {
+    const partialConfig = { version: 1, accounts: [], monteCarlo: { withdrawalRule: { type: "ratcheting", consecutiveYears: 5 } } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(partialConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.monteCarlo.withdrawalRule).toEqual({ type: "ratcheting", consecutiveYears: 5 })
+    // everything else in monteCarlo still comes from the default
+    expect(config.monteCarlo.taxModel).toBe("flat")
   })
 
   it("throws on a category value that isn't (or is no longer) a recognized category", () => {
@@ -181,25 +228,67 @@ describe("loadFireAccountsConfig", () => {
     // every category is a real FIRE_ACCOUNT_CATEGORIES member.
     const staleConfig = { version: 1, accounts: [{ match: "x", category: "cash-other" }] }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(staleConfig))
-    expect(() => loadFireAccountsConfig("/fake/path")).toThrow('unknown category "cash-other"')
+    expect(() => loadFireConfig("/fake/path")).toThrow('unknown category "cash-other"')
   })
 
   it("throws on an unrecognized taxTreatment value", () => {
     const badConfig = { version: 1, accounts: [{ match: "x", category: "debt", taxTreatment: "bogus" }] }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
-    expect(() => loadFireAccountsConfig("/fake/path")).toThrow('unknown taxTreatment "bogus"')
+    expect(() => loadFireConfig("/fake/path")).toThrow('unknown taxTreatment "bogus"')
   })
 
   it("throws on an unrecognized allocationPreset value", () => {
     const badConfig = { version: 1, accounts: [{ match: "x", category: "investment-taxable", allocationPreset: "bogus" }] }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
-    expect(() => loadFireAccountsConfig("/fake/path")).toThrow('unknown allocationPreset "bogus"')
+    expect(() => loadFireConfig("/fake/path")).toThrow('unknown allocationPreset "bogus"')
   })
 
   it("accepts a null allocationPreset", () => {
-    const validConfig = { version: 1, accounts: [{ match: "x", category: "debt", allocationPreset: null }] }
+    const validConfig = fireConfig([{ match: "x", category: "debt", allocationPreset: null }])
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
-    expect(loadFireAccountsConfig("/fake/path")).toEqual({ config: validConfig, found: true })
+    expect(loadFireConfig("/fake/path")).toEqual({ config: validConfig, found: true })
+  })
+
+  it("throws on a non-positive retirementAges entry", () => {
+    const badConfig = { version: 1, accounts: [], retirementAges: [0] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("retirementAges must be an array of positive numbers")
+  })
+
+  it("throws on a non-positive planToAge", () => {
+    const badConfig = { version: 1, accounts: [], planToAge: -5 }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("planToAge must be a positive number")
+  })
+
+  it("throws on an unrecognized crossover.projectionType", () => {
+    const badConfig = { version: 1, accounts: [], crossover: { projectionType: "bogus" } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow('unknown crossover.projectionType "bogus"')
+  })
+
+  it("throws on an unrecognized monteCarlo.withdrawalStrategy", () => {
+    const badConfig = { version: 1, accounts: [], monteCarlo: { withdrawalStrategy: "bogus" } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow('unknown monteCarlo.withdrawalStrategy "bogus"')
+  })
+
+  it("throws on an unrecognized monteCarlo.returnModel", () => {
+    const badConfig = { version: 1, accounts: [], monteCarlo: { returnModel: "bogus" } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow('unknown monteCarlo.returnModel "bogus"')
+  })
+
+  it("throws on an unrecognized monteCarlo.withdrawalRule.type", () => {
+    const badConfig = { version: 1, accounts: [], monteCarlo: { withdrawalRule: { type: "bogus" } } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow('unknown monteCarlo.withdrawalRule.type "bogus"')
+  })
+
+  it("throws on an unrecognized monteCarlo.taxModel", () => {
+    const badConfig = { version: 1, accounts: [], monteCarlo: { taxModel: "bogus" } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow('unknown monteCarlo.taxModel "bogus"')
   })
 })
 
@@ -214,7 +303,7 @@ describe("loadClassifiedAccounts", () => {
       json: async () => ({ data: [{ id: "a1", name: "Fidelity 401k", offbudget: true, closed: false }] }),
     }))
 
-    const result = await loadClassifiedAccounts(config, "/fake/accounts.json")
+    const result = await loadClassifiedAccounts(config, "/fake/config.json")
     expect(result.configFound).toBe(false)
     expect(result.accounts).toEqual([
       {
@@ -225,6 +314,7 @@ describe("loadClassifiedAccounts", () => {
         taxTreatment: "tax-deferred",
         accessAge: 59,
         allocationPreset: "equity-80",
+        monthlyContribution: null,
         source: "heuristic",
       },
     ])
@@ -251,12 +341,12 @@ describe("traitsForCategory", () => {
   })
 })
 
-describe("writeFireAccountsConfig", () => {
+describe("writeFireConfig", () => {
   it("writes the config as pretty-printed JSON", () => {
-    const written: FireAccountsConfig = { version: 1, accounts: [{ match: "a1", category: "hsa" }] }
-    writeFireAccountsConfig("/fake/accounts.json", written)
+    const written = fireConfig([{ match: "a1", category: "hsa" }])
+    writeFireConfig("/fake/config.json", written)
 
-    expect(writeFileSync).toHaveBeenCalledWith("/fake/accounts.json", `${JSON.stringify(written, null, 2)}\n`)
+    expect(writeFileSync).toHaveBeenCalledWith("/fake/config.json", `${JSON.stringify(written, null, 2)}\n`)
   })
 })
 
@@ -283,6 +373,7 @@ describe("portfolioAccounts", () => {
       taxTreatment: "none",
       accessAge: null,
       allocationPreset: null,
+      monthlyContribution: null,
       source: "heuristic",
       ...overrides,
     }

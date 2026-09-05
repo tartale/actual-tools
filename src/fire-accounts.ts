@@ -2,12 +2,30 @@ import { readFileSync, writeFileSync } from "node:fs"
 
 import { fetchAllOpenAccounts } from "./actual-helpers.ts"
 import type { Account, ActualConfig } from "./actual-helpers.ts"
+import type {
+  CrossoverAssumptions,
+  CrossoverProjectionType,
+  MonteCarloAssumptions,
+  MonteCarloReturnModel,
+  MonteCarloTaxModel,
+  MonteCarloWithdrawalRuleType,
+  MonteCarloWithdrawalStrategy,
+} from "./fire-dashboard.ts"
 
 // Classifies accounts for FIRE reporting: which are retirement/investment/debt/cash, and enough
 // detail about each (tax treatment, access age) to eventually populate a Monte Carlo "pot" in a
 // later phase. Pure -- no API calls. Actual's own account API has no type field, so this combines
 // a heuristic guess at the account's name with an explicit config file the guess can be
-// overridden by. See ./actual accounts classify for the tool that surfaces the result for review.
+// overridden by. See ./actual configure for the tool that surfaces the result for review.
+//
+// This module also owns the FireConfig schema -- the single config.json file ./actual configure
+// reads defaults from and writes, covering both account classification (below) and every
+// crossover/Monte Carlo assumption those charts expose. The assumption-shaped types
+// (CrossoverAssumptions, MonteCarloAssumptions, and the enums they're built from) are defined in
+// fire-dashboard.ts, since that's this project's one home for vendored Actual widget shapes -- only
+// type-only imports flow back here, which Node's --experimental-strip-types erases entirely, so
+// there's no runtime import cycle with fire-dashboard.ts's own (real, value) import of
+// portfolioAccounts from this file.
 
 export type FireAccountCategory =
   | "retirement-tax-deferred"
@@ -36,7 +54,7 @@ export const MONTE_CARLO_ALLOCATION_PRESETS: readonly MonteCarloAllocationPreset
 ]
 
 // Plain-language description of each preset's stock/bond mix, for display next to the preset name
-// wherever a person is picking one (e.g. ./actual accounts classify's interactive prompt).
+// wherever a person is picking one (e.g. ./actual configure's interactive prompt).
 export const MONTE_CARLO_ALLOCATION_PRESET_LABELS: Record<MonteCarloAllocationPreset, string> = {
   "equity-100": "100% stocks",
   "equity-80": "80% stocks / 20% bonds",
@@ -64,6 +82,9 @@ export interface ClassifiedAccount extends FireAccountTraits {
   name: string
   offbudget: boolean
   source: ClassificationSource
+  // A monthly contribution amount in cents, or null if none is configured. Has no category-based
+  // default (unlike the FireAccountTraits fields above) -- it only ever comes from an override.
+  monthlyContribution: number | null
 }
 
 // One user-supplied override. `match` is an account id OR an exact account name, mirroring how
@@ -74,16 +95,72 @@ export interface FireAccountOverride {
   taxTreatment?: TaxTreatment
   accessAge?: number | null
   allocationPreset?: MonteCarloAllocationPreset | null
+  monthlyContribution?: number
 }
 
-export interface FireAccountsConfig {
+export interface FireConfig {
   version: 1
+  // Personal/plan-wide answers -- see ./actual configure.
+  birthDate: string | null
+  retirementAges: number[]
+  planToAge: number
   accounts: FireAccountOverride[]
+  crossover: CrossoverAssumptions
+  monteCarlo: MonteCarloAssumptions
 }
 
-export const EMPTY_FIRE_ACCOUNTS_CONFIG: FireAccountsConfig = { version: 1, accounts: [] }
+// Conservative default planning horizon: assume the money needs to last to this age rather than
+// asking the user to estimate their own lifespan. Overridable in ./actual configure.
+export const DEFAULT_PLAN_TO_AGE = 100
 
-export const DEFAULT_ACCOUNTS_CONFIG_PATH = "accounts.json"
+export const CROSSOVER_PROJECTION_TYPES: readonly CrossoverProjectionType[] = ["hampel", "median", "mean"]
+export const MONTE_CARLO_WITHDRAWAL_STRATEGIES: readonly MonteCarloWithdrawalStrategy[] = [
+  "proportional",
+  "sequential",
+  "best-performer",
+  "target-mix",
+]
+export const MONTE_CARLO_RETURN_MODELS: readonly MonteCarloReturnModel[] = ["normal", "historical-bootstrap", "historical-sequence"]
+export const MONTE_CARLO_WITHDRAWAL_RULE_TYPES: readonly MonteCarloWithdrawalRuleType[] = [
+  "none",
+  "guardrails",
+  "ratcheting",
+  "floor-ceiling",
+  "boundaries",
+]
+export const MONTE_CARLO_TAX_MODELS: readonly MonteCarloTaxModel[] = ["flat", "bands"]
+
+export const DEFAULT_CROSSOVER_CONFIG: CrossoverAssumptions = {
+  safeWithdrawalRate: 0.04,
+  estimatedReturn: null,
+  projectionType: "hampel",
+  expenseAdjustmentFactor: 1.0,
+  showHiddenCategories: false,
+}
+
+export const DEFAULT_MONTE_CARLO_CONFIG: MonteCarloAssumptions = {
+  withdrawalStrategy: "proportional",
+  returnModel: "normal",
+  withdrawalRule: { type: "none" },
+  minimumWithdrawal: 0,
+  inflationMean: 0.03,
+  inflationStdDev: 0.02,
+  taxModel: "flat",
+  taxBands: [],
+  simulationCount: 5000,
+}
+
+export const EMPTY_FIRE_CONFIG: FireConfig = {
+  version: 1,
+  birthDate: null,
+  retirementAges: [],
+  planToAge: DEFAULT_PLAN_TO_AGE,
+  accounts: [],
+  crossover: DEFAULT_CROSSOVER_CONFIG,
+  monteCarlo: DEFAULT_MONTE_CARLO_CONFIG,
+}
+
+export const DEFAULT_CONFIG_PATH = "config.json"
 
 // Age at which most US tax-advantaged retirement accounts can be withdrawn from without an early
 // withdrawal penalty. A rough default -- override per-account for precision (e.g. Roth
@@ -92,7 +169,7 @@ const DEFAULT_ACCESS_AGE = 59
 
 // Every category, in the order shown to the user when picking one interactively, with the default
 // tax treatment/access age that category implies -- the single source of truth both the heuristic
-// rules below and the interactive classifier (./actual accounts classify) derive traits from.
+// rules below and the interactive classifier (./actual configure) derive traits from.
 export const FIRE_ACCOUNT_CATEGORIES: readonly FireAccountCategory[] = [
   "retirement-tax-deferred",
   "retirement-roth",
@@ -163,7 +240,7 @@ export function classifyByHeuristic(name: string): FireAccountTraits | null {
 }
 
 // Function to find a config override matching an account by id or exact name
-export function findOverride(account: Pick<Account, "id" | "name">, config: FireAccountsConfig): FireAccountOverride | null {
+export function findOverride(account: Pick<Account, "id" | "name">, config: Pick<FireConfig, "accounts">): FireAccountOverride | null {
   return config.accounts.find((override) => override.match === account.id || override.match === account.name) ?? null
 }
 
@@ -171,10 +248,10 @@ export function findOverride(account: Pick<Account, "id" | "name">, config: Fire
 // treatment "none"). "other" -- not "cash" -- is the fallback, since a name the heuristic can't
 // recognize might not be cash at all; "cash" itself is only ever chosen explicitly (an override,
 // or an interactive answer). The "default" source is meant to be visibly flagged by callers (e.g.
-// accounts-classify.ts) as needing review -- it is a safe fallback, not a confident classification.
+// configure.ts) as needing review -- it is a safe fallback, not a confident classification.
 export function classifyAccounts(
   accounts: readonly Pick<Account, "id" | "name" | "offbudget">[],
-  config: FireAccountsConfig,
+  config: Pick<FireConfig, "accounts">,
 ): ClassifiedAccount[] {
   return accounts.map((account) => {
     const identity = { id: account.id, name: account.name, offbudget: account.offbudget }
@@ -186,33 +263,36 @@ export function classifyAccounts(
         taxTreatment: override.taxTreatment ?? "none",
         accessAge: override.accessAge ?? null,
         allocationPreset: override.allocationPreset ?? null,
+        monthlyContribution: override.monthlyContribution ?? null,
         source: "override" as const,
       }
     }
     const heuristic = classifyByHeuristic(account.name)
     if (heuristic) {
-      return { ...identity, ...heuristic, source: "heuristic" as const }
+      return { ...identity, ...heuristic, monthlyContribution: null, source: "heuristic" as const }
     }
-    return { ...identity, ...traitsForCategory("other"), source: "default" as const }
+    return { ...identity, ...traitsForCategory("other"), monthlyContribution: null, source: "default" as const }
   })
 }
 
-export interface LoadedFireAccountsConfig {
-  config: FireAccountsConfig
+export interface LoadedFireConfig {
+  config: FireConfig
   found: boolean
 }
 
-// Function to load the account classification overrides file. Missing is fine (an empty config,
-// meaning "no overrides yet") -- `found: false` lets a caller decide whether to warn about that,
-// keeping this function itself free of console side effects and easy to test. Present-but-
-// malformed is always an error: silently ignoring a typo in the user's own overrides would be
-// worse than failing loudly.
-export function loadFireAccountsConfig(path: string): LoadedFireAccountsConfig {
+// Function to load config.json. Missing is fine (an empty, unconfigured config) -- `found: false`
+// lets a caller decide whether to warn about that, keeping this function itself free of console
+// side effects and easy to test. Present-but-malformed is always an error: silently ignoring a
+// typo in the user's own config would be worse than failing loudly. An old-shape file (from before
+// this schema grew birthDate/retirementAges/planToAge/crossover/monteCarlo) is NOT an error --
+// missing top-level sections are treated as "not yet configured" and backfilled with defaults, so
+// ./actual configure can pick up where an old accounts.json-shaped file left off.
+export function loadFireConfig(path: string): LoadedFireConfig {
   let raw: string
   try {
     raw = readFileSync(path, "utf8")
   } catch {
-    return { config: EMPTY_FIRE_ACCOUNTS_CONFIG, found: false }
+    return { config: EMPTY_FIRE_CONFIG, found: false }
   }
 
   let parsed: unknown
@@ -228,45 +308,101 @@ export function loadFireAccountsConfig(path: string): LoadedFireAccountsConfig {
     (parsed as { version?: unknown }).version !== 1 ||
     !Array.isArray((parsed as { accounts?: unknown }).accounts)
   ) {
-    throw new Error(`Invalid accounts config in ${path}: expected { "version": 1, "accounts": [...] }`)
+    throw new Error(`Invalid config in ${path}: expected { "version": 1, "accounts": [...] }`)
   }
 
-  const config = parsed as FireAccountsConfig
-  for (const override of config.accounts) {
+  const partial = parsed as Partial<FireConfig> & { version: 1; accounts: FireAccountOverride[] }
+
+  for (const override of partial.accounts) {
     // Catches a config left over from before a category/tax-treatment value was renamed, not just
     // a hand-typo -- letting either through would silently misbehave downstream (e.g. an unknown
     // category can't be found in FIRE_ACCOUNT_CATEGORIES, breaking the interactive default index)
     // rather than failing loudly here where the problem is obvious.
     if (!FIRE_ACCOUNT_CATEGORIES.includes(override.category)) {
       throw new Error(
-        `Invalid accounts config in ${path}: unknown category "${override.category}" for "${override.match}". ` +
+        `Invalid config in ${path}: unknown category "${override.category}" for "${override.match}". ` +
           `Valid categories: ${FIRE_ACCOUNT_CATEGORIES.join(", ")}.`,
       )
     }
     if (override.taxTreatment !== undefined && !TAX_TREATMENTS.includes(override.taxTreatment)) {
       throw new Error(
-        `Invalid accounts config in ${path}: unknown taxTreatment "${override.taxTreatment}" for "${override.match}". ` +
+        `Invalid config in ${path}: unknown taxTreatment "${override.taxTreatment}" for "${override.match}". ` +
           `Valid values: ${TAX_TREATMENTS.join(", ")}.`,
       )
     }
-    if (
-      override.allocationPreset != null &&
-      !MONTE_CARLO_ALLOCATION_PRESETS.includes(override.allocationPreset)
-    ) {
+    if (override.allocationPreset != null && !MONTE_CARLO_ALLOCATION_PRESETS.includes(override.allocationPreset)) {
       throw new Error(
-        `Invalid accounts config in ${path}: unknown allocationPreset "${override.allocationPreset}" for "${override.match}". ` +
+        `Invalid config in ${path}: unknown allocationPreset "${override.allocationPreset}" for "${override.match}". ` +
           `Valid values: ${MONTE_CARLO_ALLOCATION_PRESETS.join(", ")}.`,
       )
     }
   }
 
+  if (partial.retirementAges !== undefined) {
+    if (!Array.isArray(partial.retirementAges) || partial.retirementAges.some((age) => typeof age !== "number" || age <= 0)) {
+      throw new Error(`Invalid config in ${path}: retirementAges must be an array of positive numbers.`)
+    }
+  }
+  if (partial.planToAge !== undefined && (typeof partial.planToAge !== "number" || partial.planToAge <= 0)) {
+    throw new Error(`Invalid config in ${path}: planToAge must be a positive number.`)
+  }
+  if (partial.crossover?.projectionType !== undefined && !CROSSOVER_PROJECTION_TYPES.includes(partial.crossover.projectionType)) {
+    throw new Error(
+      `Invalid config in ${path}: unknown crossover.projectionType "${partial.crossover.projectionType}". ` +
+        `Valid values: ${CROSSOVER_PROJECTION_TYPES.join(", ")}.`,
+    )
+  }
+  if (
+    partial.monteCarlo?.withdrawalStrategy !== undefined &&
+    !MONTE_CARLO_WITHDRAWAL_STRATEGIES.includes(partial.monteCarlo.withdrawalStrategy)
+  ) {
+    throw new Error(
+      `Invalid config in ${path}: unknown monteCarlo.withdrawalStrategy "${partial.monteCarlo.withdrawalStrategy}". ` +
+        `Valid values: ${MONTE_CARLO_WITHDRAWAL_STRATEGIES.join(", ")}.`,
+    )
+  }
+  if (partial.monteCarlo?.returnModel !== undefined && !MONTE_CARLO_RETURN_MODELS.includes(partial.monteCarlo.returnModel)) {
+    throw new Error(
+      `Invalid config in ${path}: unknown monteCarlo.returnModel "${partial.monteCarlo.returnModel}". ` +
+        `Valid values: ${MONTE_CARLO_RETURN_MODELS.join(", ")}.`,
+    )
+  }
+  if (
+    partial.monteCarlo?.withdrawalRule?.type !== undefined &&
+    !MONTE_CARLO_WITHDRAWAL_RULE_TYPES.includes(partial.monteCarlo.withdrawalRule.type)
+  ) {
+    throw new Error(
+      `Invalid config in ${path}: unknown monteCarlo.withdrawalRule.type "${partial.monteCarlo.withdrawalRule.type}". ` +
+        `Valid values: ${MONTE_CARLO_WITHDRAWAL_RULE_TYPES.join(", ")}.`,
+    )
+  }
+  if (partial.monteCarlo?.taxModel !== undefined && !MONTE_CARLO_TAX_MODELS.includes(partial.monteCarlo.taxModel)) {
+    throw new Error(
+      `Invalid config in ${path}: unknown monteCarlo.taxModel "${partial.monteCarlo.taxModel}". ` +
+        `Valid values: ${MONTE_CARLO_TAX_MODELS.join(", ")}.`,
+    )
+  }
+
+  const config: FireConfig = {
+    version: 1,
+    accounts: partial.accounts,
+    birthDate: partial.birthDate ?? null,
+    retirementAges: partial.retirementAges ?? [],
+    planToAge: partial.planToAge ?? DEFAULT_PLAN_TO_AGE,
+    crossover: { ...DEFAULT_CROSSOVER_CONFIG, ...partial.crossover },
+    monteCarlo: {
+      ...DEFAULT_MONTE_CARLO_CONFIG,
+      ...partial.monteCarlo,
+      withdrawalRule: { ...DEFAULT_MONTE_CARLO_CONFIG.withdrawalRule, ...partial.monteCarlo?.withdrawalRule },
+    },
+  }
+
   return { config, found: true }
 }
 
-// Function to write the account classification overrides file, e.g. after an interactive
-// classification session (./actual accounts classify) has collected a fresh answer for every
-// currently-open account.
-export function writeFireAccountsConfig(path: string, config: FireAccountsConfig): void {
+// Function to write config.json, e.g. after an interactive configuration session (./actual
+// configure) has collected a fresh answer for every question.
+export function writeFireConfig(path: string, config: FireConfig): void {
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`)
 }
 
@@ -275,11 +411,11 @@ export interface ClassifiedAccountsResult {
   configFound: boolean
 }
 
-// Function to load the overrides config, fetch every open account, and classify them -- the one
-// non-pure export in this module (it makes an API call), shared by accounts-classify.ts and
-// reports-fire.ts so the "load, fetch, classify" sequence isn't duplicated between them.
+// Function to load config.json, fetch every open account, and classify them -- the one non-pure
+// export in this module (it makes an API call), shared by configure.ts and reports-fire.ts so the
+// "load, fetch, classify" sequence isn't duplicated between them.
 export async function loadClassifiedAccounts(config: ActualConfig, configPath: string): Promise<ClassifiedAccountsResult> {
-  const { config: accountsConfig, found: configFound } = loadFireAccountsConfig(configPath)
+  const { config: fireConfig, found: configFound } = loadFireConfig(configPath)
   const accounts = await fetchAllOpenAccounts(config)
-  return { accounts: classifyAccounts(accounts, accountsConfig), configFound }
+  return { accounts: classifyAccounts(accounts, fireConfig), configFound }
 }

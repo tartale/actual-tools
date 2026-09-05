@@ -2,49 +2,38 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 
-import {
-  ageFromBirthDate,
-  averageSpent,
-  fetchAccountBalance,
-  fetchCategoryGroups,
-  fetchHistoricalSpent,
-  formatUsd,
-  loadConfigFromEnv,
-  validateDateFormat,
-} from "./actual-helpers.ts"
+import { ageFromBirthDate, averageSpent, fetchAccountBalance, fetchCategoryGroups, fetchHistoricalSpent, formatUsd, loadConfigFromEnv, validateDateFormat } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
-import { buildFireDashboard, buildMonteCarloWidgets, mergeGeneratedDashboard, portfolioAccountIds } from "./fire-dashboard.ts"
+import { buildFireDashboard, buildMonteCarloWidgets, mergeGeneratedDashboard, portfolioAccountIds, totalMonthlyContribution } from "./fire-dashboard.ts"
 import type { ExistingDashboard } from "./fire-dashboard.ts"
-import { DEFAULT_ACCOUNTS_CONFIG_PATH, loadClassifiedAccounts } from "./fire-accounts.ts"
+import { DEFAULT_CONFIG_PATH, loadClassifiedAccounts, loadFireConfig } from "./fire-accounts.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
 
 const DEFAULT_OUTPUT_PATH = "fire-dashboard.json"
 const HISTORY_MONTHS = 12
 const BALANCE_SINCE_DATE = "1970-01-01"
-// Conservative default planning horizon: assume the money needs to last to this age rather than
-// asking the user to estimate their own lifespan. Overridable via --plan-to-age.
-const DEFAULT_PLAN_TO_AGE = 100
 
 interface Options {
   outputPath: string
   configPath: string
   dryRun: boolean
-  birthDate: string
+  birthDate: string | null
   retirementAges: number[]
-  planToAge: number
+  planToAge: number | null
 }
 
 const HELP_PAGE: HelpPage = {
-  usage: "./actual reports fire -r N [OPTIONS]",
+  usage: "./actual reports fire [OPTIONS]",
   description:
     "Builds an Actual-native FIRE dashboard (net worth, a safe-withdrawal-rate crossover " +
     "projection, and a Monte Carlo retirement simulation -- experimental in Actual, enable it " +
-    "under Settings > Advanced > Experimental features first) from your real account and category " +
-    "data, and writes it as a dashboard JSON file. Regenerating over an existing output file " +
-    "preserves any customization you've made to it (see README). Import it into Actual yourself: " +
-    "create a NEW, empty dashboard page first (e.g. \"FIRE\") -- importing REPLACES every widget " +
-    "already on the target page.",
+    "under Settings > Advanced > Experimental features first) from your real account/category " +
+    "data and the assumptions in your config file (see ./actual configure), and writes it as a " +
+    "dashboard JSON file. Regenerating over an existing output file preserves any customization " +
+    "you've made to it (see README). Import it into Actual yourself: create a NEW, empty " +
+    "dashboard page first (e.g. \"FIRE\") -- importing REPLACES every widget already on the " +
+    "target page.",
   sections: [
     {
       label: "Options",
@@ -52,23 +41,13 @@ const HELP_PAGE: HelpPage = {
         {
           name: "-r, --retirement-age N",
           description:
-            "The age you plan to retire (start drawing down your portfolio) at. Required, can be used " +
-            "multiple times to compare retirement ages -- each gets its own Monte Carlo widget, stacked " +
-            "on the dashboard (Actual has no way to overlay multiple Monte Carlo configs on one chart).",
+            "Compare this retirement age instead of the config file's. Can be used multiple times; replaces the " +
+            "whole configured list for this run (doesn't add to it) -- each age gets its own Monte Carlo widget.",
         },
-        {
-          name: "-b, --birth-date YYYY-MM-DD",
-          description: "Your birth date, to compute your current age. Overrides AB_BIRTH_DATE. One of the two is required.",
-        },
-        {
-          name: "-p, --plan-to-age N",
-          description: `Assume the plan needs to last to this age, instead of guessing your lifespan (default: ${DEFAULT_PLAN_TO_AGE}).`,
-        },
+        { name: "-b, --birth-date YYYY-MM-DD", description: "Use this birth date instead of the config file's (or AB_BIRTH_DATE)." },
+        { name: "-p, --plan-to-age N", description: "Use this planning horizon instead of the config file's." },
         { name: "-o, --output PATH", description: `Where to write the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
-        {
-          name: "-f, --config PATH",
-          description: `Path to the account classification overrides file (default: ${DEFAULT_ACCOUNTS_CONFIG_PATH}).`,
-        },
+        { name: "-f, --config PATH", description: `Path to the config file (default: ${DEFAULT_CONFIG_PATH}).` },
         {
           name: "-n, --dry-run",
           description: "Print the plan and the JSON that would be written, without writing the file. Also enabled by setting DRY_RUN=true.",
@@ -101,11 +80,11 @@ function parseAgeArgument(flag: string, value: string | undefined): number {
 // Function to parse and validate command-line arguments
 function parseArguments(argv: readonly string[]): Options {
   let outputPath = DEFAULT_OUTPUT_PATH
-  let configPath = DEFAULT_ACCOUNTS_CONFIG_PATH
+  let configPath = DEFAULT_CONFIG_PATH
   let dryRun = process.env.DRY_RUN === "true"
-  let birthDateArg: string | null = null
+  let birthDate: string | null = null
   const retirementAges: number[] = []
-  let planToAge = DEFAULT_PLAN_TO_AGE
+  let planToAge: number | null = null
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string
@@ -131,7 +110,7 @@ function parseArguments(argv: readonly string[]): Options {
         usage("Missing argument for --birth-date")
       }
       validateDateFormat(value)
-      birthDateArg = value
+      birthDate = value
       i++
     } else if (arg === "-r" || arg === "--retirement-age") {
       retirementAges.push(parseAgeArgument(arg, argv[i + 1]))
@@ -147,21 +126,7 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  const birthDate = birthDateArg ?? process.env.AB_BIRTH_DATE
-  if (!birthDate) {
-    usage("Missing birth date: set AB_BIRTH_DATE or pass --birth-date YYYY-MM-DD")
-  }
-  validateDateFormat(birthDate)
-  if (retirementAges.length === 0) {
-    usage("At least one --retirement-age is required.")
-  }
-
   return { outputPath, configPath, dryRun, birthDate, retirementAges, planToAge }
-}
-
-// Function to get the current month as a yyyy-mm string
-function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7)
 }
 
 // Function to read a previously written dashboard file, if any, so mergeGeneratedDashboard can
@@ -186,6 +151,11 @@ function loadExistingDashboard(path: string): ExistingDashboard | null {
   }
 }
 
+// Function to get the current month as a yyyy-mm string
+function currentMonth(): string {
+  return new Date().toISOString().slice(0, 7)
+}
+
 // Function to sum the trailing-12-month average spend across every given category, for the
 // console sanity-check numbers only -- not fed into the widget itself, which computes its own
 // live figures once imported into Actual.
@@ -204,21 +174,35 @@ async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2))
   const config: ActualConfig = loadConfigFromEnv()
 
-  const currentAge = ageFromBirthDate(options.birthDate)
-  if (options.planToAge <= currentAge) {
-    usage(`--plan-to-age (${options.planToAge}) must be greater than your current age (${currentAge})`)
+  const { config: fireConfig, found: configFound } = loadFireConfig(options.configPath)
+  if (!configFound) {
+    throw new Error(`No ${options.configPath} found. Run './actual configure' first.`)
   }
 
-  const { accounts, configFound } = await loadClassifiedAccounts(config, options.configPath)
-  if (!configFound) {
-    throw new Error(`No ${options.configPath} found. Run './actual accounts classify' first to classify your accounts.`)
+  const birthDate = options.birthDate ?? fireConfig.birthDate ?? process.env.AB_BIRTH_DATE
+  if (!birthDate) {
+    usage(`Missing birth date: set it via './actual configure', pass --birth-date, or set AB_BIRTH_DATE`)
   }
+  validateDateFormat(birthDate)
+  const currentAge = ageFromBirthDate(birthDate)
+
+  const retirementAges = options.retirementAges.length > 0 ? options.retirementAges : fireConfig.retirementAges
+  if (retirementAges.length === 0) {
+    usage("No retirement age configured: set one via './actual configure' or pass --retirement-age.")
+  }
+
+  const planToAge = options.planToAge ?? fireConfig.planToAge
+  if (planToAge <= currentAge) {
+    usage(`planToAge (${planToAge}) must be greater than your current age (${currentAge})`)
+  }
+
+  const { accounts } = await loadClassifiedAccounts(config, options.configPath)
 
   const portfolioIds = portfolioAccountIds(accounts)
   if (portfolioIds.length === 0) {
     throw new Error(
       "No accounts are classified as retirement/HSA/investment-taxable -- nothing to build a portfolio from. " +
-        `Run './actual accounts classify' and add overrides to ${options.configPath} first.`,
+        `Run './actual configure' and add overrides to ${options.configPath} first.`,
     )
   }
 
@@ -237,9 +221,9 @@ async function main(): Promise<void> {
   console.log(`Portfolio accounts (${portfolioIds.length}): current total ${formatUsd(portfolioTotal)}`)
   console.log(`Expense categories (${expenseCategoryIds.length}): trailing 12-month spend ${formatUsd(annualSpend)}/yr`)
 
-  const generated = buildFireDashboard(expenseCategoryIds, portfolioIds)
+  const generated = buildFireDashboard(expenseCategoryIds, portfolioIds, fireConfig.crossover, totalMonthlyContribution(accounts))
   generated.widgets.push(
-    ...buildMonteCarloWidgets(0, 6, accounts, currentAge, options.retirementAges, options.planToAge, annualSpend),
+    ...buildMonteCarloWidgets(0, 6, accounts, currentAge, retirementAges, planToAge, annualSpend, fireConfig.monteCarlo),
   )
 
   const existing = loadExistingDashboard(options.outputPath)

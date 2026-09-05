@@ -20,7 +20,7 @@ function usage() {
     "test" "Run the unit test suite." \
     "budget" "Set category budgets or flag unusual spending. See './actual budget --help'." \
     "transactions" "Work with individual transactions. See './actual transactions --help'." \
-    "accounts" "Work with individual accounts. See './actual accounts --help'." \
+    "configure" "Interactively configure account classification and FIRE chart assumptions. See './actual configure --help'." \
     "reports" "Generate FIRE and other financial reports. See './actual reports --help'."
   exit "${exitCode}"
 }
@@ -43,16 +43,6 @@ function transactionsUsage() {
   echo >&2
   cliSection "Subcommands" \
     "match-uncleared" "Tag uncleared transactions that match a cleared one."
-  exit "${exitCode}"
-}
-
-# Function to display usage for the accounts subcommand group and exit
-function accountsUsage() {
-  local exitCode="${1:-1}"
-  cliUsage "./actual accounts SUBCOMMAND [ARGS]"
-  echo >&2
-  cliSection "Subcommands" \
-    "classify" "List every account with its computed FIRE classification and balance."
   exit "${exitCode}"
 }
 
@@ -153,28 +143,6 @@ function commandTransactions() {
   esac
 }
 
-# Function to dispatch the accounts subcommands
-function commandAccounts() {
-  local subcommand="${1:-}"
-  if [[ -z "${subcommand}" ]]; then
-    accountsUsage 1
-  fi
-  if [[ "${subcommand}" == "-h" || "${subcommand}" == "--help" ]]; then
-    accountsUsage 0
-  fi
-  shift
-
-  case "${subcommand}" in
-    classify)
-      exec ./src/accounts-classify.ts "$@"
-      ;;
-    *)
-      echo "Unknown accounts subcommand: ${subcommand}" >&2
-      accountsUsage
-      ;;
-  esac
-}
-
 # Function to dispatch the reports subcommands
 function commandReports() {
   local subcommand="${1:-}"
@@ -211,7 +179,7 @@ function main() {
     test) commandTest "$@" ;;
     budget) commandBudget "$@" ;;
     transactions) commandTransactions "$@" ;;
-    accounts) commandAccounts "$@" ;;
+    configure) exec ./src/configure.ts "$@" ;;
     reports) commandReports "$@" ;;
     -h|--help|help) usage 0 ;;
     *)
