@@ -9,7 +9,7 @@
     "set-budget": "./src/set-budget.ts",
     "anomalies": "./src/anomalies.ts",
     "match-uncleared": "./src/match-uncleared.ts",
-    "report-accounts": "./src/report-accounts.ts",
+    "accounts-classify": "./src/accounts-classify.ts",
     "report-fire": "./src/report-fire.ts"
   },
   "engines": {

@@ -126,7 +126,7 @@ async function main(): Promise<void> {
   if (portfolioIds.length === 0) {
     throw new Error(
       "No accounts are classified as retirement/HSA/taxable-investment -- nothing to build a portfolio from. " +
-        `Run './actual report accounts' and add overrides to ${options.configPath} first.`,
+        `Run './actual accounts classify' and add overrides to ${options.configPath} first.`,
     )
   }
 

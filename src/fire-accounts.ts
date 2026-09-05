@@ -7,7 +7,7 @@ import type { Account, ActualConfig } from "./actual-helpers.ts"
 // detail about each (tax treatment, access age) to eventually populate a Monte Carlo "pot" in a
 // later phase. Pure -- no API calls. Actual's own account API has no type field, so this combines
 // a heuristic guess at the account's name with an explicit config file the guess can be
-// overridden by. See ./actual report accounts for the tool that surfaces the result for review.
+// overridden by. See ./actual accounts classify for the tool that surfaces the result for review.
 
 export type FireAccountCategory =
   | "retirement-tax-deferred"
@@ -100,7 +100,7 @@ export function findOverride(account: Pick<Account, "id" | "name">, config: Fire
 
 // Function to classify every account: override > heuristic > safe default ("cash-other", tax
 // treatment "none"). The "default" source is meant to be visibly flagged by callers (e.g.
-// report-accounts.ts) as needing review -- it is a safe fallback, not a confident classification.
+// accounts-classify.ts) as needing review -- it is a safe fallback, not a confident classification.
 export function classifyAccounts(
   accounts: readonly Pick<Account, "id" | "name" | "offbudget">[],
   config: FireAccountsConfig,
@@ -168,7 +168,7 @@ export interface ClassifiedAccountsResult {
 }
 
 // Function to load the overrides config, fetch every open account, and classify them -- the one
-// non-pure export in this module (it makes an API call), shared by report-accounts.ts and
+// non-pure export in this module (it makes an API call), shared by accounts-classify.ts and
 // report-fire.ts so the "load, fetch, classify" sequence isn't duplicated between them.
 export async function loadClassifiedAccounts(config: ActualConfig, configPath: string): Promise<ClassifiedAccountsResult> {
   const { config: accountsConfig, found: configFound } = loadFireAccountsConfig(configPath)

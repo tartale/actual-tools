@@ -1,6 +1,6 @@
 ---
 name: fire-dashboard
-description: "Status/design for ./actual report fire and report accounts, a FIRE dashboard built on Actual's own native dashboard widgets"
+description: "Status/design for ./actual report fire and ./actual accounts classify, a FIRE dashboard built on Actual's own native dashboard widgets"
 metadata: 
   node_type: memory
   type: project
@@ -8,7 +8,7 @@ metadata:
   originSessionId: 860c6192-bf02-40b0-9166-e69d50daa24b
 ---
 
-`./actual report fire` and `./actual report accounts` (2026-09-05, Phases 1-2
+`./actual report fire` and `./actual accounts classify` (2026-09-05, Phases 1-2
 of a plan approved that session) build a FIRE (Financial Independence, Retire
 Early) dashboard from the user's real Actual Budget data, inspired by the
 feature scope of the (still unstarted, code-wise) `tartale/fire-me` repo —
@@ -58,7 +58,7 @@ case-insensitive name-pattern heuristics (roth/hsa checked before the
 broader 401k/ira pattern, so "Roth 401k" classifies correctly) with an
 explicit `fire-accounts.json` override file (gitignored, real account
 names/ids) taking priority. Unmatched accounts default to `cash-other`,
-flagged `source: "default"` so `./actual report accounts` can surface them
+flagged `source: "default"` so `./actual accounts classify` can surface them
 as "needs review" rather than guessing silently. Verified live against the
 user's real budget: all 8 real retirement/investment/debt accounts
 classified correctly by heuristic alone; the 3 everyday checking/savings/
@@ -93,6 +93,8 @@ scoping) is at `~/.claude/plans/take-a-look-at-ethereal-dawn.md`. New files:
 `src/fire-accounts.ts` (+ `.test.ts`), `src/fire-dashboard.ts` (+ `.test.ts`,
 the vendored `ExportImportDashboard` types — re-check against upstream
 before extending, Actual doesn't version this file independently of its own
-releases), `src/report-accounts.ts`, `src/report-fire.ts`,
+releases), `src/accounts-classify.ts`, `src/report-fire.ts`,
 `fire-accounts.example.json`. `actual-helpers.ts` gained
 `fetchAllOpenAccounts`, `sumTransactionAmounts`, `fetchAccountBalance`.
+
+**Renamed 2026-09-05, same session**: `./actual report accounts` moved to `./actual accounts classify`, its own top-level `accounts` command group (`accountsUsage`/`commandAccounts` in `actual`), not under `report` anymore. `src/report-accounts.ts` renamed to `src/accounts-classify.ts`; `package.json`'s bin entry renamed `report-accounts` -> `accounts-classify`. `report` now has just `fire`.

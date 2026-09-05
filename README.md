@@ -25,7 +25,7 @@ Every task in this repo runs through one dispatcher, from any directory:
 ./actual budget set-values ARGS            # set category budgets
 ./actual budget anomalies ARGS             # flag categories with unusual spending
 ./actual transactions match-uncleared ARGS # tag matching uncleared transactions
-./actual report accounts ARGS              # list accounts with their FIRE classification
+./actual accounts classify ARGS            # list accounts with their FIRE classification
 ./actual report fire ARGS                  # build a FIRE dashboard for import into Actual
 ```
 
@@ -146,7 +146,7 @@ early-imported, never-updated row), but it means an occasional false match
 between two otherwise-unrelated transactions is possible; review the printed
 pairs, especially with `-n` first, before trusting a large `--since` window.
 
-## `./actual report accounts`
+## `./actual accounts classify`
 
 Actual's account API has no account-type field, so this repo can't know on
 its own which accounts are retirement, taxable-investment, HSA, or debt.
@@ -156,7 +156,7 @@ and current balance, so the classification can be checked against reality
 before it feeds `./actual report fire`.
 
 ```
-./actual report accounts [-f PATH]
+./actual accounts classify [-f PATH]
 ```
 
 - `-f`, `--config PATH` — path to the classification overrides file
@@ -221,7 +221,7 @@ undo/ctrl-z covers a bad import), never your main dashboard. Re-running
 `report fire` and re-importing onto that same page is the normal way to
 refresh it, not a mistake to avoid.
 
-Run `./actual report accounts` first and fix any classification in
+Run `./actual accounts classify` first and fix any classification in
 `fire-accounts.json` — this command refuses to run if no account classifies
 as retirement/HSA/taxable-investment, since that almost always means the
 classification needs attention, not that the answer is "no portfolio."
@@ -241,7 +241,7 @@ src/                     TypeScript sources and their tests
   set-budget.ts          executable CLI
   anomalies.ts           executable CLI
   match-uncleared.ts     executable CLI
-  report-accounts.ts     executable CLI
+  accounts-classify.ts   executable CLI
   report-fire.ts         executable CLI
   *.test.ts              vitest unit tests
 eslint.config.js         flat config, type-aware rules via typescript-eslint

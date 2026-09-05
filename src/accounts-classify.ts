@@ -17,7 +17,7 @@ interface Options {
 }
 
 const HELP_PAGE: HelpPage = {
-  usage: "./actual report accounts [OPTIONS]",
+  usage: "./actual accounts classify [OPTIONS]",
   description:
     "Lists every open account (on- and off-budget) with its computed FIRE classification and " +
     "current balance, so the classification can be checked against reality before it feeds " +
