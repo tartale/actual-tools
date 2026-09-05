@@ -5,6 +5,7 @@ import {
   buildCrossoverWidget,
   buildFireDashboard,
   buildMonteCarloWidget,
+  buildMonteCarloWidgets,
   buildNetWorthWidget,
   buildPot,
   buildSpendingPhases,
@@ -191,9 +192,10 @@ describe("buildMonteCarloWidget", () => {
     expect(widget.meta?.pots?.[0]?.accountId).toBe("a1")
   })
 
-  it("sets withdrawalStrategy, ages, spending phases, and a flat tax model", () => {
+  it("sets withdrawalStrategy, ages, spending phases, a flat tax model, and a default name", () => {
     const widget = buildMonteCarloWidget(0, 6, [portfolioAccount], 45, 45, 90, 500000)
     expect(widget.meta).toMatchObject({
+      name: "Monte Carlo",
       withdrawalStrategy: "proportional",
       currentAge: 45,
       targetAge: 90,
@@ -208,8 +210,43 @@ describe("buildMonteCarloWidget", () => {
     expect(widget.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 60, 500000))
   })
 
+  it("accepts an explicit name override", () => {
+    const widget = buildMonteCarloWidget(0, 6, [portfolioAccount], 45, 45, 90, 500000, "Retire at 55")
+    expect(widget.meta?.name).toBe("Retire at 55")
+  })
+
   it("throws a clear error when a portfolio account has no allocationPreset set", () => {
     const incomplete = account({ id: "a3", category: "hsa", allocationPreset: null })
     expect(() => buildMonteCarloWidget(0, 6, [incomplete], 45, 45, 90, 500000)).toThrow(/allocationPreset/)
+  })
+})
+
+describe("buildMonteCarloWidgets", () => {
+  const portfolioAccount = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" })
+
+  it("builds one widget with the plain default name for a single retirement age", () => {
+    const widgets = buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [55], 90, 500000)
+    expect(widgets).toHaveLength(1)
+    expect(widgets[0]?.meta?.name).toBe("Monte Carlo")
+    expect(widgets[0]).toMatchObject({ x: 0, y: 6 })
+  })
+
+  it("stacks one uniquely-named widget per retirement age, in order", () => {
+    const widgets = buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [55, 60, 65], 90, 500000)
+    expect(widgets).toHaveLength(3)
+    expect(widgets.map((widget) => widget.meta?.name)).toEqual([
+      "Monte Carlo — Retire at 55",
+      "Monte Carlo — Retire at 60",
+      "Monte Carlo — Retire at 65",
+    ])
+    // stacked vertically on the same column, each below the last, none overlapping
+    expect(widgets.map((widget) => widget.y)).toEqual([6, 10, 14])
+    expect(widgets.every((widget) => widget.x === 0)).toBe(true)
+  })
+
+  it("gives each widget its own retirement age's spending phases", () => {
+    const widgets = buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [45, 60], 90, 500000)
+    expect(widgets[0]?.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 45, 500000))
+    expect(widgets[1]?.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 60, 500000))
   })
 })

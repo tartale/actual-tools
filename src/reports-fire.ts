@@ -13,7 +13,7 @@ import {
   validateDateFormat,
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
-import { buildFireDashboard, buildMonteCarloWidget, portfolioAccountIds } from "./fire-dashboard.ts"
+import { buildFireDashboard, buildMonteCarloWidgets, portfolioAccountIds } from "./fire-dashboard.ts"
 import { DEFAULT_ACCOUNTS_CONFIG_PATH, loadClassifiedAccounts } from "./fire-accounts.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
@@ -30,7 +30,7 @@ interface Options {
   configPath: string
   dryRun: boolean
   birthDate: string
-  retirementAge: number
+  retirementAges: number[]
   planToAge: number
 }
 
@@ -47,7 +47,13 @@ const HELP_PAGE: HelpPage = {
     {
       label: "Options",
       entries: [
-        { name: "--retirement-age N", description: "The age you plan to retire (start drawing down your portfolio) at. Required." },
+        {
+          name: "--retirement-age N",
+          description:
+            "The age you plan to retire (start drawing down your portfolio) at. Required, can be used " +
+            "multiple times to compare retirement ages -- each gets its own Monte Carlo widget, stacked " +
+            "on the dashboard (Actual has no way to overlay multiple Monte Carlo configs on one chart).",
+        },
         {
           name: "--birth-date YYYY-MM-DD",
           description: "Your birth date, to compute your current age. Overrides AB_BIRTH_DATE. One of the two is required.",
@@ -96,7 +102,7 @@ function parseArguments(argv: readonly string[]): Options {
   let configPath = DEFAULT_ACCOUNTS_CONFIG_PATH
   let dryRun = process.env.DRY_RUN === "true"
   let birthDateArg: string | null = null
-  let retirementAge: number | null = null
+  const retirementAges: number[] = []
   let planToAge = DEFAULT_PLAN_TO_AGE
 
   for (let i = 0; i < argv.length; i++) {
@@ -126,7 +132,7 @@ function parseArguments(argv: readonly string[]): Options {
       birthDateArg = value
       i++
     } else if (arg === "--retirement-age") {
-      retirementAge = parseAgeArgument(arg, argv[i + 1])
+      retirementAges.push(parseAgeArgument(arg, argv[i + 1]))
       i++
     } else if (arg === "--plan-to-age") {
       planToAge = parseAgeArgument(arg, argv[i + 1])
@@ -144,11 +150,11 @@ function parseArguments(argv: readonly string[]): Options {
     usage("Missing birth date: set AB_BIRTH_DATE or pass --birth-date YYYY-MM-DD")
   }
   validateDateFormat(birthDate)
-  if (retirementAge === null) {
-    usage("Missing required option: --retirement-age")
+  if (retirementAges.length === 0) {
+    usage("At least one --retirement-age is required.")
   }
 
-  return { outputPath, configPath, dryRun, birthDate, retirementAge, planToAge }
+  return { outputPath, configPath, dryRun, birthDate, retirementAges, planToAge }
 }
 
 // Function to get the current month as a yyyy-mm string
@@ -209,7 +215,7 @@ async function main(): Promise<void> {
 
   const dashboard = buildFireDashboard(expenseCategoryIds, portfolioIds)
   dashboard.widgets.push(
-    buildMonteCarloWidget(0, 6, accounts, currentAge, options.retirementAge, options.planToAge, annualSpend),
+    ...buildMonteCarloWidgets(0, 6, accounts, currentAge, options.retirementAges, options.planToAge, annualSpend),
   )
   const json = JSON.stringify(dashboard, null, 2)
 

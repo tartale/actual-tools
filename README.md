@@ -242,7 +242,8 @@ built-in dashboard widgets rather than reimplementing FIRE math.
 ```
 
 - `--retirement-age N` — the age you plan to retire (start drawing down your
-  portfolio) at. Required.
+  portfolio) at. Required, can be passed multiple times to compare
+  retirement ages side by side (see below).
 - `--birth-date YYYY-MM-DD` — your birth date, used to compute your current
   age. Overrides `AB_BIRTH_DATE` (see below). One of the two is required —
   since a birth date doesn't change, set the env var once and skip typing it
@@ -273,6 +274,15 @@ collapses to a single always-on phase at the real spend. Everything else
 for you to set in Actual's own UI once the widget is open — this only sets
 what Actual can't infer on its own.
 
+**Comparing multiple retirement ages**: pass `--retirement-age` more than
+once (e.g. `--retirement-age 55 --retirement-age 60 --retirement-age 65`)
+to get one Monte Carlo widget per age, stacked vertically on the dashboard
+page and each labeled with its age (e.g. "Monte Carlo — Retire at 60"). This
+isn't a single overlaid chart — Actual's dashboard has no way to compare
+multiple Monte Carlo configs on one chart, each widget holds exactly one —
+but stacking them on the same page is the closest real comparison the
+widget model supports.
+
 **Monte Carlo Analysis is an experimental Actual feature** — enable it under
 Settings → Advanced → Experimental features → Monte Carlo Analysis Report,
 or the imported widget won't render. It's also a newer feature than the
@@ -299,8 +309,9 @@ undo/ctrl-z covers a bad import), never your main dashboard. Re-running
 refresh it, not a mistake to avoid.
 
 ```sh
-./actual reports fire --retirement-age 60      # AB_BIRTH_DATE set in the environment
-./actual reports fire --retirement-age 60 -n   # preview without writing
+./actual reports fire --retirement-age 60                                       # AB_BIRTH_DATE set in the environment
+./actual reports fire --retirement-age 55 --retirement-age 60 --retirement-age 65   # compare three retirement ages
+./actual reports fire --retirement-age 60 -n                                    # preview without writing
 ```
 
 ## Layout

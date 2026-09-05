@@ -255,7 +255,9 @@ export function buildSpendingPhases(currentAge: number, retirementAge: number, a
   ]
 }
 
-// Function to build the monte-carlo-card widget: one pot per portfolio account (linked to its live
+export const MONTE_CARLO_WIDGET_HEIGHT = 4
+
+// Function to build one monte-carlo-card widget: one pot per portfolio account (linked to its live
 // balance), spending phases split around the retirement age, and a flat tax model. Everything else
 // (return model, withdrawal rule, contributions, simulation count) is left unset so Actual's own UI
 // defaults apply once the widget is opened -- this only sets what Actual can't infer on its own
@@ -268,6 +270,7 @@ export function buildMonteCarloWidget(
   retirementAge: number,
   targetAge: number,
   annualSpendCents: number,
+  name = "Monte Carlo",
 ): ExportImportDashboardWidget<MonteCarloCardMeta> {
   const eligibleAccounts = portfolioAccounts(accounts)
   const missingPreset = eligibleAccounts.find((account) => account.allocationPreset === null)
@@ -284,9 +287,9 @@ export function buildMonteCarloWidget(
     x,
     y,
     width: 12,
-    height: 4,
+    height: MONTE_CARLO_WIDGET_HEIGHT,
     meta: {
-      name: "Monte Carlo",
+      name,
       pots,
       withdrawalStrategy: "proportional",
       spendingPhases: buildSpendingPhases(currentAge, retirementAge, annualSpendCents),
@@ -296,4 +299,34 @@ export function buildMonteCarloWidget(
       targetAge,
     },
   }
+}
+
+// Function to build one stacked monte-carlo-card widget per retirement age, so multiple retirement
+// scenarios can be compared side by side on the same dashboard page. Actual's dashboard has no
+// built-in way to overlay multiple Monte Carlo configs on a single chart -- each widget holds
+// exactly one config -- so this is the closest real comparison the widget model supports. A single
+// retirement age keeps the original plain "Monte Carlo" name; multiple ages get a name naming each
+// one so they're distinguishable on the page.
+export function buildMonteCarloWidgets(
+  x: number,
+  y: number,
+  accounts: readonly ClassifiedAccount[],
+  currentAge: number,
+  retirementAges: readonly number[],
+  targetAge: number,
+  annualSpendCents: number,
+): ExportImportDashboardWidget<MonteCarloCardMeta>[] {
+  return retirementAges.map((retirementAge, index) => {
+    const name = retirementAges.length > 1 ? `Monte Carlo — Retire at ${retirementAge}` : "Monte Carlo"
+    return buildMonteCarloWidget(
+      x,
+      y + index * MONTE_CARLO_WIDGET_HEIGHT,
+      accounts,
+      currentAge,
+      retirementAge,
+      targetAge,
+      annualSpendCents,
+      name,
+    )
+  })
 }
