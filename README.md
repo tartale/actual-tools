@@ -182,8 +182,8 @@ accept it. **Accounts with no existing entry and no name-based guess show no
 default** — you have to type a number; there's no way to skip one.
 
 For accounts classified as retirement, HSA, or taxable investment, there's a
-second question — a stock/bond allocation, used only if you generate the
-Monte Carlo widget (see below):
+second question — a stock/bond allocation, used by the Monte Carlo widget
+(see below):
 
 ```
   1) equity-100 (100% stocks)
@@ -232,30 +232,29 @@ both reads and writes it.
 
 Builds an Actual-native FIRE (Financial Independence, Retire Early)
 dashboard from real account and spending data: a net-worth widget, a
-trailing-12-month spending widget, and a safe-withdrawal-rate "crossover"
-projection — using Actual's own built-in dashboard widgets rather than
-reimplementing FIRE math.
+trailing-12-month spending widget, a safe-withdrawal-rate "crossover"
+projection, and a Monte Carlo retirement simulation — using Actual's own
+built-in dashboard widgets rather than reimplementing FIRE math.
 
 ```
-./actual reports fire [-o PATH] [-f PATH] [-n] [-m --current-age N --target-age N]
+./actual reports fire --current-age N --target-age N [-o PATH] [-f PATH] [-n]
 ```
 
+- `--current-age N`, `--target-age N` — the plan's age window for the Monte
+  Carlo simulation. Required; not derivable from Actual's own data.
 - `-o`, `--output PATH` — where to write the dashboard JSON (default:
   `fire-dashboard.json`).
 - `-f`, `--config PATH` — path to `accounts.json` (default: repo root).
 - `-n`, `--dry-run` — print the plan and the JSON without writing the file.
   Also enabled by setting `DRY_RUN=true`.
-- `-m`, `--monte-carlo` — also add a Monte Carlo retirement-simulation
-  widget: one pot per portfolio account (linked to its live balance, using
-  the allocation you picked in `accounts classify`), a spending phase from
-  the same trailing-12-month spend, and a flat 22%/15%/0% tax-deferred/
-  taxable/tax-free withdrawal tax rate. Requires `--current-age`/
-  `--target-age`; everything else (return model, withdrawal rules,
-  contributions, simulation count) is left for you to set in Actual's own
-  UI once the widget is open — this only sets what Actual can't infer on
-  its own.
-- `--current-age N`, `--target-age N` — the plan's age window. Required with
-  `-m`; not derivable from Actual's own data.
+
+The Monte Carlo widget gets one pot per portfolio account (linked to its
+live balance, using the allocation you picked in `accounts classify`), a
+spending phase from the same trailing-12-month spend, and a flat 22%/15%/0%
+tax-deferred/taxable/tax-free withdrawal tax rate. Everything else (return
+model, withdrawal rules, contributions, simulation count) is left for you to
+set in Actual's own UI once the widget is open — this only sets what Actual
+can't infer on its own.
 
 **Monte Carlo Analysis is an experimental Actual feature** — enable it under
 Settings → Advanced → Experimental features → Monte Carlo Analysis Report,
@@ -283,9 +282,8 @@ undo/ctrl-z covers a bad import), never your main dashboard. Re-running
 refresh it, not a mistake to avoid.
 
 ```sh
-./actual reports fire                                       # net worth + spending + crossover
-./actual reports fire -m --current-age 45 --target-age 90   # ...plus a Monte Carlo widget
-./actual reports fire -n                                     # preview without writing
+./actual reports fire --current-age 45 --target-age 90      # net worth + spending + crossover + Monte Carlo
+./actual reports fire --current-age 45 --target-age 90 -n   # preview without writing
 ```
 
 ## Layout

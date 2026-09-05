@@ -24,23 +24,25 @@ interface Options {
   outputPath: string
   configPath: string
   dryRun: boolean
-  monteCarlo: boolean
-  currentAge: number | null
-  targetAge: number | null
+  currentAge: number
+  targetAge: number
 }
 
 const HELP_PAGE: HelpPage = {
-  usage: "./actual reports fire [OPTIONS]",
+  usage: "./actual reports fire --current-age N --target-age N [OPTIONS]",
   description:
-    "Builds an Actual-native FIRE dashboard (net worth, trailing-12-month spending, and a " +
-    "safe-withdrawal-rate crossover projection) from your real account and category data, and " +
-    "writes it as a dashboard JSON file. Import it into Actual yourself: create a NEW, empty " +
-    "dashboard page first (e.g. \"FIRE\") -- importing REPLACES every widget already on the " +
-    "target page.",
+    "Builds an Actual-native FIRE dashboard (net worth, trailing-12-month spending, a " +
+    "safe-withdrawal-rate crossover projection, and a Monte Carlo retirement simulation -- " +
+    "experimental in Actual, enable it under Settings > Advanced > Experimental features first) " +
+    "from your real account and category data, and writes it as a dashboard JSON file. Import it " +
+    "into Actual yourself: create a NEW, empty dashboard page first (e.g. \"FIRE\") -- importing " +
+    "REPLACES every widget already on the target page.",
   sections: [
     {
       label: "Options",
       entries: [
+        { name: "--current-age N", description: "Your current age, for the Monte Carlo simulation window. Required." },
+        { name: "--target-age N", description: "The age the plan should last to. Required." },
         { name: "-o, --output PATH", description: `Where to write the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
         {
           name: "-f, --config PATH",
@@ -50,14 +52,6 @@ const HELP_PAGE: HelpPage = {
           name: "-n, --dry-run",
           description: "Print the plan and the JSON that would be written, without writing the file. Also enabled by setting DRY_RUN=true.",
         },
-        {
-          name: "-m, --monte-carlo",
-          description:
-            "Also add a Monte Carlo retirement-simulation widget (experimental in Actual -- enable it under " +
-            "Settings > Advanced > Experimental features first). Requires --current-age and --target-age.",
-        },
-        { name: "--current-age N", description: "Your current age, for the Monte Carlo simulation window. Required with -m." },
-        { name: "--target-age N", description: "The age the plan should last to. Required with -m." },
         { name: "-h, --help", description: "Show this message and exit." },
       ],
     },
@@ -88,7 +82,6 @@ function parseArguments(argv: readonly string[]): Options {
   let outputPath = DEFAULT_OUTPUT_PATH
   let configPath = DEFAULT_ACCOUNTS_CONFIG_PATH
   let dryRun = process.env.DRY_RUN === "true"
-  let monteCarlo = false
   let currentAge: number | null = null
   let targetAge: number | null = null
 
@@ -110,8 +103,6 @@ function parseArguments(argv: readonly string[]): Options {
       i++
     } else if (arg === "-n" || arg === "--dry-run") {
       dryRun = true
-    } else if (arg === "-m" || arg === "--monte-carlo") {
-      monteCarlo = true
     } else if (arg === "--current-age") {
       currentAge = parseAgeArgument(arg, argv[i + 1])
       i++
@@ -126,14 +117,17 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  if (monteCarlo && (currentAge === null || targetAge === null)) {
-    usage("-m/--monte-carlo requires both --current-age and --target-age")
+  if (currentAge === null) {
+    usage("Missing required option: --current-age")
   }
-  if (monteCarlo && targetAge !== null && currentAge !== null && targetAge <= currentAge) {
+  if (targetAge === null) {
+    usage("Missing required option: --target-age")
+  }
+  if (targetAge <= currentAge) {
     usage(`--target-age (${targetAge}) must be greater than --current-age (${currentAge})`)
   }
 
-  return { outputPath, configPath, dryRun, monteCarlo, currentAge, targetAge }
+  return { outputPath, configPath, dryRun, currentAge, targetAge }
 }
 
 // Function to get the current month as a yyyy-mm string
@@ -188,13 +182,7 @@ async function main(): Promise<void> {
   console.log(`Expense categories (${expenseCategoryIds.length}): trailing 12-month spend ${formatUsd(annualSpend)}/yr`)
 
   const dashboard = buildFireDashboard(expenseCategoryIds, portfolioIds)
-  if (options.monteCarlo) {
-    // options.currentAge/targetAge are guaranteed non-null here: parseArguments requires both
-    // whenever monteCarlo is true.
-    dashboard.widgets.push(
-      buildMonteCarloWidget(0, 6, accounts, options.currentAge as number, options.targetAge as number, annualSpend),
-    )
-  }
+  dashboard.widgets.push(buildMonteCarloWidget(0, 6, accounts, options.currentAge, options.targetAge, annualSpend))
   const json = JSON.stringify(dashboard, null, 2)
 
   if (options.dryRun) {
@@ -205,13 +193,11 @@ async function main(): Promise<void> {
 
   writeFileSync(options.outputPath, `${json}\n`)
   console.log(`\nWrote ${options.outputPath} (${dashboard.widgets.length} widgets: ${dashboard.widgets.map((widget) => widget.type).join(", ")}).`)
-  if (options.monteCarlo) {
-    console.log(
-      "\nThe Monte Carlo widget is an experimental Actual feature: enable it under Settings > " +
-        "Advanced > Experimental features > Monte Carlo Analysis Report before importing, or the " +
-        "widget won't render.",
-    )
-  }
+  console.log(
+    "\nThe Monte Carlo widget is an experimental Actual feature: enable it under Settings > " +
+      "Advanced > Experimental features > Monte Carlo Analysis Report before importing, or the " +
+      "widget won't render.",
+  )
   console.log(`
 To import it into Actual:
   1. Open your budget in Actual, go to the Reports/Dashboard tab.
