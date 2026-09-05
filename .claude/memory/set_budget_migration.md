@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-05T01:32:36.913Z
+  modified: 2026-09-05T01:48:37.561Z
 ---
 
 `balance-to-zero.sh` is being fully replaced (no backward compat) by
@@ -160,6 +160,48 @@ for the new budgeted-copy action above (which had briefly been called
 now `"spent" | "spent-3" | "spent-12"`; `HISTORY_MONTHS` keys match. Easy to
 mix up when reading old commit messages/plan text that still say "previous"
 meaning the pre-rename spending action — check the date.
+
+**`match-uncleared.sh` ported to TypeScript** (2026-09-05, `src/match-uncleared.ts`);
+the bash file is `git rm`'d, matching the precedent set when `balance-to-zero.sh`
+was replaced — no backward-compat shim. `lib/cli-format.sh` stays, since
+`actual`'s own top-level/`budget` help still uses it.
+
+Two real fixes made during the port, both confirmed with the user before
+finalizing:
+- **Both sides of a matched pair are now tagged** (`patchTransactionNotes`
+  called for both the uncleared and the cleared transaction). The bash
+  version's help text always claimed this, but only ever patched the
+  uncleared side — `clearedId`/`clearedNotes` were computed and unused (this
+  was flagged and left in place, specifically pending this port, in an
+  earlier session).
+- **`DRY_RUN`/`-n` now actually prevents the write.** The bash version called
+  `curlWithStatus` (the PATCH) unconditionally, and only used `DRY_RUN` to
+  skip checking the response afterward — the write always fired regardless.
+  Added an explicit `-n`/`--dry-run` flag too, matching `set-values` and
+  `anomalies`.
+
+**Deliberately NOT changed, despite a real false-positive found live against
+the actual budget**: the match is by transaction *magnitude* only, never
+sign, in both the original bash and the port — confirmed live that this lets
+an unrelated refund (+$801.15) match an unrelated charge (-$524.81, same
+payee, close in time) as if they were the same event. Asked the user whether
+to add a same-sign requirement; they said keep the original matching as-is
+and fix the *documentation* instead — the tool's real purpose is catching a
+transaction that got re-imported as a second, separate row (pending →
+posted) rather than updated in place, not general "similar nearby charges"
+detection. The help text and README now describe that purpose explicitly;
+the matching logic itself is untouched. If this class of false match becomes
+a real nuisance later, a same-sign check is the fix to revisit.
+
+`findMatchingTransaction` in `actual-helpers.ts` is the ported core (pure,
+fully unit-tested): same account, normalized payee (`normalizePayeeName` —
+lowercase, collapsed whitespace, trimmed), cleared candidate dated strictly
+after the uncleared transaction and within 5 days, magnitude no more than
+30% above the uncleared amount (no lower bound) — `Array.prototype.find`
+naturally replicates jq's `first(select(...))`, first-in-array-order
+semantics, not closest-match. `Transaction` gained `cleared`/`tombstone`
+fields for this. `addDays`/`validateDateFormat` mirror the existing
+`addMonths`/`validateMonthFormat` pattern for day-level date math.
 
 **How to apply**: the full plan snapshot is at
 `.claude/plans/set-budget-migration.md` in the repo (the machine-local copy

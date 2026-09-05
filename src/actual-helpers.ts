@@ -46,6 +46,8 @@ export interface Transaction {
   notes: string | null
   date: string
   transfer_id: string | null
+  cleared: boolean
+  tombstone: boolean
   is_parent?: boolean
   subtransactions?: Transaction[]
 }
@@ -104,6 +106,24 @@ export function addMonths(month: string, delta: number): string {
   const [year, mon] = month.split("-").map(Number) as [number, number]
   const shifted = new Date(Date.UTC(year, mon - 1 + delta, 1))
   return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`
+}
+
+// Function to validate a yyyy-mm-dd date
+export function validateDateFormat(date: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(`Invalid date format: ${date}`)
+  }
+}
+
+// Function to shift a yyyy-mm-dd date by a (possibly negative) number of days
+export function addDays(date: string, delta: number): string {
+  validateDateFormat(date)
+  const [year, month, day] = date.split("-").map(Number) as [number, number, number]
+  const shifted = new Date(Date.UTC(year, month - 1, day + delta))
+  const yyyy = shifted.getUTCFullYear()
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, "0")
+  const dd = String(shifted.getUTCDate()).padStart(2, "0")
+  return `${yyyy}-${mm}-${dd}`
 }
 
 // Function to enumerate the inclusive month range between start and end, in either direction
@@ -354,6 +374,37 @@ export function addTagToNotes(notes: string | null, tag: string): string {
     return existing
   }
   return existing ? `${tag} ${existing}` : tag
+}
+
+// Function to normalize a payee name for matching: lowercase, collapsed whitespace, trimmed
+export function normalizePayeeName(payee: string | null): string {
+  return (payee ?? "").toLowerCase().replace(/\s+/g, " ").trim()
+}
+
+// Function to find the first cleared transaction that looks like the re-imported, posted version
+// of an uncleared one -- the same real-world transaction appearing as a second, separate row
+// instead of the original row being updated in place. Same account, same normalized payee, dated
+// after the uncleared transaction and on or before maxDate, and no larger than 30% above the
+// uncleared amount (a pending authorization hold is often somewhat higher than what it settles
+// at, rarely lower). "First" is candidates' array order, not closest match, and amount is compared
+// by magnitude only (not sign) -- both faithfully match the original bash version.
+export function findMatchingTransaction(
+  unclearedTx: Pick<Transaction, "account" | "date" | "amount" | "imported_payee">,
+  clearedCandidates: readonly Transaction[],
+  maxDate: string,
+): Transaction | null {
+  const payee = normalizePayeeName(unclearedTx.imported_payee)
+  const amountCeiling = Math.abs(unclearedTx.amount) * 1.3
+  return (
+    clearedCandidates.find(
+      (candidate) =>
+        candidate.account === unclearedTx.account &&
+        normalizePayeeName(candidate.imported_payee) === payee &&
+        candidate.date > unclearedTx.date &&
+        candidate.date <= maxDate &&
+        Math.abs(candidate.amount) <= amountCeiling,
+    ) ?? null
+  )
 }
 
 // Function to prompt for interactive confirmation via the controlling terminal

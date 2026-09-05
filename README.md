@@ -121,23 +121,42 @@ Examples:
 
 ## `./actual budget match-uncleared`
 
-Finds uncleared transactions that match a cleared one and tags them. Still the
-original bash implementation (`match-uncleared.sh`), slated for a TypeScript
-port; the dispatcher passes arguments straight through to it.
+An imported bank transaction sometimes appears twice: once as a pending,
+uncleared row, then again as a separate cleared row once it posts, instead of
+the same row being updated in place. This finds those pairs — same account, a
+similar payee and amount, within 5 days — and tags both with `#cleared` so
+they read as one transaction, not two.
+
+```
+./actual budget match-uncleared [-s YYYY-MM-DD] [-n]
+```
+
+- `-s`, `--since YYYY-MM-DD` — only look at transactions on or after this date
+  (default: 14 days ago).
+- `-n`, `--dry-run` — report what would be tagged without writing anything.
+  Also enabled by setting `DRY_RUN=true`.
+
+The match is by *magnitude* only, not direction — a $500 refund can match a
+$500 charge — since a pending authorization is sometimes replaced by a
+posted amount on the opposite side of a small adjustment. In practice this is
+rare enough not to matter for the tool's actual purpose (catching an
+early-imported, never-updated row), but it means an occasional false match
+between two otherwise-unrelated transactions is possible; review the printed
+pairs, especially with `-n` first, before trusting a large `--since` window.
 
 ## Layout
 
 ```
 actual                   task dispatcher, the entry point for everything
-lib/cli-format.sh        shared bash help-text formatting, used by actual and match-uncleared.sh
+lib/cli-format.sh        shared bash help-text formatting, used by actual
 src/                     TypeScript sources and their tests
   actual-helpers.ts      typed Actual REST client + pure helpers
   anomaly-detect.ts      pure MAD-based outlier detection, no API dependency
   cli-format.ts          shared TypeScript help-text formatting
   set-budget.ts          executable CLI
   anomalies.ts           executable CLI
+  match-uncleared.ts     executable CLI
   *.test.ts              vitest unit tests
-match-uncleared.sh       standalone bash tool
 eslint.config.js         flat config, type-aware rules via typescript-eslint
 ```
 
@@ -146,7 +165,7 @@ renders in the same style: a bold `Usage:` line and labelled sections, colour
 applied only when the output is a real terminal (never when piped or
 redirected). `src/cli-format.ts` does this for the TypeScript CLI via
 `node:util`'s built-in `styleText`; `lib/cli-format.sh` does the bash
-equivalent for `actual` and `match-uncleared.sh`. Neither needs a dependency.
+equivalent for `actual`'s own help. Neither needs a dependency.
 
 ## Development
 

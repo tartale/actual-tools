@@ -93,8 +93,7 @@ function commandBudget() {
       exec ./src/anomalies.ts "$@"
       ;;
     match-uncleared)
-      # Still the original bash implementation; slated for a TypeScript port.
-      exec ./match-uncleared.sh "$@"
+      exec ./src/match-uncleared.ts "$@"
       ;;
     *)
       echo "Unknown budget subcommand: ${subcommand}" >&2

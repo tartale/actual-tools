@@ -5,14 +5,15 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-04T22:41:00.939Z
+  modified: 2026-09-05T01:48:51.750Z
 ---
 
 `AB_BASE_URL`/`AB_BUDGET_ID`/`AB_API_KEY` (from `.env`, not committed) point at a
 self-hosted "actualbudget-api"-style REST wrapper (`.../v1`), not the
-official `@actual-app/api` package. Both `src/set-budget.ts` (which replaced `balance-to-zero.sh`, see
-[[set-budget-migration]]) and `match-uncleared.sh` talk to it with the
-`x-api-key` header. The unprefixed `BASE_URL`/`BUDGET_ID`/`API_KEY` names
+official `@actual-app/api` package. `src/set-budget.ts`, `src/anomalies.ts`,
+and `src/match-uncleared.ts` (all TypeScript now — the last one replaced
+`match-uncleared.sh` on 2026-09-05, see [[set-budget-migration]]) all talk to
+it with the `x-api-key` header. The unprefixed `BASE_URL`/`BUDGET_ID`/`API_KEY` names
 were retired on 2026-09-04. `DRY_RUN` (unprefixed) was deliberately kept
 un-namespaced per the user: they use `DRY_RUN` as a universal convention
 across every tool they build, not specific to this project.

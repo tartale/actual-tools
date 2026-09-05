@@ -6,7 +6,9 @@
   "description": "Command-line tools for a self-hosted Actual Budget instance",
   "license": "MIT",
   "bin": {
-    "set-budget": "./src/set-budget.ts"
+    "set-budget": "./src/set-budget.ts",
+    "anomalies": "./src/anomalies.ts",
+    "match-uncleared": "./src/match-uncleared.ts"
   },
   "engines": {
     "node": ">=22.18"

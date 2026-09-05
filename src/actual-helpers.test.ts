@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  addDays,
   addMonths,
   addTagToNotes,
   averageSpent,
@@ -9,12 +10,13 @@ import {
   fetchAccountTransactions,
   fetchAllTransactionsSince,
   fetchCategoryGroups,
-  flattenTransactions,
   fetchHistoricalSpent,
   fetchMonthCategories,
   fetchOnBudgetAccounts,
   fetchPreviousBudgeted,
   findIncomeFilterMatches,
+  findMatchingTransaction,
+  flattenTransactions,
   formatCategoryLine,
   formatUsd,
   getCachedMonthCategories,
@@ -22,10 +24,12 @@ import {
   isAction,
   loadConfigFromEnv,
   monthRange,
+  normalizePayeeName,
   parseDollarAmount,
   patchCategoryBudget,
   patchTransactionNotes,
   shouldUpdateCategory,
+  validateDateFormat,
   validateMonthFormat,
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryGroup, CategoryMonth, Transaction } from "./actual-helpers.ts"
@@ -150,6 +154,95 @@ describe("addMonths", () => {
     expect(addMonths("2026-01", -1)).toBe("2025-12")
     expect(addMonths("2026-01", -12)).toBe("2025-01")
     expect(addMonths("2026-03", 12)).toBe("2027-03")
+  })
+})
+
+describe("validateDateFormat", () => {
+  it("accepts yyyy-mm-dd", () => {
+    expect(() => validateDateFormat("2026-08-15")).not.toThrow()
+  })
+
+  it("rejects anything else", () => {
+    for (const bad of ["2026-8-15", "2026-08-1", "2026/08/15", "2026-08", ""]) {
+      expect(() => validateDateFormat(bad)).toThrow(`Invalid date format: ${bad}`)
+    }
+  })
+})
+
+describe("addDays", () => {
+  it("shifts forward and backward", () => {
+    expect(addDays("2026-08-15", 5)).toBe("2026-08-20")
+    expect(addDays("2026-08-15", -5)).toBe("2026-08-10")
+    expect(addDays("2026-08-15", 0)).toBe("2026-08-15")
+  })
+
+  it("wraps across month and year boundaries", () => {
+    expect(addDays("2026-08-30", 5)).toBe("2026-09-04")
+    expect(addDays("2026-01-03", -5)).toBe("2025-12-29")
+    expect(addDays("2026-12-31", 1)).toBe("2027-01-01")
+  })
+})
+
+describe("normalizePayeeName", () => {
+  it("lowercases, collapses whitespace, and trims", () => {
+    expect(normalizePayeeName("  Some   Store  ")).toBe("some store")
+    expect(normalizePayeeName("ACME\tCorp")).toBe("acme corp")
+  })
+
+  it("treats null as an empty string", () => {
+    expect(normalizePayeeName(null)).toBe("")
+  })
+})
+
+describe("findMatchingTransaction", () => {
+  const uncleared = { account: "acct-1", date: "2026-08-15", amount: -10000, imported_payee: "Some  Store" }
+
+  it("matches the same account, normalized payee, within the date window and amount ceiling", () => {
+    const candidate = transaction({ id: "c1", account: "acct-1", date: "2026-08-17", amount: -9500, imported_payee: "some store" })
+    expect(findMatchingTransaction(uncleared, [candidate], "2026-08-20")).toEqual(candidate)
+  })
+
+  it("returns null when the account differs", () => {
+    const candidate = transaction({ id: "c1", account: "acct-2", date: "2026-08-17", amount: -10000, imported_payee: "Some Store" })
+    expect(findMatchingTransaction(uncleared, [candidate], "2026-08-20")).toBeNull()
+  })
+
+  it("returns null when the payee differs", () => {
+    const candidate = transaction({ id: "c1", account: "acct-1", date: "2026-08-17", amount: -10000, imported_payee: "Other Store" })
+    expect(findMatchingTransaction(uncleared, [candidate], "2026-08-20")).toBeNull()
+  })
+
+  it("requires the candidate's date to be strictly after the uncleared date", () => {
+    const sameDay = transaction({ id: "c1", account: "acct-1", date: "2026-08-15", amount: -10000, imported_payee: "Some Store" })
+    expect(findMatchingTransaction(uncleared, [sameDay], "2026-08-20")).toBeNull()
+  })
+
+  it("excludes a candidate after maxDate", () => {
+    const tooLate = transaction({ id: "c1", account: "acct-1", date: "2026-08-21", amount: -10000, imported_payee: "Some Store" })
+    expect(findMatchingTransaction(uncleared, [tooLate], "2026-08-20")).toBeNull()
+  })
+
+  it("allows a candidate up to 30% larger in magnitude, but not more", () => {
+    const atCeiling = transaction({ id: "c1", account: "acct-1", date: "2026-08-17", amount: -13000, imported_payee: "Some Store" })
+    expect(findMatchingTransaction(uncleared, [atCeiling], "2026-08-20")).toEqual(atCeiling)
+
+    const overCeiling = transaction({ id: "c2", account: "acct-1", date: "2026-08-17", amount: -13001, imported_payee: "Some Store" })
+    expect(findMatchingTransaction(uncleared, [overCeiling], "2026-08-20")).toBeNull()
+  })
+
+  it("allows a candidate much smaller in magnitude (no lower bound)", () => {
+    const small = transaction({ id: "c1", account: "acct-1", date: "2026-08-17", amount: -100, imported_payee: "Some Store" })
+    expect(findMatchingTransaction(uncleared, [small], "2026-08-20")).toEqual(small)
+  })
+
+  it("returns the first matching candidate in array order, not the closest match", () => {
+    const first = transaction({ id: "c1", account: "acct-1", date: "2026-08-19", amount: -10000, imported_payee: "Some Store" })
+    const second = transaction({ id: "c2", account: "acct-1", date: "2026-08-16", amount: -10000, imported_payee: "Some Store" })
+    expect(findMatchingTransaction(uncleared, [first, second], "2026-08-20")).toEqual(first)
+  })
+
+  it("returns null when there are no candidates at all", () => {
+    expect(findMatchingTransaction(uncleared, [], "2026-08-20")).toBeNull()
   })
 })
 
@@ -477,6 +570,8 @@ function transaction(overrides: Partial<Transaction> & Pick<Transaction, "id">):
     notes: null,
     date: "2026-08-15",
     transfer_id: null,
+    cleared: true,
+    tombstone: false,
     ...overrides,
   }
 }
