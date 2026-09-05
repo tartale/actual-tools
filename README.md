@@ -186,17 +186,21 @@ second question — a stock/bond allocation, used only if you generate the
 Monte Carlo widget (see below):
 
 ```
-  1) equity-100
-  2) equity-80
-  3) equity-60
-  4) equity-40
-  5) cash
-What's a reasonable stock/bond mix for this account? (used for Monte Carlo retirement projections) [2: equity-80]:
+  1) equity-100 (100% stocks)
+  2) equity-80 (80% stocks / 20% bonds)
+  3) equity-60 (60% stocks / 40% bonds)
+  4) equity-40 (40% stocks / 60% bonds)
+  5) cash (100% cash)
+What's a reasonable stock/bond mix for this account? (used for Monte Carlo retirement projections) [2: equity-80 (80% stocks / 20% bonds)]:
 ```
 
 Every run rewrites `accounts.json` from scratch, covering every
 currently-open account — running it again is the normal way to fix a wrong
-answer or pick up a newly-added account, not something to avoid.
+answer or pick up a newly-added account, not something to avoid. As long as
+an account keeps the same category between runs, any hand-customized
+`taxTreatment`, `accessAge`, or `allocationPreset` in the existing file is
+carried over as the default rather than being reset — only changing an
+account's category resets those to the new category's plain defaults.
 
 ### `accounts.json`
 

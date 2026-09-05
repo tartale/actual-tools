@@ -35,6 +35,16 @@ export const MONTE_CARLO_ALLOCATION_PRESETS: readonly MonteCarloAllocationPreset
   "cash",
 ]
 
+// Plain-language description of each preset's stock/bond mix, for display next to the preset name
+// wherever a person is picking one (e.g. ./actual accounts classify's interactive prompt).
+export const MONTE_CARLO_ALLOCATION_PRESET_LABELS: Record<MonteCarloAllocationPreset, string> = {
+  "equity-100": "100% stocks",
+  "equity-80": "80% stocks / 20% bonds",
+  "equity-60": "60% stocks / 40% bonds",
+  "equity-40": "40% stocks / 60% bonds",
+  cash: "100% cash",
+}
+
 export interface FireAccountTraits {
   category: FireAccountCategory
   taxTreatment: TaxTreatment

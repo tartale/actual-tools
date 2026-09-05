@@ -5,6 +5,7 @@ import type { Account, ActualConfig, TtyInterface } from "./actual-helpers.ts"
 import {
   DEFAULT_ACCOUNTS_CONFIG_PATH,
   FIRE_ACCOUNT_CATEGORIES,
+  MONTE_CARLO_ALLOCATION_PRESET_LABELS,
   MONTE_CARLO_ALLOCATION_PRESETS,
   classifyByHeuristic,
   findOverride,
@@ -97,28 +98,34 @@ async function classifyOneAccount(
   process.stderr.write(`\n${account.name} -- current balance ${formatUsd(balanceCents)}\n`)
   const chosenIndex = await promptChoice(tty, "What kind of account is this?", FIRE_ACCOUNT_CATEGORIES, defaultIndex)
   const category = FIRE_ACCOUNT_CATEGORIES[chosenIndex] as (typeof FIRE_ACCOUNT_CATEGORIES)[number]
+
+  // If the account keeps the category it already had, preserve any customized taxTreatment/
+  // accessAge/allocationPreset from the existing file rather than resetting them to the category's
+  // plain defaults every time classify is re-run. A category CHANGE starts fresh from the new
+  // category's defaults instead, since customizations tuned for the old category don't necessarily
+  // make sense for the new one.
+  const carryOver = override?.category === category ? override : null
   const traits = traitsForCategory(category)
+  const taxTreatment = carryOver?.taxTreatment ?? traits.taxTreatment
+  const accessAge = carryOver?.accessAge ?? traits.accessAge
 
   let allocationPreset = traits.allocationPreset
   if (isPortfolioCategory(category)) {
-    const defaultPreset = override?.allocationPreset ?? traits.allocationPreset
+    const defaultPreset = carryOver?.allocationPreset ?? traits.allocationPreset
     const defaultPresetIndex = defaultPreset === null ? null : MONTE_CARLO_ALLOCATION_PRESETS.indexOf(defaultPreset)
+    const presetOptions = MONTE_CARLO_ALLOCATION_PRESETS.map(
+      (preset) => `${preset} (${MONTE_CARLO_ALLOCATION_PRESET_LABELS[preset]})`,
+    )
     const presetIndex = await promptChoice(
       tty,
       "What's a reasonable stock/bond mix for this account? (used for Monte Carlo retirement projections)",
-      MONTE_CARLO_ALLOCATION_PRESETS,
+      presetOptions,
       defaultPresetIndex,
     )
     allocationPreset = MONTE_CARLO_ALLOCATION_PRESETS[presetIndex] as (typeof MONTE_CARLO_ALLOCATION_PRESETS)[number]
   }
 
-  return {
-    match: account.id,
-    category: traits.category,
-    taxTreatment: traits.taxTreatment,
-    accessAge: traits.accessAge,
-    allocationPreset,
-  }
+  return { match: account.id, category, taxTreatment, accessAge, allocationPreset }
 }
 
 async function main(): Promise<void> {
