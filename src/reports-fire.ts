@@ -12,7 +12,7 @@ import {
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
 import { buildFireDashboard, portfolioAccountIds } from "./fire-dashboard.ts"
-import { DEFAULT_FIRE_ACCOUNTS_CONFIG_PATH, loadClassifiedAccounts } from "./fire-accounts.ts"
+import { DEFAULT_ACCOUNTS_CONFIG_PATH, loadClassifiedAccounts } from "./fire-accounts.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
 
@@ -27,7 +27,7 @@ interface Options {
 }
 
 const HELP_PAGE: HelpPage = {
-  usage: "./actual report fire [OPTIONS]",
+  usage: "./actual reports fire [OPTIONS]",
   description:
     "Builds an Actual-native FIRE dashboard (net worth, trailing-12-month spending, and a " +
     "safe-withdrawal-rate crossover projection) from your real account and category data, and " +
@@ -41,7 +41,7 @@ const HELP_PAGE: HelpPage = {
         { name: "-o, --output PATH", description: `Where to write the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
         {
           name: "-f, --config PATH",
-          description: `Path to the account classification overrides file (default: ${DEFAULT_FIRE_ACCOUNTS_CONFIG_PATH}).`,
+          description: `Path to the account classification overrides file (default: ${DEFAULT_ACCOUNTS_CONFIG_PATH}).`,
         },
         {
           name: "-n, --dry-run",
@@ -62,7 +62,7 @@ function usage(message: string): never {
 // Function to parse and validate command-line arguments
 function parseArguments(argv: readonly string[]): Options {
   let outputPath = DEFAULT_OUTPUT_PATH
-  let configPath = DEFAULT_FIRE_ACCOUNTS_CONFIG_PATH
+  let configPath = DEFAULT_ACCOUNTS_CONFIG_PATH
   let dryRun = process.env.DRY_RUN === "true"
 
   for (let i = 0; i < argv.length; i++) {
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
 
   const { accounts, configFound } = await loadClassifiedAccounts(config, options.configPath)
   if (!configFound) {
-    process.stderr.write(`No ${options.configPath} found; every account is classified by heuristic or default only.\n`)
+    throw new Error(`No ${options.configPath} found. Run './actual accounts classify' first to classify your accounts.`)
   }
 
   const portfolioIds = portfolioAccountIds(accounts)

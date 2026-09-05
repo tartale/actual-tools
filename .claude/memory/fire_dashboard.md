@@ -1,10 +1,10 @@
 ---
 name: fire-dashboard
-description: "Status/design for ./actual report fire and ./actual accounts classify, a FIRE dashboard built on Actual's own native dashboard widgets"
+description: "Status/design for ./actual reports fire and ./actual accounts classify (interactive), a FIRE dashboard built on Actual's own native dashboard widgets"
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-09-05T03:01:10.221Z
+  modified: 2026-09-05T03:30:18.975Z
   originSessionId: 860c6192-bf02-40b0-9166-e69d50daa24b
 ---
 
@@ -98,3 +98,11 @@ releases), `src/accounts-classify.ts`, `src/report-fire.ts`,
 `fetchAllOpenAccounts`, `sumTransactionAmounts`, `fetchAccountBalance`.
 
 **Renamed 2026-09-05, same session**: `./actual report accounts` moved to `./actual accounts classify`, its own top-level `accounts` command group (`accountsUsage`/`commandAccounts` in `actual`), not under `report` anymore. `src/report-accounts.ts` renamed to `src/accounts-classify.ts`; `package.json`'s bin entry renamed `report-accounts` -> `accounts-classify`. `report` now has just `fire`.
+
+**Second round of renames + `classify` made interactive, same session, later that day**:
+- `fire-accounts.json` -> `accounts.json` (config file name only; the module stays `src/fire-accounts.ts`, types stay `FireAccountsConfig`/`FireAccountOverride`). `DEFAULT_FIRE_ACCOUNTS_CONFIG_PATH` renamed `DEFAULT_ACCOUNTS_CONFIG_PATH`. `fire-accounts.example.json` deleted (no example file anymore).
+- `./actual report fire` -> `./actual reports fire` (group `report` -> `reports`; `reportUsage`/`commandReport` -> `reportsUsage`/`commandReports`). `src/report-fire.ts` -> `src/reports-fire.ts`; bin entry `report-fire` -> `reports-fire`.
+- `./actual reports fire` now **errors out** (not just warns) when `accounts.json` doesn't exist, instructing the user to run `./actual accounts classify` first — `loadClassifiedAccounts`'s `configFound: false` used to just print a warning and continue with heuristic-only classification; now it's a hard `throw`.
+- **`./actual accounts classify` is now fully interactive**, not a read-only listing. For every open account it prompts a numbered choice among the 6 `FireAccountCategory` values (`promptChoice`/`openTtyInterface`, new in `actual-helpers.ts`, refactored out of `confirmViaTty`'s TTY-opening logic so one `/dev/tty` session is reused across every account instead of reopened per-question). Default precedence, per the user's explicit spec: existing `accounts.json` entry for that account, else the name heuristic, else **no default at all** — pressing Enter with no default re-prompts, there is no way to skip an unclassifiable account. `taxTreatment`/`accessAge` are derived automatically from the chosen category via a new `CATEGORY_TRAITS`/`traitsForCategory` lookup in `fire-accounts.ts` (the heuristic rules were refactored to source from the same table, removing the old per-rule trait duplication) — the interactive flow asks only one question per account (category), not three. Every run rewrites `accounts.json` from scratch with one entry per currently-open account (`writeFireAccountsConfig`, new), keyed by account **id** (not name) for robustness against renames.
+- Verified live end-to-end via a pty-driven session against the real budget: all 8 real retirement/investment/debt accounts showed the correct heuristic default (bracketed `[N]`), the 3 everyday cash accounts showed no default and required an explicit choice, the written `accounts.json` was byte-correct, `reports fire --dry-run` then succeeded on top of it, and re-running `classify` afterward showed the just-written entries as the new defaults (including for the previously-unclassifiable accounts).
+- `promptChoice` (unlike `confirmViaTty`) operates on the abstract `TtyInterface` rather than opening `/dev/tty` itself, so it's genuinely unit-testable with a fake `TtyInterface` double — added real tests for it in `actual-helpers.test.ts`, first real test coverage for any of this session's TTY-prompting code.

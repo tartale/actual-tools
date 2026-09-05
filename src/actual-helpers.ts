@@ -436,18 +436,37 @@ export function findMatchingTransaction(
   )
 }
 
-// Function to prompt for interactive confirmation via the controlling terminal
-export async function confirmViaTty(promptText: string): Promise<boolean> {
+export interface TtyInterface {
+  question(promptText: string): Promise<string>
+  close(): void
+}
+
+// Function to open an interactive prompt session on the controlling terminal (/dev/tty), for one
+// or more questions in sequence. Callers must call .close() when done (a try/finally around a
+// loop of prompts, not one open+close per question).
+export function openTtyInterface(): TtyInterface {
   try {
     accessSync("/dev/tty", constants.R_OK)
   } catch {
-    throw new Error("--interactive requires a terminal for confirmation.")
+    throw new Error("This command requires an interactive terminal.")
   }
   const ttyIn = createReadStream("/dev/tty")
   const rl = createInterface({ input: ttyIn, output: process.stderr })
+  return {
+    question: (promptText: string) => rl.question(promptText),
+    close: () => {
+      rl.close()
+      ttyIn.close()
+    },
+  }
+}
+
+// Function to prompt for a single yes/no confirmation via the controlling terminal
+export async function confirmViaTty(promptText: string): Promise<boolean> {
+  const tty = openTtyInterface()
   try {
     while (true) {
-      const answer = (await rl.question(promptText)).trim().toLowerCase()
+      const answer = (await tty.question(promptText)).trim().toLowerCase()
       if (answer === "y" || answer === "yes") {
         return true
       }
@@ -457,7 +476,33 @@ export async function confirmViaTty(promptText: string): Promise<boolean> {
       process.stderr.write("Please answer y or n.\n")
     }
   } finally {
-    rl.close()
-    ttyIn.close()
+    tty.close()
+  }
+}
+
+// Function to prompt for one numbered choice among options, via an already-open TTY interface (so
+// a caller asking several questions in a row only opens the terminal once). When `defaultIndex` is
+// given, pressing Enter with no input accepts it; when null, a valid number is required -- there
+// is no way to skip the question.
+export async function promptChoice(
+  tty: TtyInterface,
+  promptText: string,
+  options: readonly string[],
+  defaultIndex: number | null,
+): Promise<number> {
+  const optionLines = options.map((option, index) => `  ${index + 1}) ${option}`).join("\n")
+  const defaultLabel = defaultIndex === null ? "" : ` [${defaultIndex + 1}]`
+  const question = `${optionLines}\n${promptText}${defaultLabel}: `
+
+  while (true) {
+    const answer = (await tty.question(question)).trim()
+    if (answer === "" && defaultIndex !== null) {
+      return defaultIndex
+    }
+    const choice = Number.parseInt(answer, 10)
+    if (Number.isInteger(choice) && String(choice) === answer && choice >= 1 && choice <= options.length) {
+      return choice - 1
+    }
+    process.stderr.write(`Please enter a number from 1 to ${options.length}.\n`)
   }
 }

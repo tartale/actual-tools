@@ -25,8 +25,8 @@ Every task in this repo runs through one dispatcher, from any directory:
 ./actual budget set-values ARGS            # set category budgets
 ./actual budget anomalies ARGS             # flag categories with unusual spending
 ./actual transactions match-uncleared ARGS # tag matching uncleared transactions
-./actual accounts classify ARGS            # list accounts with their FIRE classification
-./actual report fire ARGS                  # build a FIRE dashboard for import into Actual
+./actual accounts classify ARGS            # interactively classify accounts for FIRE reporting
+./actual reports fire ARGS                 # build a FIRE dashboard for import into Actual
 ```
 
 ## `./actual budget set-values`
@@ -150,35 +150,50 @@ pairs, especially with `-n` first, before trusting a large `--since` window.
 
 Actual's account API has no account-type field, so this repo can't know on
 its own which accounts are retirement, taxable-investment, HSA, or debt.
-This command classifies every open account (heuristic name matching, with
-overrides from `fire-accounts.json`) and lists its category, tax treatment,
-and current balance, so the classification can be checked against reality
-before it feeds `./actual report fire`.
+This command interactively asks, once per open account, what kind of
+account it is, and writes the result to `accounts.json`. It feeds
+`./actual reports fire`, which refuses to run without it.
 
 ```
 ./actual accounts classify [-f PATH]
 ```
 
-- `-f`, `--config PATH` — path to the classification overrides file
-  (default: `fire-accounts.json` in the repo root).
+- `-f`, `--config PATH` — path to the classification file to read defaults
+  from and write (default: `accounts.json` in the repo root).
 
-Every account is flagged `OK` (matched by an override or a name heuristic)
-or `NEEDS REVIEW` (fell back to `cash-other` — not necessarily wrong for an
-everyday checking/savings account, but worth a glance). Always read-only;
-never writes anything.
+For each account you get a numbered choice:
 
-### `fire-accounts.json`
+```
+Fidelity F5 401k -- current balance $543147.48
+  1) retirement-tax-deferred
+  2) retirement-roth
+  3) hsa
+  4) taxable-investment
+  5) debt
+  6) cash-other
+What kind of account is this? [1]:
+```
+
+The bracketed default is whichever answer wins: an existing entry in
+`accounts.json` first, otherwise a guess from the account's name (`401k`,
+`Roth`, `HSA`, `Mortgage`, `Brokerage`, and similar patterns). Press Enter to
+accept it. **Accounts with no existing entry and no name-based guess show no
+default** — you have to type a number; there's no way to skip one.
+
+Every run rewrites `accounts.json` from scratch, covering every
+currently-open account — running it again is the normal way to fix a wrong
+answer or pick up a newly-added account, not something to avoid.
+
+### `accounts.json`
 
 A gitignored JSON file (it names your real accounts) mapping an account —
-matched by id or exact name — to a category, tax treatment, and access age.
-See `fire-accounts.example.json` for the shape:
+by id — to a category, tax treatment, and access age:
 
 ```json
 {
   "version": 1,
   "accounts": [
-    { "match": "My Weird Brokerage Nickname", "category": "taxable-investment", "taxTreatment": "taxable" },
-    { "match": "Old Employer 401k", "category": "retirement-tax-deferred", "accessAge": 55 }
+    { "match": "691a0cae-4eed-4cfb-a42d-5878c7bdba88", "category": "taxable-investment", "taxTreatment": "taxable", "accessAge": null }
   ]
 }
 ```
@@ -186,9 +201,10 @@ See `fire-accounts.example.json` for the shape:
 Valid `category` values: `retirement-tax-deferred`, `retirement-roth`, `hsa`,
 `taxable-investment`, `debt`, `cash-other`. This is structured per-account
 data, not a scalar, so it's a separate file rather than another `AB_*`
-environment variable.
+environment variable. You won't normally hand-edit it — `./actual accounts
+classify` both reads and writes it.
 
-## `./actual report fire`
+## `./actual reports fire`
 
 Builds an Actual-native FIRE (Financial Independence, Retire Early)
 dashboard from real account and spending data: a net-worth widget, a
@@ -197,14 +213,19 @@ projection — using Actual's own built-in dashboard widgets rather than
 reimplementing FIRE math.
 
 ```
-./actual report fire [-o PATH] [-f PATH] [-n]
+./actual reports fire [-o PATH] [-f PATH] [-n]
 ```
 
 - `-o`, `--output PATH` — where to write the dashboard JSON (default:
   `fire-dashboard.json`).
-- `-f`, `--config PATH` — path to `fire-accounts.json` (default: repo root).
+- `-f`, `--config PATH` — path to `accounts.json` (default: repo root).
 - `-n`, `--dry-run` — print the plan and the JSON without writing the file.
   Also enabled by setting `DRY_RUN=true`.
+
+**Refuses to run without an `accounts.json`** — run `./actual accounts
+classify` first. It also refuses to run if no account classifies as
+retirement/HSA/taxable-investment, since that almost always means the
+classification needs attention, not that the answer is "no portfolio."
 
 **This does not talk to Actual's dashboard feature directly** — there is no
 API for that today (confirmed against both `@actual-app/api` and this
@@ -218,31 +239,25 @@ dashboard-export format, which you import yourself:
 **Import replaces every widget already on the target page** — there's no
 merge mode. Always import onto a page you're fine wiping (Actual's own
 undo/ctrl-z covers a bad import), never your main dashboard. Re-running
-`report fire` and re-importing onto that same page is the normal way to
+`reports fire` and re-importing onto that same page is the normal way to
 refresh it, not a mistake to avoid.
-
-Run `./actual accounts classify` first and fix any classification in
-`fire-accounts.json` — this command refuses to run if no account classifies
-as retirement/HSA/taxable-investment, since that almost always means the
-classification needs attention, not that the answer is "no portfolio."
 
 ## Layout
 
 ```
 actual                   task dispatcher, the entry point for everything
-fire-accounts.example.json  documents the fire-accounts.json shape (that file itself is gitignored)
 lib/cli-format.sh        shared bash help-text formatting, used by actual
 src/                     TypeScript sources and their tests
   actual-helpers.ts      typed Actual REST client + pure helpers
   anomaly-detect.ts      pure MAD-based outlier detection, no API dependency
   cli-format.ts          shared TypeScript help-text formatting
-  fire-accounts.ts       account classification: heuristics + fire-accounts.json overrides
+  fire-accounts.ts       account classification: heuristics + accounts.json overrides
   fire-dashboard.ts      builds Actual-native dashboard widget JSON (vendored widget types)
   set-budget.ts          executable CLI
   anomalies.ts           executable CLI
   match-uncleared.ts     executable CLI
   accounts-classify.ts   executable CLI
-  report-fire.ts         executable CLI
+  reports-fire.ts        executable CLI
   *.test.ts              vitest unit tests
 eslint.config.js         flat config, type-aware rules via typescript-eslint
 ```

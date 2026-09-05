@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 
 import { fetchAllOpenAccounts } from "./actual-helpers.ts"
 import type { Account, ActualConfig } from "./actual-helpers.ts"
@@ -53,36 +53,54 @@ export interface FireAccountsConfig {
 
 export const EMPTY_FIRE_ACCOUNTS_CONFIG: FireAccountsConfig = { version: 1, accounts: [] }
 
-export const DEFAULT_FIRE_ACCOUNTS_CONFIG_PATH = "fire-accounts.json"
+export const DEFAULT_ACCOUNTS_CONFIG_PATH = "accounts.json"
 
 // Age at which most US tax-advantaged retirement accounts can be withdrawn from without an early
 // withdrawal penalty. A rough default -- override per-account for precision (e.g. Roth
 // contribution basis, or plan-specific rules like the age-55 separation-from-service exception).
 const DEFAULT_ACCESS_AGE = 59
 
+// Every category, in the order shown to the user when picking one interactively, with the default
+// tax treatment/access age that category implies -- the single source of truth both the heuristic
+// rules below and the interactive classifier (./actual accounts classify) derive traits from.
+export const FIRE_ACCOUNT_CATEGORIES: readonly FireAccountCategory[] = [
+  "retirement-tax-deferred",
+  "retirement-roth",
+  "hsa",
+  "taxable-investment",
+  "debt",
+  "cash-other",
+]
+
+export const CATEGORY_TRAITS: Record<FireAccountCategory, Omit<FireAccountTraits, "category">> = {
+  "retirement-tax-deferred": { taxTreatment: "tax-deferred", accessAge: DEFAULT_ACCESS_AGE },
+  "retirement-roth": { taxTreatment: "tax-free", accessAge: DEFAULT_ACCESS_AGE },
+  hsa: { taxTreatment: "tax-free", accessAge: null },
+  "taxable-investment": { taxTreatment: "taxable", accessAge: null },
+  debt: { taxTreatment: "none", accessAge: null },
+  "cash-other": { taxTreatment: "none", accessAge: null },
+}
+
+// Function to build the full traits for a category, using CATEGORY_TRAITS' default tax
+// treatment/access age
+export function traitsForCategory(category: FireAccountCategory): FireAccountTraits {
+  return { category, ...CATEGORY_TRAITS[category] }
+}
+
 // Ordered, case-insensitive name-pattern rules. Order matters: more specific patterns (roth, hsa)
 // are checked before broader ones (ira, investment) so e.g. "Roth 401k" classifies as
 // retirement-roth, not retirement-tax-deferred.
 interface HeuristicRule {
   pattern: RegExp
-  traits: FireAccountTraits
+  category: FireAccountCategory
 }
 
 const HEURISTIC_RULES: readonly HeuristicRule[] = [
-  { pattern: /\bhsa\b|\bhealth savings\b/i, traits: { category: "hsa", taxTreatment: "tax-free", accessAge: null } },
-  { pattern: /\broth\b/i, traits: { category: "retirement-roth", taxTreatment: "tax-free", accessAge: DEFAULT_ACCESS_AGE } },
-  {
-    pattern: /\b401\s?k\b|\b403\s?b\b|\b457\b|\bira\b|\bpension\b|\btsp\b/i,
-    traits: { category: "retirement-tax-deferred", taxTreatment: "tax-deferred", accessAge: DEFAULT_ACCESS_AGE },
-  },
-  {
-    pattern: /\bmortgage\b|\bloan\b|\bcredit card\b|\bline of credit\b|\bheloc\b/i,
-    traits: { category: "debt", taxTreatment: "none", accessAge: null },
-  },
-  {
-    pattern: /\bbrokerage\b|\binvestment\b|\btaxable\b/i,
-    traits: { category: "taxable-investment", taxTreatment: "taxable", accessAge: null },
-  },
+  { pattern: /\bhsa\b|\bhealth savings\b/i, category: "hsa" },
+  { pattern: /\broth\b/i, category: "retirement-roth" },
+  { pattern: /\b401\s?k\b|\b403\s?b\b|\b457\b|\bira\b|\bpension\b|\btsp\b/i, category: "retirement-tax-deferred" },
+  { pattern: /\bmortgage\b|\bloan\b|\bcredit card\b|\bline of credit\b|\bheloc\b/i, category: "debt" },
+  { pattern: /\bbrokerage\b|\binvestment\b|\btaxable\b/i, category: "taxable-investment" },
 ]
 
 // Function to classify a single account by name only, using ordered heuristic rules. Returns null
@@ -90,7 +108,7 @@ const HEURISTIC_RULES: readonly HeuristicRule[] = [
 // guess.
 export function classifyByHeuristic(name: string): FireAccountTraits | null {
   const rule = HEURISTIC_RULES.find((candidate) => candidate.pattern.test(name))
-  return rule ? rule.traits : null
+  return rule ? traitsForCategory(rule.category) : null
 }
 
 // Function to find a config override matching an account by id or exact name
@@ -121,7 +139,7 @@ export function classifyAccounts(
     if (heuristic) {
       return { ...identity, ...heuristic, source: "heuristic" as const }
     }
-    return { ...identity, category: "cash-other" as const, taxTreatment: "none" as const, accessAge: null, source: "default" as const }
+    return { ...identity, ...traitsForCategory("cash-other"), source: "default" as const }
   })
 }
 
@@ -156,10 +174,17 @@ export function loadFireAccountsConfig(path: string): LoadedFireAccountsConfig {
     (parsed as { version?: unknown }).version !== 1 ||
     !Array.isArray((parsed as { accounts?: unknown }).accounts)
   ) {
-    throw new Error(`Invalid fire-accounts config in ${path}: expected { "version": 1, "accounts": [...] }`)
+    throw new Error(`Invalid accounts config in ${path}: expected { "version": 1, "accounts": [...] }`)
   }
 
   return { config: parsed as FireAccountsConfig, found: true }
+}
+
+// Function to write the account classification overrides file, e.g. after an interactive
+// classification session (./actual accounts classify) has collected a fresh answer for every
+// currently-open account.
+export function writeFireAccountsConfig(path: string, config: FireAccountsConfig): void {
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`)
 }
 
 export interface ClassifiedAccountsResult {
@@ -169,7 +194,7 @@ export interface ClassifiedAccountsResult {
 
 // Function to load the overrides config, fetch every open account, and classify them -- the one
 // non-pure export in this module (it makes an API call), shared by accounts-classify.ts and
-// report-fire.ts so the "load, fetch, classify" sequence isn't duplicated between them.
+// reports-fire.ts so the "load, fetch, classify" sequence isn't duplicated between them.
 export async function loadClassifiedAccounts(config: ActualConfig, configPath: string): Promise<ClassifiedAccountsResult> {
   const { config: accountsConfig, found: configFound } = loadFireAccountsConfig(configPath)
   const accounts = await fetchAllOpenAccounts(config)

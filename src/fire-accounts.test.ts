@@ -1,15 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-vi.mock("node:fs", () => ({ readFileSync: vi.fn() }))
+vi.mock("node:fs", () => ({ readFileSync: vi.fn(), writeFileSync: vi.fn() }))
 
-import { readFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 
 import {
+  CATEGORY_TRAITS,
+  FIRE_ACCOUNT_CATEGORIES,
   classifyAccounts,
   classifyByHeuristic,
   findOverride,
   loadClassifiedAccounts,
   loadFireAccountsConfig,
+  traitsForCategory,
+  writeFireAccountsConfig,
 } from "./fire-accounts.ts"
 import type { FireAccountsConfig } from "./fire-accounts.ts"
 import type { ActualConfig } from "./actual-helpers.ts"
@@ -130,7 +134,7 @@ describe("loadFireAccountsConfig", () => {
     vi.mocked(readFileSync).mockImplementation(() => {
       throw new Error("ENOENT")
     })
-    const result = loadFireAccountsConfig("/nonexistent/path/fire-accounts.json")
+    const result = loadFireAccountsConfig("/nonexistent/path/accounts.json")
     expect(result).toEqual({ config: { version: 1, accounts: [] }, found: false })
   })
 
@@ -141,7 +145,7 @@ describe("loadFireAccountsConfig", () => {
 
   it("throws when the shape doesn't match", () => {
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ foo: "bar" }))
-    expect(() => loadFireAccountsConfig("/fake/path")).toThrow("Invalid fire-accounts config")
+    expect(() => loadFireAccountsConfig("/fake/path")).toThrow("Invalid accounts config")
   })
 
   it("returns the parsed config, found: true, when valid", () => {
@@ -162,10 +166,37 @@ describe("loadClassifiedAccounts", () => {
       json: async () => ({ data: [{ id: "a1", name: "Fidelity 401k", offbudget: true, closed: false }] }),
     }))
 
-    const result = await loadClassifiedAccounts(config, "/fake/fire-accounts.json")
+    const result = await loadClassifiedAccounts(config, "/fake/accounts.json")
     expect(result.configFound).toBe(false)
     expect(result.accounts).toEqual([
       { id: "a1", name: "Fidelity 401k", offbudget: true, category: "retirement-tax-deferred", taxTreatment: "tax-deferred", accessAge: 59, source: "heuristic" },
     ])
+  })
+})
+
+describe("traitsForCategory", () => {
+  it("returns the category alongside its default tax treatment and access age", () => {
+    expect(traitsForCategory("retirement-tax-deferred")).toEqual({
+      category: "retirement-tax-deferred",
+      taxTreatment: "tax-deferred",
+      accessAge: 59,
+    })
+    expect(traitsForCategory("cash-other")).toEqual({ category: "cash-other", taxTreatment: "none", accessAge: null })
+  })
+
+  it("has an entry in CATEGORY_TRAITS and FIRE_ACCOUNT_CATEGORIES for every category", () => {
+    for (const category of FIRE_ACCOUNT_CATEGORIES) {
+      expect(traitsForCategory(category).category).toBe(category)
+      expect(CATEGORY_TRAITS[category]).toBeDefined()
+    }
+  })
+})
+
+describe("writeFireAccountsConfig", () => {
+  it("writes the config as pretty-printed JSON", () => {
+    const written: FireAccountsConfig = { version: 1, accounts: [{ match: "a1", category: "hsa" }] }
+    writeFireAccountsConfig("/fake/accounts.json", written)
+
+    expect(writeFileSync).toHaveBeenCalledWith("/fake/accounts.json", `${JSON.stringify(written, null, 2)}\n`)
   })
 })

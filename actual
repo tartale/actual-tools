@@ -21,7 +21,7 @@ function usage() {
     "budget" "Set category budgets or flag unusual spending. See './actual budget --help'." \
     "transactions" "Work with individual transactions. See './actual transactions --help'." \
     "accounts" "Work with individual accounts. See './actual accounts --help'." \
-    "report" "Generate FIRE and other financial reports. See './actual report --help'."
+    "reports" "Generate FIRE and other financial reports. See './actual reports --help'."
   exit "${exitCode}"
 }
 
@@ -56,13 +56,13 @@ function accountsUsage() {
   exit "${exitCode}"
 }
 
-# Function to display usage for the report subcommand group and exit
-function reportUsage() {
+# Function to display usage for the reports subcommand group and exit
+function reportsUsage() {
   local exitCode="${1:-1}"
-  cliUsage "./actual report SUBCOMMAND [ARGS]"
+  cliUsage "./actual reports SUBCOMMAND [ARGS]"
   echo >&2
   cliSection "Subcommands" \
-    "fire" "Build a FIRE dashboard for import into Actual. See './actual report fire --help'."
+    "fire" "Build a FIRE dashboard for import into Actual. See './actual reports fire --help'."
   exit "${exitCode}"
 }
 
@@ -175,24 +175,24 @@ function commandAccounts() {
   esac
 }
 
-# Function to dispatch the report subcommands
-function commandReport() {
+# Function to dispatch the reports subcommands
+function commandReports() {
   local subcommand="${1:-}"
   if [[ -z "${subcommand}" ]]; then
-    reportUsage 1
+    reportsUsage 1
   fi
   if [[ "${subcommand}" == "-h" || "${subcommand}" == "--help" ]]; then
-    reportUsage 0
+    reportsUsage 0
   fi
   shift
 
   case "${subcommand}" in
     fire)
-      exec ./src/report-fire.ts "$@"
+      exec ./src/reports-fire.ts "$@"
       ;;
     *)
-      echo "Unknown report subcommand: ${subcommand}" >&2
-      reportUsage
+      echo "Unknown reports subcommand: ${subcommand}" >&2
+      reportsUsage
       ;;
   esac
 }
@@ -212,7 +212,7 @@ function main() {
     budget) commandBudget "$@" ;;
     transactions) commandTransactions "$@" ;;
     accounts) commandAccounts "$@" ;;
-    report) commandReport "$@" ;;
+    reports) commandReports "$@" ;;
     -h|--help|help) usage 0 ;;
     *)
       echo "Unknown command: ${command}" >&2

@@ -10,7 +10,7 @@
     "anomalies": "./src/anomalies.ts",
     "match-uncleared": "./src/match-uncleared.ts",
     "accounts-classify": "./src/accounts-classify.ts",
-    "report-fire": "./src/report-fire.ts"
+    "reports-fire": "./src/reports-fire.ts"
   },
   "engines": {
     "node": ">=22.18"
