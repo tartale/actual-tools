@@ -530,9 +530,11 @@ export async function promptChoice(
 
 // Function to prompt for one free-text number, via an already-open TTY interface. When
 // `defaultValue` is given, pressing Enter with no input accepts it; when null, a value is
-// required. Re-prompts on anything that doesn't parse as a plain finite number.
-export async function promptNumber(tty: TtyInterface, promptText: string, defaultValue: number | null): Promise<number> {
-  const defaultLabel = defaultValue === null ? "" : ` [${defaultValue}]`
+// required. Re-prompts on anything that doesn't parse as a plain finite number. `unit`, when
+// given, is appended to the displayed default only (e.g. "%" for "[4%]") -- typed input is still
+// a bare number either way, never the unit itself.
+export async function promptNumber(tty: TtyInterface, promptText: string, defaultValue: number | null, unit = ""): Promise<number> {
+  const defaultLabel = defaultValue === null ? "" : ` [${defaultValue}${unit}]`
   const question = `${promptText}${defaultLabel}: `
 
   while (true) {

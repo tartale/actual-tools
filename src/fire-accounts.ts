@@ -130,6 +130,42 @@ export const MONTE_CARLO_WITHDRAWAL_RULE_TYPES: readonly MonteCarloWithdrawalRul
 ]
 export const MONTE_CARLO_TAX_MODELS: readonly MonteCarloTaxModel[] = ["flat", "bands"]
 
+// Plain-language description of each choice, for display next to it in an interactive prompt --
+// same idea as MONTE_CARLO_ALLOCATION_PRESET_LABELS above. Condensed from Actual's own real
+// config-screen copy (Crossover.tsx/MonteCarloConfiguration.tsx/MonteCarloWithdrawalRuleConfiguration.tsx
+// /MonteCarloTaxConfiguration.tsx), not invented.
+export const CROSSOVER_PROJECTION_TYPE_LABELS: Record<CrossoverProjectionType, string> = {
+  hampel: "filters out outliers, then takes the median",
+  median: "the median, no filtering",
+  mean: "the plain average",
+}
+
+export const MONTE_CARLO_WITHDRAWAL_STRATEGY_LABELS: Record<MonteCarloWithdrawalStrategy, string> = {
+  proportional: "split across pots based on their current balances",
+  sequential: "drain the first pot before touching the next",
+  "best-performer": "each year, drain last year's highest-returning pot",
+  "target-mix": "withdraw from whichever pots grew above their starting share",
+}
+
+export const MONTE_CARLO_RETURN_MODEL_LABELS: Record<MonteCarloReturnModel, string> = {
+  normal: "drawn from a normal distribution around each pot's return/volatility",
+  "historical-bootstrap": "drawn from actual US market years (1928+) in random order",
+  "historical-sequence": "replays real market history, one scenario per starting year",
+}
+
+export const MONTE_CARLO_WITHDRAWAL_RULE_TYPE_LABELS: Record<MonteCarloWithdrawalRuleType, string> = {
+  none: "fixed, inflation-adjusted withdrawals",
+  guardrails: "Guyton-Klinger capital-preservation/prosperity triggers",
+  ratcheting: "Kitces: raise withdrawals after sustained gains",
+  "floor-ceiling": "Bengen: a bounded share of the current balance",
+  boundaries: "cut/raise when the withdrawal rate crosses a threshold",
+}
+
+export const MONTE_CARLO_TAX_MODEL_LABELS: Record<MonteCarloTaxModel, string> = {
+  flat: "one effective tax rate per pot",
+  bands: "your own progressive bands, by taxable share per pot",
+}
+
 export const DEFAULT_CROSSOVER_CONFIG: CrossoverAssumptions = {
   safeWithdrawalRate: 0.04,
   estimatedReturn: null,

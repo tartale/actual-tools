@@ -15,15 +15,20 @@ import {
 } from "./actual-helpers.ts"
 import type { Account, ActualConfig, TtyInterface } from "./actual-helpers.ts"
 import {
+  CROSSOVER_PROJECTION_TYPE_LABELS,
   CROSSOVER_PROJECTION_TYPES,
   DEFAULT_CONFIG_PATH,
   FIRE_ACCOUNT_CATEGORIES,
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
   MONTE_CARLO_ALLOCATION_PRESETS,
+  MONTE_CARLO_RETURN_MODEL_LABELS,
   MONTE_CARLO_RETURN_MODELS,
+  MONTE_CARLO_TAX_MODEL_LABELS,
   MONTE_CARLO_TAX_MODELS,
+  MONTE_CARLO_WITHDRAWAL_RULE_TYPE_LABELS,
   MONTE_CARLO_WITHDRAWAL_RULE_TYPES,
   MONTE_CARLO_WITHDRAWAL_STRATEGIES,
+  MONTE_CARLO_WITHDRAWAL_STRATEGY_LABELS,
   classifyByHeuristic,
   findOverride,
   isPortfolioCategory,
@@ -98,6 +103,13 @@ const HELP_PAGE: HelpPage = {
       ],
     },
   ],
+}
+
+// Function to build a promptChoice options array with each choice's plain-language description
+// shown inline (e.g. "hampel (filters out outliers, then takes the median)") -- the descriptions
+// come from fire-accounts.ts's *_LABELS maps, condensed from Actual's own real config-screen copy.
+function labeledOptions<Value extends string>(values: readonly Value[], labels: Record<Value, string>): string[] {
+  return values.map((value) => `${value} (${labels[value]})`)
 }
 
 // Function to print a line of context before a question -- the CLI equivalent of the "?" tooltip
@@ -334,24 +346,26 @@ async function askCrossoverAssumptions(tty: TtyInterface, existing: FireConfig):
     "\nSafe withdrawal rate: the amount you plan to withdraw from your investable portfolio each " +
       "year to fund your living expenses (see the \"4% rule\").",
   )
-  const safeWithdrawalRatePct = await promptNumber(tty, "Safe withdrawal rate, as a percent (e.g. 4 for 4%)", current.safeWithdrawalRate * 100)
+  const safeWithdrawalRatePct = await promptNumber(tty, "Safe withdrawal rate, as a percent (e.g. 4 for 4%)", current.safeWithdrawalRate * 100, "%")
 
   explain(
     "Estimated return: the expected annual return rate for your investments, used to project " +
       "portfolio growth. Leave at 0 to let Actual compute its own historical estimate instead.",
   )
-  const estimatedReturnPct = await promptNumber(tty, "Estimated annual return, as a percent (0 for Actual's own estimate)", current.estimatedReturn === null ? 0 : current.estimatedReturn * 100)
-
-  explain(
-    "Expense projection method -- how past expenses are projected into the future. Hampel " +
-      "Filtered Median: filters out outliers before taking the median. Median: uses the median " +
-      "without filtering. Mean: uses the plain average.",
+  const estimatedReturnPct = await promptNumber(
+    tty,
+    "Estimated annual return, as a percent (0 for Actual's own estimate)",
+    current.estimatedReturn === null ? 0 : current.estimatedReturn * 100,
+    "%",
   )
+
+  explain("Expense projection method -- how past expenses are projected into the future.")
   const projectionTypeIndex = await promptChoice(
     tty,
     "Expense projection method",
-    CROSSOVER_PROJECTION_TYPES,
+    labeledOptions(CROSSOVER_PROJECTION_TYPES, CROSSOVER_PROJECTION_TYPE_LABELS),
     CROSSOVER_PROJECTION_TYPES.indexOf(current.projectionType),
+    CROSSOVER_PROJECTION_TYPES,
   )
 
   explain(
@@ -360,7 +374,7 @@ async function askCrossoverAssumptions(tty: TtyInterface, existing: FireConfig):
       "spend more in retirement (e.g. 110 pads expenses by 10%). Below 100 = plan to spend less " +
       "(e.g. 90, if you expect no more commuting or a paid-off mortgage).",
   )
-  const expenseAdjustmentFactorPct = await promptNumber(tty, "Target income, as a percent of projected expenses", current.expenseAdjustmentFactor * 100)
+  const expenseAdjustmentFactorPct = await promptNumber(tty, "Target income, as a percent of projected expenses", current.expenseAdjustmentFactor * 100, "%")
 
   const showHiddenCategories = await confirmOnTty(tty, "Show hidden categories in the category selector?", current.showHiddenCategories)
 
@@ -379,8 +393,9 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
   const typeIndex = await promptChoice(
     tty,
     "Dynamic withdrawal rule (adjusts spending based on portfolio performance)",
-    MONTE_CARLO_WITHDRAWAL_RULE_TYPES,
+    labeledOptions(MONTE_CARLO_WITHDRAWAL_RULE_TYPES, MONTE_CARLO_WITHDRAWAL_RULE_TYPE_LABELS),
     MONTE_CARLO_WITHDRAWAL_RULE_TYPES.indexOf(current.type),
+    MONTE_CARLO_WITHDRAWAL_RULE_TYPES,
   )
   const type = MONTE_CARLO_WITHDRAWAL_RULE_TYPES[typeIndex] as (typeof MONTE_CARLO_WITHDRAWAL_RULE_TYPES)[number]
 
@@ -394,10 +409,10 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
         "rule: if the rate falls more than the trigger below the planned rate, raise withdrawals " +
         "by the increase percent.",
     )
-    const prosperityTriggerPct = await promptNumber(tty, "Prosperity trigger, as a percent below the initial rate", (current.prosperityTriggerPct ?? 0.2) * 100)
-    const prosperityIncreasePct = await promptNumber(tty, "Prosperity increase, as a percent", (current.prosperityIncreasePct ?? 0.1) * 100)
-    const preservationTriggerPct = await promptNumber(tty, "Preservation trigger, as a percent above the initial rate", (current.preservationTriggerPct ?? 0.2) * 100)
-    const preservationCutPct = await promptNumber(tty, "Preservation cut, as a percent", (current.preservationCutPct ?? 0.1) * 100)
+    const prosperityTriggerPct = await promptNumber(tty, "Prosperity trigger, as a percent below the initial rate", (current.prosperityTriggerPct ?? 0.2) * 100, "%")
+    const prosperityIncreasePct = await promptNumber(tty, "Prosperity increase, as a percent", (current.prosperityIncreasePct ?? 0.1) * 100, "%")
+    const preservationTriggerPct = await promptNumber(tty, "Preservation trigger, as a percent above the initial rate", (current.preservationTriggerPct ?? 0.2) * 100, "%")
+    const preservationCutPct = await promptNumber(tty, "Preservation cut, as a percent", (current.preservationCutPct ?? 0.1) * 100, "%")
     return {
       type,
       prosperityTriggerPct: prosperityTriggerPct / 100,
@@ -413,7 +428,7 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
     )
     const balanceThresholdMultiple = await promptNumber(tty, "Balance threshold multiple (e.g. 1.5 = 150% of initial)", current.balanceThresholdMultiple ?? 1.5)
     const consecutiveYears = await promptNumber(tty, "Consecutive years above threshold before ratcheting up", current.consecutiveYears ?? 3)
-    const ratchetIncreasePct = await promptNumber(tty, "Ratchet increase, as a percent", (current.ratchetIncreasePct ?? 0.05) * 100)
+    const ratchetIncreasePct = await promptNumber(tty, "Ratchet increase, as a percent", (current.ratchetIncreasePct ?? 0.05) * 100, "%")
     return { type, balanceThresholdMultiple, consecutiveYears, ratchetIncreasePct: ratchetIncreasePct / 100 }
   }
   if (type === "floor-ceiling") {
@@ -422,8 +437,8 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
         "accessible balance, but never more than the ceiling above, or less than the floor below, " +
         "the inflation-adjusted planned amount.",
     )
-    const floorPct = await promptNumber(tty, "Floor, as a percent below the inflation-adjusted initial withdrawal", (current.floorPct ?? 0.15) * 100)
-    const ceilingPct = await promptNumber(tty, "Ceiling, as a percent above the inflation-adjusted initial withdrawal", (current.ceilingPct ?? 0.2) * 100)
+    const floorPct = await promptNumber(tty, "Floor, as a percent below the inflation-adjusted initial withdrawal", (current.floorPct ?? 0.15) * 100, "%")
+    const ceilingPct = await promptNumber(tty, "Ceiling, as a percent above the inflation-adjusted initial withdrawal", (current.ceilingPct ?? 0.2) * 100, "%")
     return { type, floorPct: floorPct / 100, ceilingPct: ceilingPct / 100 }
   }
   // boundaries
@@ -432,10 +447,10 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
       "upper cut percent. If it falls below the lower threshold, raise withdrawals by the lower " +
       "increase percent.",
   )
-  const upperRateThreshold = await promptNumber(tty, "Upper withdrawal-rate threshold, as a percent", (current.upperRateThreshold ?? 0.06) * 100)
-  const upperCutPct = await promptNumber(tty, "Cut when the upper threshold is hit, as a percent", (current.upperCutPct ?? 0.1) * 100)
-  const lowerRateThreshold = await promptNumber(tty, "Lower withdrawal-rate threshold, as a percent", (current.lowerRateThreshold ?? 0.04) * 100)
-  const lowerIncreasePct = await promptNumber(tty, "Increase when the lower threshold is hit, as a percent", (current.lowerIncreasePct ?? 0.05) * 100)
+  const upperRateThreshold = await promptNumber(tty, "Upper withdrawal-rate threshold, as a percent", (current.upperRateThreshold ?? 0.06) * 100, "%")
+  const upperCutPct = await promptNumber(tty, "Cut when the upper threshold is hit, as a percent", (current.upperCutPct ?? 0.1) * 100, "%")
+  const lowerRateThreshold = await promptNumber(tty, "Lower withdrawal-rate threshold, as a percent", (current.lowerRateThreshold ?? 0.04) * 100, "%")
+  const lowerIncreasePct = await promptNumber(tty, "Increase when the lower threshold is hit, as a percent", (current.lowerIncreasePct ?? 0.05) * 100, "%")
   return {
     type,
     upperRateThreshold: upperRateThreshold / 100,
@@ -453,7 +468,7 @@ async function askTaxBands(tty: TtyInterface, existing: readonly MonteCarloTaxBa
   do {
     const existingBand = existing[index]
     const fromDollars = await promptNumber(tty, `Tax band ${index + 1}: income threshold, in dollars`, existingBand ? (existingBand.from ?? 0) / 100 : 0)
-    const ratePct = await promptNumber(tty, `Tax band ${index + 1}: rate, as a percent`, existingBand ? (existingBand.rate ?? 0) * 100 : 0)
+    const ratePct = await promptNumber(tty, `Tax band ${index + 1}: rate, as a percent`, existingBand ? (existingBand.rate ?? 0) * 100 : 0, "%")
     bands.push({ id: `band-${index + 1}`, from: Math.round(fromDollars * 100), rate: ratePct / 100 })
     index++
   } while (await confirmOnTty(tty, "Add another tax band?", index < existing.length))
@@ -468,33 +483,28 @@ async function askMonteCarloAssumptions(tty: TtyInterface, existing: FireConfig)
 
   explain(
     "\nWithdrawal strategy -- how the annual withdrawal is taken when you have more than one pot. " +
-      "Proportional: split across pots based on their current balances. Sequential: drain the " +
-      "first pot before touching the next. Best performer first: each year, drain the pot with " +
-      "the highest return last year (spend cash after a crash, stocks in boom years). Target mix: " +
-      "withdraw from whichever pots have grown above their share of your starting mix, pulling the " +
-      "portfolio back toward it. A pot not yet at its access age is always skipped until it unlocks.",
+      "A pot not yet at its access age is always skipped until it unlocks.",
   )
   const strategyIndex = await promptChoice(
     tty,
     "Withdrawal strategy across pots",
-    MONTE_CARLO_WITHDRAWAL_STRATEGIES,
+    labeledOptions(MONTE_CARLO_WITHDRAWAL_STRATEGIES, MONTE_CARLO_WITHDRAWAL_STRATEGY_LABELS),
     MONTE_CARLO_WITHDRAWAL_STRATEGIES.indexOf(current.withdrawalStrategy),
+    MONTE_CARLO_WITHDRAWAL_STRATEGIES,
   )
   const withdrawalStrategy = MONTE_CARLO_WITHDRAWAL_STRATEGIES[strategyIndex] as (typeof MONTE_CARLO_WITHDRAWAL_STRATEGIES)[number]
 
-  explain(
-    "Return model -- how each simulated year's investment return is generated. Normal: drawn from " +
-      "a normal distribution around each pot's expected return and volatility. Historical, " +
-      "shuffled: drawn from actual US market years (1928 onwards) in random order. Historical " +
-      "sequences: replays real market history, one scenario per starting year.",
+  explain("Return model -- how each simulated year's investment return is generated.")
+  const returnModelIndex = await promptChoice(
+    tty,
+    "Return model",
+    labeledOptions(MONTE_CARLO_RETURN_MODELS, MONTE_CARLO_RETURN_MODEL_LABELS),
+    MONTE_CARLO_RETURN_MODELS.indexOf(current.returnModel),
+    MONTE_CARLO_RETURN_MODELS,
   )
-  const returnModelIndex = await promptChoice(tty, "Return model", MONTE_CARLO_RETURN_MODELS, MONTE_CARLO_RETURN_MODELS.indexOf(current.returnModel))
   const returnModel = MONTE_CARLO_RETURN_MODELS[returnModelIndex] as (typeof MONTE_CARLO_RETURN_MODELS)[number]
 
-  explain(
-    "Dynamic withdrawal rule -- adjusts your withdrawal each year based on how the pots are doing, " +
-      "instead of always taking the same inflation-adjusted amount. None keeps it fixed.",
-  )
+  explain("Dynamic withdrawal rule -- adjusts your withdrawal each year based on how the pots are doing.")
   const withdrawalRule = await askWithdrawalRule(tty, current.withdrawalRule)
 
   explain(
@@ -509,18 +519,20 @@ async function askMonteCarloAssumptions(tty: TtyInterface, existing: FireConfig)
     tty,
     "Mean yearly inflation, as a percent (0 for flat, uninflated withdrawals)",
     current.inflationMean === null ? 0 : current.inflationMean * 100,
+    "%",
   )
 
   explain("Inflation volatility: real-world inflation bounces around year to year rather than staying fixed -- when set, each simulated year draws its own rate around the mean.")
-  const inflationStdDevPct = await promptNumber(tty, "Yearly inflation volatility, as a percent", current.inflationStdDev * 100)
+  const inflationStdDevPct = await promptNumber(tty, "Yearly inflation volatility, as a percent", current.inflationStdDev * 100, "%")
 
-  explain(
-    "Tax model -- your yearly spending is what you keep after tax; the simulation withdraws extra " +
-      "to cover it. Flat: each pot has one effective tax rate on its withdrawals. Bands: enter " +
-      "your own progressive bands, and each pot declares how much of a withdrawal counts as " +
-      "taxable income.",
+  explain("Tax model -- your yearly spending is what you keep after tax; the simulation withdraws extra to cover it.")
+  const taxModelIndex = await promptChoice(
+    tty,
+    "Tax model",
+    labeledOptions(MONTE_CARLO_TAX_MODELS, MONTE_CARLO_TAX_MODEL_LABELS),
+    MONTE_CARLO_TAX_MODELS.indexOf(current.taxModel),
+    MONTE_CARLO_TAX_MODELS,
   )
-  const taxModelIndex = await promptChoice(tty, "Tax model", MONTE_CARLO_TAX_MODELS, MONTE_CARLO_TAX_MODELS.indexOf(current.taxModel))
   const taxModel = MONTE_CARLO_TAX_MODELS[taxModelIndex] as (typeof MONTE_CARLO_TAX_MODELS)[number]
   const taxBands = taxModel === "bands" ? await askTaxBands(tty, current.taxBands) : current.taxBands
 
