@@ -200,7 +200,10 @@ answer or pick up a newly-added account, not something to avoid. As long as
 an account keeps the same category between runs, any hand-customized
 `taxTreatment`, `accessAge`, or `allocationPreset` in the existing file is
 carried over as the default rather than being reset — only changing an
-account's category resets those to the new category's plain defaults.
+account's category resets those to the new category's plain defaults. The
+file is written after every account is classified, not just once at the
+end, so quitting partway through (ctrl-c or otherwise) keeps everything
+answered so far.
 
 ### `accounts.json`
 

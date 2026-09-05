@@ -141,12 +141,14 @@ async function main(): Promise<void> {
   try {
     for (const [index, account] of accounts.entries()) {
       overrides.push(await classifyOneAccount(tty, account, balances[index] as number, existingConfig))
+      // Write after every account is classified, not just once at the end, so an interrupted
+      // session (ctrl-c, a crash) keeps everything answered so far instead of losing it all.
+      writeFireAccountsConfig(options.configPath, { version: 1, accounts: overrides })
     }
   } finally {
     tty.close()
   }
 
-  writeFireAccountsConfig(options.configPath, { version: 1, accounts: overrides })
   console.log(`\nWrote ${overrides.length} account(s) to ${options.configPath}.`)
 }
 
