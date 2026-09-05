@@ -29,6 +29,7 @@ function budgetUsage() {
   echo >&2
   cliSection "Subcommands" \
     "set-values" "Set category budgets. See './actual budget set-values --help'." \
+    "anomalies" "Flag categories with unusual spending. See './actual budget anomalies --help'." \
     "match-uncleared" "Tag uncleared transactions that match a cleared one."
   exit "${exitCode}"
 }
@@ -87,6 +88,9 @@ function commandBudget() {
   case "${subcommand}" in
     set-values)
       exec ./src/set-budget.ts "$@"
+      ;;
+    anomalies)
+      exec ./src/anomalies.ts "$@"
       ;;
     match-uncleared)
       # Still the original bash implementation; slated for a TypeScript port.

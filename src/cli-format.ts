@@ -78,7 +78,7 @@ function renderSection(stream: NodeJS.WriteStream, section: HelpSection): string
 export function renderHelp(stream: NodeJS.WriteStream, page: HelpPage): string {
   const parts = [`${style(stream, ["bold", "yellow"], "Usage:")} ${page.usage}`]
   if (page.description) {
-    parts.push("", page.description)
+    parts.push("", ...wrap(page.description, widthOf(stream), 0))
   }
   for (const section of page.sections) {
     parts.push("", renderSection(stream, section))

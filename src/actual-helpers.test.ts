@@ -2,11 +2,17 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   addMonths,
+  addTagToNotes,
   averageSpent,
   computeBalanceBudget,
   computeHistoricalBudget,
+  fetchAccountTransactions,
+  fetchAllTransactionsSince,
   fetchCategoryGroups,
+  flattenTransactions,
+  fetchHistoricalSpent,
   fetchMonthCategories,
+  fetchOnBudgetAccounts,
   findIncomeFilterMatches,
   formatCategoryLine,
   formatUsd,
@@ -16,10 +22,11 @@ import {
   loadConfigFromEnv,
   monthRange,
   patchCategoryBudget,
+  patchTransactionNotes,
   shouldUpdateCategory,
   validateMonthFormat,
 } from "./actual-helpers.ts"
-import type { ActualConfig, CategoryGroup, CategoryMonth } from "./actual-helpers.ts"
+import type { ActualConfig, CategoryGroup, CategoryMonth, Transaction } from "./actual-helpers.ts"
 
 const config: ActualConfig = {
   baseUrl: "https://actual.test/v1",
@@ -365,6 +372,28 @@ describe("getCachedMonthCategories", () => {
   })
 })
 
+describe("fetchHistoricalSpent", () => {
+  it("returns the raw spent values for the N months before the target, newest first", async () => {
+    const byMonth: Record<string, CategoryMonth[]> = {
+      "2026-07": [categoryMonth({ id: "cat-1", spent: -10000 })],
+      "2026-06": [categoryMonth({ id: "cat-1", spent: -20000 })],
+    }
+    vi.stubGlobal("fetch", async (url: string) => {
+      const month = url.split("/months/")[1]?.split("/")[0] as string
+      return { ok: true, status: 200, json: async () => ({ data: byMonth[month] ?? [] }) }
+    })
+
+    const cache = new Map<string, CategoryMonth[]>()
+    await expect(fetchHistoricalSpent(config, "cat-1", "2026-08", 2, cache)).resolves.toEqual([-10000, -20000])
+  })
+
+  it("treats a month without the category as zero, not a shrunken sample", async () => {
+    vi.stubGlobal("fetch", async () => ({ ok: true, status: 200, json: async () => ({ data: [] }) }))
+    const cache = new Map<string, CategoryMonth[]>()
+    await expect(fetchHistoricalSpent(config, "cat-1", "2026-08", 3, cache)).resolves.toEqual([0, 0, 0])
+  })
+})
+
 describe("computeHistoricalBudget", () => {
   it("averages the previous months' spending, skipping the target month itself", async () => {
     const byMonth: Record<string, CategoryMonth[]> = {
@@ -388,5 +417,146 @@ describe("computeHistoricalBudget", () => {
     const cache = new Map<string, CategoryMonth[]>()
     await expect(computeHistoricalBudget(config, "cat-1", "2026-08", 12, cache)).resolves.toBe(0)
     expect(cache.size).toBe(12)
+  })
+})
+
+// Function to build a transaction with sensible defaults for the fields a test ignores
+function transaction(overrides: Partial<Transaction> & Pick<Transaction, "id">): Transaction {
+  return {
+    account: "acct-1",
+    category: null,
+    amount: -1000,
+    imported_payee: "Some Store",
+    notes: null,
+    date: "2026-08-15",
+    transfer_id: null,
+    ...overrides,
+  }
+}
+
+describe("fetchOnBudgetAccounts", () => {
+  it("filters out closed and off-budget accounts", async () => {
+    const accounts = [
+      { id: "a1", name: "Checking", offbudget: false, closed: false },
+      { id: "a2", name: "Closed", offbudget: false, closed: true },
+      { id: "a3", name: "Savings (off-budget)", offbudget: true, closed: false },
+    ]
+    stubFetch([{ body: { data: accounts } }])
+
+    await expect(fetchOnBudgetAccounts(config)).resolves.toEqual([accounts[0]])
+  })
+
+  it("rejects a response without a data array", async () => {
+    stubFetch([{ body: { data: null } }])
+    await expect(fetchOnBudgetAccounts(config)).rejects.toThrow("Unexpected response fetching accounts")
+  })
+})
+
+describe("fetchAccountTransactions", () => {
+  it("requests an account's transactions since a date", async () => {
+    const transactions = [transaction({ id: "t1" })]
+    const { calls } = stubFetch([{ body: { data: transactions } }])
+
+    await expect(fetchAccountTransactions(config, "acct-1", "2026-08-01")).resolves.toEqual(transactions)
+    expect(calls[0]?.url).toBe("https://actual.test/v1/budgets/budget-1/accounts/acct-1/transactions?since_date=2026-08-01")
+  })
+
+  it("names the account in its error", async () => {
+    stubFetch([{ body: { nope: true } }])
+    await expect(fetchAccountTransactions(config, "acct-1", "2026-08-01")).rejects.toThrow("transactions for account acct-1")
+  })
+})
+
+describe("flattenTransactions", () => {
+  it("passes ordinary transactions through unchanged", () => {
+    const transactions = [transaction({ id: "t1" }), transaction({ id: "t2" })]
+    expect(flattenTransactions(transactions)).toEqual(transactions)
+  })
+
+  it("replaces a split parent with its subtransactions", () => {
+    const child1 = transaction({ id: "c1", category: "cat-a", amount: -3000 })
+    const child2 = transaction({ id: "c2", category: "cat-b", amount: -1100 })
+    const parent = transaction({ id: "p1", category: null, amount: -4100, is_parent: true, subtransactions: [child1, child2] })
+
+    expect(flattenTransactions([parent])).toEqual([child1, child2])
+  })
+
+  it("drops a split parent with no subtransactions rather than including an uncategorized line item", () => {
+    const parent = transaction({ id: "p1", category: null, is_parent: true, subtransactions: [] })
+    expect(flattenTransactions([parent])).toEqual([])
+  })
+})
+
+describe("fetchAllTransactionsSince", () => {
+  it("fetches every on-budget account's transactions and excludes transfers", async () => {
+    const accounts = [
+      { id: "a1", name: "Checking", offbudget: false, closed: false },
+      { id: "a2", name: "Savings", offbudget: false, closed: false },
+    ]
+    const byAccount: Record<string, Transaction[]> = {
+      a1: [transaction({ id: "t1" }), transaction({ id: "t2", transfer_id: "xfer-1" })],
+      a2: [transaction({ id: "t3" })],
+    }
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/accounts")) {
+        return { ok: true, status: 200, json: async () => ({ data: accounts }) }
+      }
+      const accountId = url.split("/accounts/")[1]?.split("/")[0] as string
+      return { ok: true, status: 200, json: async () => ({ data: byAccount[accountId] ?? [] }) }
+    })
+
+    const result = await fetchAllTransactionsSince(config, "2026-08-01")
+    expect(result.map((t) => t.id).sort()).toEqual(["t1", "t3"])
+  })
+
+  it("flattens a split parent into its subtransactions", async () => {
+    const accounts = [{ id: "a1", name: "Checking", offbudget: false, closed: false }]
+    const child = transaction({ id: "c1", category: "cat-a" })
+    const parent = transaction({ id: "p1", category: null, is_parent: true, subtransactions: [child] })
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/accounts")) {
+        return { ok: true, status: 200, json: async () => ({ data: accounts }) }
+      }
+      return { ok: true, status: 200, json: async () => ({ data: [parent] }) }
+    })
+
+    const result = await fetchAllTransactionsSince(config, "2026-08-01")
+    expect(result.map((t) => t.id)).toEqual(["c1"])
+  })
+})
+
+describe("patchTransactionNotes", () => {
+  it("patches the transaction with a json body", async () => {
+    const { calls } = stubFetch([{ body: { data: {} } }])
+    await patchTransactionNotes(config, "tx-1", "#anomaly-high some note")
+
+    expect(calls[0]?.url).toBe("https://actual.test/v1/budgets/budget-1/transactions/tx-1")
+    expect(calls[0]?.init?.method).toBe("PATCH")
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({ transaction: { notes: "#anomaly-high some note" } })
+  })
+
+  it("surfaces the api's error field", async () => {
+    stubFetch([{ ok: false, status: 400, body: { error: "bad transaction" } }])
+    await expect(patchTransactionNotes(config, "tx-1", "note")).rejects.toThrow("bad transaction")
+  })
+})
+
+describe("addTagToNotes", () => {
+  it("prepends the tag to existing notes", () => {
+    expect(addTagToNotes("Groceries run", "#anomaly-high")).toBe("#anomaly-high Groceries run")
+  })
+
+  it("uses just the tag when there are no notes", () => {
+    expect(addTagToNotes(null, "#anomaly-high")).toBe("#anomaly-high")
+    expect(addTagToNotes("", "#anomaly-high")).toBe("#anomaly-high")
+  })
+
+  it("doesn't duplicate a tag that's already present", () => {
+    expect(addTagToNotes("#anomaly-high Groceries run", "#anomaly-high")).toBe("#anomaly-high Groceries run")
+    expect(addTagToNotes("#anomaly-high", "#anomaly-high")).toBe("#anomaly-high")
+  })
+
+  it("doesn't confuse a different tag for a duplicate", () => {
+    expect(addTagToNotes("#anomaly-low Groceries run", "#anomaly-high")).toBe("#anomaly-high #anomaly-low Groceries run")
   })
 })

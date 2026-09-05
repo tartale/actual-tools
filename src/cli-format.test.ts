@@ -44,6 +44,14 @@ describe("renderHelp", () => {
     expect(output).toContain("[")
   })
 
+  it("word-wraps a description too long for the terminal width", () => {
+    const longPage: HelpPage = { ...page, description: "one two three four five six seven eight nine ten" }
+    const output = renderHelp(fakeStream({ columns: 20 }), longPage)
+    const lines = output.split("\n")
+    expect(lines).toContain("one two three four")
+    expect(lines).toContain("five six seven eight")
+  })
+
   it("right-aligns the description column to the widest name in each section, independently per section", () => {
     const output = renderHelp(fakeStream({ columns: 80 }), page)
     const lines = output.split("\n")

@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-04T23:06:00.381Z
+  modified: 2026-09-05T00:39:59.630Z
 ---
 
 `balance-to-zero.sh` is being fully replaced (no backward compat) by
@@ -87,6 +87,58 @@ gained its own `--help` (a "Subcommands" list) where before it only errored
 with no subcommand given. Along the way, fixed `-h`/`--help` to exit 0 (was
 exiting 1, i.e. treated as an error) in `actual` and added `-h`/`--help` to
 `match-uncleared.sh`, which previously had no help flag at all.
+
+**`./actual budget anomalies` added** (2026-09-05): flags a category/month
+whose spending deviates sharply from that category's own trailing 12-month
+history, and optionally tags the responsible transaction(s). Detection is a
+MAD-based modified z-score (Iglewicz & Hoaglin), chosen over a plain
+mean/stddev z-score or a simple %-of-average test because personal-finance
+categories are often lumpy (an annual payment isn't "anomalous" just because
+11 of 12 months are $0) — MAD's median-based math resists exactly the single
+past outlier that would otherwise skew a mean-based baseline. Pure math lives
+in `src/anomaly-detect.ts` (`detectAnomaly`), fully unit-tested with no API
+dependency, reusable outside this Actual-specific context if ever needed.
+
+Two-level detection, confirmed with the user: level 1 flags the category/month
+against its own monthly `spent` history; level 2, only for a flagged
+month and only when `-t` is given, re-runs the same MAD test against that
+category's individual historical transaction amounts to find which specific
+transaction(s) are themselves outliers — not just "the biggest one" naively.
+If none of them individually clears the bar (the excess is spread across
+several ordinary transactions), the fallback — the user's explicit choice
+over "tag nothing" — is to tag the single largest transaction in that
+category/month, so a flagged month is never left with nothing tagged.
+
+Tags are `#anomaly-high`/`#anomaly-low` (direction only, not magnitude or
+z-score) prepended into the transaction's `notes` field via plain string
+concatenation — confirmed with the user this is exactly the same mechanism
+`match-uncleared.sh` already uses for `#cleared`, nothing Actual-API-specific.
+Precise numbers (dollar figures, historical median) go in the console log
+line, not the tag, so the tag stays stable across any future retuning of the
+detection formula.
+
+Real-world correctness finds during implementation, both confirmed live
+against the actual budget before writing any code around them:
+- **Split transactions**: a "parent" transaction has `category: null` and an
+  amount spanning every category in the split; the real per-category
+  amount/notes live on each child inside `.subtransactions`, which do NOT
+  also appear at the top level of the account's transaction list. Missing
+  this would have silently under-counted or mis-attributed every split.
+  `flattenTransactions` in `actual-helpers.ts` replaces a parent with its
+  children before any category filtering happens. Verified a child's own id
+  is independently PATCH-able (a real, reversible round-trip PATCH against
+  the live budget, writing back the exact same notes value it already had).
+- Individual transaction `.amount` uses the same sign convention as category
+  `.spent` (negative for outflow) — confirmed live rather than assumed, since
+  a mismatch here would have silently inverted every "high"/"low" label.
+- No per-category transactions endpoint exists; transaction-level fetches
+  reuse `match-uncleared.sh`'s existing pattern (fetch every on-budget
+  account's transactions via `since_date`, filter client-side).
+
+Also fixed while building this: `renderHelp` (`src/cli-format.ts`) wasn't
+word-wrapping the top-level page description, only per-entry descriptions —
+invisible until this command's longer description exposed it at normal
+terminal widths.
 
 **How to apply**: the full plan snapshot is at
 `.claude/plans/set-budget-migration.md` in the repo (the machine-local copy

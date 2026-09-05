@@ -23,6 +23,7 @@ Every task in this repo runs through one dispatcher, from any directory:
 ./actual lint                        # eslint over TypeScript, shellcheck over shell
 ./actual test                        # unit tests
 ./actual budget set-values ARGS      # set category budgets
+./actual budget anomalies ARGS       # flag categories with unusual spending
 ./actual budget match-uncleared ARGS # tag matching uncleared transactions
 ```
 
@@ -70,6 +71,49 @@ Examples:
 This replaces the earlier `balance-to-zero.sh`, whose behaviour is now the
 `balance` action.
 
+## `./actual budget anomalies`
+
+Flags categories whose spending in a month deviates sharply from that
+category's own trailing 12-month history.
+
+```
+./actual budget anomalies -c CATEGORY [-c CATEGORY]... [-t] [-n] yyyy-mm [yyyy-mm]
+```
+
+Detection is a modified z-score built on the Median Absolute Deviation (MAD) —
+a standard, outlier-resistant technique (Iglewicz & Hoaglin) that isn't thrown
+off by a single unusual month elsewhere in the history, unlike a plain
+mean/standard-deviation test. A category needs at least 3 months of history to
+be judged at all, and the deviation must clear a $50 floor regardless of how
+extreme the percentage swing is, so a $2 category jumping to $6 isn't reported
+as a 200% anomaly.
+
+Options:
+
+- `-c`, `--category CATEGORY` — category or parent category group to check, by
+  name or ID. **Required**, unlike `set-values`; can be used multiple times.
+- `-t`, `--tag` — once a category/month is flagged, look at its individual
+  transactions and prepend `#anomaly-high` or `#anomaly-low` to the notes of
+  whichever one(s) are themselves outliers against that category's own
+  historical transaction sizes (the same MAD test, run again at the
+  transaction level). If none of them individually clears the bar — the
+  excess is spread across several ordinary-looking transactions rather than
+  one big one — the single largest transaction in that category/month is
+  tagged instead, so a flagged month is never left with nothing tagged.
+  Without `-t`, the command only logs what it finds.
+- `-n`, `--dry-run` — with `-t`, report what would be tagged without writing
+  anything. Also enabled by setting `DRY_RUN=true`.
+
+Income categories are excluded the same way as in `set-values`.
+
+Examples:
+
+```sh
+./actual budget anomalies -c Groceries 2026-08                    # a single month
+./actual budget anomalies -c Groceries -c Dining 2025-09 2026-08  # a year, two categories
+./actual budget anomalies -c Groceries -t -n 2026-08              # preview what -t would tag
+```
+
 ## `./actual budget match-uncleared`
 
 Finds uncleared transactions that match a cleared one and tags them. Still the
@@ -83,8 +127,10 @@ actual                   task dispatcher, the entry point for everything
 lib/cli-format.sh        shared bash help-text formatting, used by actual and match-uncleared.sh
 src/                     TypeScript sources and their tests
   actual-helpers.ts      typed Actual REST client + pure helpers
+  anomaly-detect.ts      pure MAD-based outlier detection, no API dependency
   cli-format.ts          shared TypeScript help-text formatting
   set-budget.ts          executable CLI
+  anomalies.ts           executable CLI
   *.test.ts              vitest unit tests
 match-uncleared.sh       standalone bash tool
 eslint.config.js         flat config, type-aware rules via typescript-eslint

@@ -30,6 +30,26 @@ export interface ActualConfig {
   apiKey: string
 }
 
+export interface Account {
+  id: string
+  name: string
+  offbudget: boolean
+  closed: boolean
+}
+
+export interface Transaction {
+  id: string
+  account: string
+  category: string | null
+  amount: number
+  imported_payee: string | null
+  notes: string | null
+  date: string
+  transfer_id: string | null
+  is_parent?: boolean
+  subtransactions?: Transaction[]
+}
+
 export type Action = "balance" | "previous" | "previous-3" | "previous-12"
 
 export const ACTIONS: readonly Action[] = ["balance", "previous", "previous-3", "previous-12"]
@@ -212,6 +232,26 @@ export async function getCachedMonthCategories(
   return categories
 }
 
+// Function to fetch a category's raw `spent` values for the N months immediately before `month`,
+// in the same negative-for-outflow units as CategoryMonth.spent. A month where the category
+// doesn't appear counts as 0, not a shrunken sample.
+export async function fetchHistoricalSpent(
+  config: ActualConfig,
+  categoryId: string,
+  month: string,
+  monthsBack: number,
+  monthCache: Map<string, CategoryMonth[]>,
+): Promise<number[]> {
+  const spentAmounts: number[] = []
+  for (let i = 1; i <= monthsBack; i++) {
+    const priorMonth = addMonths(month, -i)
+    const priorCategories = await getCachedMonthCategories(config, priorMonth, monthCache)
+    const priorCategory = priorCategories.find((category) => category.id === categoryId)
+    spentAmounts.push(priorCategory ? priorCategory.spent : 0)
+  }
+  return spentAmounts
+}
+
 // Function to average the previous N months of a category's spending into a budgeted amount
 export async function computeHistoricalBudget(
   config: ActualConfig,
@@ -220,13 +260,7 @@ export async function computeHistoricalBudget(
   monthsBack: number,
   monthCache: Map<string, CategoryMonth[]>,
 ): Promise<number> {
-  const spentAmounts: number[] = []
-  for (let i = 1; i <= monthsBack; i++) {
-    const priorMonth = addMonths(month, -i)
-    const priorCategories = await getCachedMonthCategories(config, priorMonth, monthCache)
-    const priorCategory = priorCategories.find((category) => category.id === categoryId)
-    spentAmounts.push(priorCategory ? priorCategory.spent : 0)
-  }
+  const spentAmounts = await fetchHistoricalSpent(config, categoryId, month, monthsBack, monthCache)
   return averageSpent(spentAmounts)
 }
 
@@ -236,6 +270,65 @@ export async function patchCategoryBudget(config: ActualConfig, month: string, c
     method: "PATCH",
     body: JSON.stringify({ category: { budgeted } }),
   })
+}
+
+// Function to fetch every open, on-budget account (closed and off-budget accounts don't count
+// toward category spending, matching how match-uncleared.sh already scopes its account fetch)
+export async function fetchOnBudgetAccounts(config: ActualConfig): Promise<Account[]> {
+  const body = await actualRequest(config, `/budgets/${config.budgetId}/accounts`)
+  if (!isDataArray(body)) {
+    throw new Error(`Unexpected response fetching accounts: ${JSON.stringify(body)}`)
+  }
+  return (body.data as Account[]).filter((account) => !account.closed && !account.offbudget)
+}
+
+// Function to fetch an account's transactions on or after `sinceDate` (the API has no upper
+// bound, so callers filter the result down to whatever end date they need)
+export async function fetchAccountTransactions(config: ActualConfig, accountId: string, sinceDate: string): Promise<Transaction[]> {
+  const body = await actualRequest(
+    config,
+    `/budgets/${config.budgetId}/accounts/${accountId}/transactions?since_date=${sinceDate}`,
+  )
+  if (!isDataArray(body)) {
+    throw new Error(`Unexpected response fetching transactions for account ${accountId}: ${JSON.stringify(body)}`)
+  }
+  return body.data as Transaction[]
+}
+
+// Function to replace a split (parent) transaction with its individually-categorized
+// subtransactions, which is where the API assigns category/amount/notes for a split — the parent
+// itself has category: null and an amount spanning every category in the split, so it isn't a
+// usable line item on its own.
+export function flattenTransactions(transactions: readonly Transaction[]): Transaction[] {
+  return transactions.flatMap((transaction) => (transaction.is_parent ? (transaction.subtransactions ?? []) : [transaction]))
+}
+
+// Function to fetch every non-transfer transaction, across every on-budget account, on or after
+// `sinceDate` — the building block for anything that needs to look at individual transactions
+// rather than a category's monthly aggregate. Splits are flattened to their subtransactions first.
+export async function fetchAllTransactionsSince(config: ActualConfig, sinceDate: string): Promise<Transaction[]> {
+  const accounts = await fetchOnBudgetAccounts(config)
+  const transactionsByAccount = await Promise.all(
+    accounts.map((account) => fetchAccountTransactions(config, account.id, sinceDate)),
+  )
+  return flattenTransactions(transactionsByAccount.flat()).filter((transaction) => transaction.transfer_id === null)
+}
+
+// Function to set a transaction's notes
+export async function patchTransactionNotes(config: ActualConfig, transactionId: string, notes: string): Promise<void> {
+  await actualRequest(config, `/budgets/${config.budgetId}/transactions/${transactionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ transaction: { notes } }),
+  })
+}
+
+// Function to prepend a "#tag " label to a transaction's notes, unless it's already there
+export function addTagToNotes(notes: string | null, tag: string): string {
+  const existing = notes ?? ""
+  if (existing === tag || existing.startsWith(`${tag} `)) {
+    return existing
+  }
+  return existing ? `${tag} ${existing}` : tag
 }
 
 // Function to prompt for interactive confirmation via the controlling terminal
