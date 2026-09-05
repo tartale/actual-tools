@@ -21,13 +21,17 @@ describe("portfolioAccountIds", () => {
       account({ id: "a1", category: "retirement-tax-deferred" }),
       account({ id: "a2", category: "retirement-roth" }),
       account({ id: "a3", category: "hsa" }),
-      account({ id: "a4", category: "taxable-investment" }),
+      account({ id: "a4", category: "investment-taxable" }),
     ]
     expect(portfolioAccountIds(accounts)).toEqual(["a1", "a2", "a3", "a4"])
   })
 
-  it("excludes debt and cash-other", () => {
-    const accounts = [account({ id: "a1", category: "debt" }), account({ id: "a2", category: "cash-other" })]
+  it("excludes debt, cash, and other", () => {
+    const accounts = [
+      account({ id: "a1", category: "debt" }),
+      account({ id: "a2", category: "cash" }),
+      account({ id: "a3", category: "other" }),
+    ]
     expect(portfolioAccountIds(accounts)).toEqual([])
   })
 

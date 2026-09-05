@@ -28,7 +28,7 @@ const HELP_PAGE: HelpPage = {
   usage: "./actual accounts classify [OPTIONS]",
   description:
     "Interactively classifies every open account (on- and off-budget) for FIRE reporting -- " +
-    "retirement, taxable-investment, HSA, debt, or ordinary cash -- and writes the result to the " +
+    "retirement, taxable investment, HSA, debt, cash, or other -- and writes the result to the " +
     "accounts config file. An existing entry, or an inferred guess from the account's name, is " +
     "offered as the default for each account; accounts with no inferred guess must be classified " +
     "explicitly. Feeds ./actual reports fire.",

@@ -149,7 +149,7 @@ pairs, especially with `-n` first, before trusting a large `--since` window.
 ## `./actual accounts classify`
 
 Actual's account API has no account-type field, so this repo can't know on
-its own which accounts are retirement, taxable-investment, HSA, or debt.
+its own which accounts are retirement, taxable investment, HSA, or debt.
 This command interactively asks, once per open account, what kind of
 account it is, and writes the result to `accounts.json`. It feeds
 `./actual reports fire`, which refuses to run without it.
@@ -168,9 +168,10 @@ Fidelity F5 401k -- current balance $543147.48
   1) retirement-tax-deferred
   2) retirement-roth
   3) hsa
-  4) taxable-investment
+  4) investment-taxable
   5) debt
-  6) cash-other
+  6) cash
+  7) other
 What kind of account is this? [1]:
 ```
 
@@ -193,13 +194,13 @@ by id — to a category, tax treatment, and access age:
 {
   "version": 1,
   "accounts": [
-    { "match": "691a0cae-4eed-4cfb-a42d-5878c7bdba88", "category": "taxable-investment", "taxTreatment": "taxable", "accessAge": null }
+    { "match": "691a0cae-4eed-4cfb-a42d-5878c7bdba88", "category": "investment-taxable", "taxTreatment": "taxable", "accessAge": null }
   ]
 }
 ```
 
 Valid `category` values: `retirement-tax-deferred`, `retirement-roth`, `hsa`,
-`taxable-investment`, `debt`, `cash-other`. This is structured per-account
+`investment-taxable`, `debt`, `cash`, `other`. This is structured per-account
 data, not a scalar, so it's a separate file rather than another `AB_*`
 environment variable. You won't normally hand-edit it — `./actual accounts
 classify` both reads and writes it.
@@ -224,7 +225,7 @@ reimplementing FIRE math.
 
 **Refuses to run without an `accounts.json`** — run `./actual accounts
 classify` first. It also refuses to run if no account classifies as
-retirement/HSA/taxable-investment, since that almost always means the
+retirement/HSA/investment-taxable, since that almost always means the
 classification needs attention, not that the answer is "no portfolio."
 
 **This does not talk to Actual's dashboard feature directly** — there is no

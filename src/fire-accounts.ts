@@ -13,11 +13,14 @@ export type FireAccountCategory =
   | "retirement-tax-deferred"
   | "retirement-roth"
   | "hsa"
-  | "taxable-investment"
+  | "investment-taxable"
   | "debt"
-  | "cash-other"
+  | "cash"
+  | "other"
 
 export type TaxTreatment = "tax-deferred" | "tax-free" | "taxable" | "none"
+
+export const TAX_TREATMENTS: readonly TaxTreatment[] = ["tax-deferred", "tax-free", "taxable", "none"]
 
 export interface FireAccountTraits {
   category: FireAccountCategory
@@ -67,18 +70,20 @@ export const FIRE_ACCOUNT_CATEGORIES: readonly FireAccountCategory[] = [
   "retirement-tax-deferred",
   "retirement-roth",
   "hsa",
-  "taxable-investment",
+  "investment-taxable",
   "debt",
-  "cash-other",
+  "cash",
+  "other",
 ]
 
 export const CATEGORY_TRAITS: Record<FireAccountCategory, Omit<FireAccountTraits, "category">> = {
   "retirement-tax-deferred": { taxTreatment: "tax-deferred", accessAge: DEFAULT_ACCESS_AGE },
   "retirement-roth": { taxTreatment: "tax-free", accessAge: DEFAULT_ACCESS_AGE },
   hsa: { taxTreatment: "tax-free", accessAge: null },
-  "taxable-investment": { taxTreatment: "taxable", accessAge: null },
+  "investment-taxable": { taxTreatment: "taxable", accessAge: null },
   debt: { taxTreatment: "none", accessAge: null },
-  "cash-other": { taxTreatment: "none", accessAge: null },
+  cash: { taxTreatment: "none", accessAge: null },
+  other: { taxTreatment: "none", accessAge: null },
 }
 
 // Function to build the full traits for a category, using CATEGORY_TRAITS' default tax
@@ -100,7 +105,7 @@ const HEURISTIC_RULES: readonly HeuristicRule[] = [
   { pattern: /\broth\b/i, category: "retirement-roth" },
   { pattern: /\b401\s?k\b|\b403\s?b\b|\b457\b|\bira\b|\bpension\b|\btsp\b/i, category: "retirement-tax-deferred" },
   { pattern: /\bmortgage\b|\bloan\b|\bcredit card\b|\bline of credit\b|\bheloc\b/i, category: "debt" },
-  { pattern: /\bbrokerage\b|\binvestment\b|\btaxable\b/i, category: "taxable-investment" },
+  { pattern: /\bbrokerage\b|\binvestment\b|\btaxable\b/i, category: "investment-taxable" },
 ]
 
 // Function to classify a single account by name only, using ordered heuristic rules. Returns null
@@ -116,8 +121,10 @@ export function findOverride(account: Pick<Account, "id" | "name">, config: Fire
   return config.accounts.find((override) => override.match === account.id || override.match === account.name) ?? null
 }
 
-// Function to classify every account: override > heuristic > safe default ("cash-other", tax
-// treatment "none"). The "default" source is meant to be visibly flagged by callers (e.g.
+// Function to classify every account: override > heuristic > safe default ("other", tax
+// treatment "none"). "other" -- not "cash" -- is the fallback, since a name the heuristic can't
+// recognize might not be cash at all; "cash" itself is only ever chosen explicitly (an override,
+// or an interactive answer). The "default" source is meant to be visibly flagged by callers (e.g.
 // accounts-classify.ts) as needing review -- it is a safe fallback, not a confident classification.
 export function classifyAccounts(
   accounts: readonly Pick<Account, "id" | "name" | "offbudget">[],
@@ -139,7 +146,7 @@ export function classifyAccounts(
     if (heuristic) {
       return { ...identity, ...heuristic, source: "heuristic" as const }
     }
-    return { ...identity, ...traitsForCategory("cash-other"), source: "default" as const }
+    return { ...identity, ...traitsForCategory("other"), source: "default" as const }
   })
 }
 
@@ -177,7 +184,27 @@ export function loadFireAccountsConfig(path: string): LoadedFireAccountsConfig {
     throw new Error(`Invalid accounts config in ${path}: expected { "version": 1, "accounts": [...] }`)
   }
 
-  return { config: parsed as FireAccountsConfig, found: true }
+  const config = parsed as FireAccountsConfig
+  for (const override of config.accounts) {
+    // Catches a config left over from before a category/tax-treatment value was renamed, not just
+    // a hand-typo -- letting either through would silently misbehave downstream (e.g. an unknown
+    // category can't be found in FIRE_ACCOUNT_CATEGORIES, breaking the interactive default index)
+    // rather than failing loudly here where the problem is obvious.
+    if (!FIRE_ACCOUNT_CATEGORIES.includes(override.category)) {
+      throw new Error(
+        `Invalid accounts config in ${path}: unknown category "${override.category}" for "${override.match}". ` +
+          `Valid categories: ${FIRE_ACCOUNT_CATEGORIES.join(", ")}.`,
+      )
+    }
+    if (override.taxTreatment !== undefined && !TAX_TREATMENTS.includes(override.taxTreatment)) {
+      throw new Error(
+        `Invalid accounts config in ${path}: unknown taxTreatment "${override.taxTreatment}" for "${override.match}". ` +
+          `Valid values: ${TAX_TREATMENTS.join(", ")}.`,
+      )
+    }
+  }
+
+  return { config, found: true }
 }
 
 // Function to write the account classification overrides file, e.g. after an interactive

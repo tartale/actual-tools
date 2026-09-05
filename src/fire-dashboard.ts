@@ -57,7 +57,7 @@ export interface CrossoverCardMeta {
   expenseCategoryIds: string[]
   // Despite the name, this is NOT "accounts that receive income" -- it's the set of accounts
   // whose combined balance is treated as the investable portfolio a safe withdrawal rate is
-  // computed against. Must be exactly the portfolio accounts (retirement/HSA/taxable-investment),
+  // computed against. Must be exactly the portfolio accounts (retirement/HSA/investment-taxable),
   // never debt or everyday cash accounts -- see portfolioAccountIds below.
   incomeAccountIds: string[]
   safeWithdrawalRate: number
@@ -138,12 +138,12 @@ const PORTFOLIO_CATEGORIES: readonly FireAccountCategory[] = [
   "retirement-tax-deferred",
   "retirement-roth",
   "hsa",
-  "taxable-investment",
+  "investment-taxable",
 ]
 
 // Function to pick which classified accounts count as "the portfolio" for the crossover-card's
-// incomeAccountIds. Debt and cash-other are always excluded -- debt isn't investable, and
-// cash-other is a spending buffer, not part of the safe-withdrawal-rate calculation.
+// incomeAccountIds. Debt, cash, and other are always excluded -- debt isn't investable, and
+// cash/other are a spending buffer, not part of the safe-withdrawal-rate calculation.
 export function portfolioAccountIds(accounts: readonly ClassifiedAccount[]): string[] {
   return accounts.filter((account) => PORTFOLIO_CATEGORIES.includes(account.category)).map((account) => account.id)
 }

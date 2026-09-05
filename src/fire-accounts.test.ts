@@ -61,7 +61,7 @@ describe("classifyByHeuristic", () => {
 
   it("recognizes taxable investment accounts", () => {
     for (const name of ["E*Trade Investment Account", "Vanguard Brokerage", "Taxable Account"]) {
-      expect(classifyByHeuristic(name)).toEqual({ category: "taxable-investment", taxTreatment: "taxable", accessAge: null })
+      expect(classifyByHeuristic(name)).toEqual({ category: "investment-taxable", taxTreatment: "taxable", accessAge: null })
     }
   })
 
@@ -79,11 +79,11 @@ describe("findOverride", () => {
   const account = { id: "acct-1", name: "My Weird Nickname" }
   const config: FireAccountsConfig = {
     version: 1,
-    accounts: [{ match: "acct-1", category: "taxable-investment" }, { match: "Other Account", category: "debt" }],
+    accounts: [{ match: "acct-1", category: "investment-taxable" }, { match: "Other Account", category: "debt" }],
   }
 
   it("matches by account id", () => {
-    expect(findOverride(account, config)?.category).toBe("taxable-investment")
+    expect(findOverride(account, config)?.category).toBe("investment-taxable")
   })
 
   it("matches by exact account name", () => {
@@ -98,9 +98,9 @@ describe("findOverride", () => {
 describe("classifyAccounts", () => {
   it("prefers an override over the heuristic", () => {
     const accounts = [{ id: "acct-1", name: "Fidelity 401k", offbudget: true }]
-    const config: FireAccountsConfig = { version: 1, accounts: [{ match: "acct-1", category: "taxable-investment", taxTreatment: "taxable" }] }
+    const config: FireAccountsConfig = { version: 1, accounts: [{ match: "acct-1", category: "investment-taxable", taxTreatment: "taxable" }] }
     const [result] = classifyAccounts(accounts, config)
-    expect(result).toMatchObject({ category: "taxable-investment", taxTreatment: "taxable", source: "override" })
+    expect(result).toMatchObject({ category: "investment-taxable", taxTreatment: "taxable", source: "override" })
   })
 
   it("falls back to the heuristic when there's no override", () => {
@@ -109,10 +109,10 @@ describe("classifyAccounts", () => {
     expect(result).toMatchObject({ category: "retirement-roth", source: "heuristic" })
   })
 
-  it("falls back to cash-other when nothing matches, flagged as a default", () => {
+  it("falls back to 'other' when nothing matches, flagged as a default", () => {
     const accounts = [{ id: "acct-1", name: "Ally Checking", offbudget: false }]
     const [result] = classifyAccounts(accounts, { version: 1, accounts: [] })
-    expect(result).toMatchObject({ category: "cash-other", taxTreatment: "none", accessAge: null, source: "default" })
+    expect(result).toMatchObject({ category: "other", taxTreatment: "none", accessAge: null, source: "default" })
   })
 
   it("passes through id/name/offbudget unchanged", () => {
@@ -153,6 +153,22 @@ describe("loadFireAccountsConfig", () => {
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
     expect(loadFireAccountsConfig("/fake/path")).toEqual({ config: validConfig, found: true })
   })
+
+  it("throws on a category value that isn't (or is no longer) a recognized category", () => {
+    // Guards against a config left over from before a category was renamed (e.g. the old
+    // "taxable-investment"/"cash-other" before they became "investment-taxable"/"cash"/"other") --
+    // an unrecognized category must fail loudly here, not silently break a consumer that assumes
+    // every category is a real FIRE_ACCOUNT_CATEGORIES member.
+    const staleConfig = { version: 1, accounts: [{ match: "x", category: "cash-other" }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(staleConfig))
+    expect(() => loadFireAccountsConfig("/fake/path")).toThrow('unknown category "cash-other"')
+  })
+
+  it("throws on an unrecognized taxTreatment value", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", category: "debt", taxTreatment: "bogus" }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireAccountsConfig("/fake/path")).toThrow('unknown taxTreatment "bogus"')
+  })
 })
 
 describe("loadClassifiedAccounts", () => {
@@ -181,7 +197,8 @@ describe("traitsForCategory", () => {
       taxTreatment: "tax-deferred",
       accessAge: 59,
     })
-    expect(traitsForCategory("cash-other")).toEqual({ category: "cash-other", taxTreatment: "none", accessAge: null })
+    expect(traitsForCategory("cash")).toEqual({ category: "cash", taxTreatment: "none", accessAge: null })
+    expect(traitsForCategory("other")).toEqual({ category: "other", taxTreatment: "none", accessAge: null })
   })
 
   it("has an entry in CATEGORY_TRAITS and FIRE_ACCOUNT_CATEGORIES for every category", () => {

@@ -125,7 +125,7 @@ async function main(): Promise<void> {
   const portfolioIds = portfolioAccountIds(accounts)
   if (portfolioIds.length === 0) {
     throw new Error(
-      "No accounts are classified as retirement/HSA/taxable-investment -- nothing to build a portfolio from. " +
+      "No accounts are classified as retirement/HSA/investment-taxable -- nothing to build a portfolio from. " +
         `Run './actual accounts classify' and add overrides to ${options.configPath} first.`,
     )
   }
