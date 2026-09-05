@@ -24,7 +24,7 @@ interface Options {
 }
 
 const HELP_PAGE: HelpPage = {
-  usage: "./actual budget match-uncleared [OPTIONS]",
+  usage: "./actual transactions match-uncleared [OPTIONS]",
   description:
     "An imported bank transaction sometimes appears twice: once as a pending, uncleared row, then " +
     "again as a separate cleared row once it posts, instead of the same row being updated in place. " +

@@ -22,9 +22,9 @@ Every task in this repo runs through one dispatcher, from any directory:
 ./actual build                       # install deps if needed, then type-check
 ./actual lint                        # eslint over TypeScript, shellcheck over shell
 ./actual test                        # unit tests
-./actual budget set-values ARGS      # set category budgets
-./actual budget anomalies ARGS       # flag categories with unusual spending
-./actual budget match-uncleared ARGS # tag matching uncleared transactions
+./actual budget set-values ARGS            # set category budgets
+./actual budget anomalies ARGS             # flag categories with unusual spending
+./actual transactions match-uncleared ARGS # tag matching uncleared transactions
 ```
 
 ## `./actual budget set-values`
@@ -119,7 +119,7 @@ Examples:
 ./actual budget anomalies -c Groceries -t -n 2026-08              # preview what -t would tag
 ```
 
-## `./actual budget match-uncleared`
+## `./actual transactions match-uncleared`
 
 An imported bank transaction sometimes appears twice: once as a pending,
 uncleared row, then again as a separate cleared row once it posts, instead of
@@ -128,7 +128,7 @@ similar payee and amount, within 5 days — and tags the uncleared row with
 `#cleared` so it reads as already accounted for.
 
 ```
-./actual budget match-uncleared [-s YYYY-MM-DD] [-n]
+./actual transactions match-uncleared [-s YYYY-MM-DD] [-n]
 ```
 
 - `-s`, `--since YYYY-MM-DD` — only look at transactions on or after this date

@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-05T01:57:01.027Z
+  modified: 2026-09-05T02:01:58.415Z
 ---
 
 `balance-to-zero.sh` is being fully replaced (no backward compat) by
@@ -208,6 +208,16 @@ naturally replicates jq's `first(select(...))`, first-in-array-order
 semantics, not closest-match. `Transaction` gained `cleared`/`tombstone`
 fields for this. `addDays`/`validateDateFormat` mirror the existing
 `addMonths`/`validateMonthFormat` pattern for day-level date math.
+
+**`match-uncleared` moved out from under `budget`** (2026-09-05): it's now
+`./actual transactions match-uncleared`, its own top-level command group
+(`transactionsUsage`/`commandTransactions` in `actual`, mirroring
+`budgetUsage`/`commandBudget`), not `./actual budget match-uncleared`. Only
+`set-values`/`anomalies` are left under `budget` now. `src/match-uncleared.ts`'s
+own `HELP_PAGE.usage` string was updated to match. `transactions` has just
+the one subcommand for now, but the group exists for whatever else operates
+on individual transactions later, as distinct from `budget`'s category-level
+tools.
 
 **How to apply**: the full plan snapshot is at
 `.claude/plans/set-budget-migration.md` in the repo (the machine-local copy
