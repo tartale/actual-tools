@@ -7,7 +7,7 @@ import {
   buildMonteCarloWidget,
   buildNetWorthWidget,
   buildPot,
-  buildSpendingPhase,
+  buildSpendingPhases,
   buildSpendingWidget,
   portfolioAccountIds,
 } from "./fire-dashboard.ts"
@@ -162,10 +162,22 @@ describe("buildPot", () => {
   })
 })
 
-describe("buildSpendingPhase", () => {
-  it("covers the whole plan from a real trailing-spend figure", () => {
-    const phase = buildSpendingPhase(500000)
-    expect(phase).toEqual({ id: "current-spending", name: "Current spending", fromAge: null, annualWithdrawal: 500000 })
+describe("buildSpendingPhases", () => {
+  it("collapses to a single always-on phase when already retired", () => {
+    expect(buildSpendingPhases(45, 45, 500000)).toEqual([
+      { id: "retirement-spending", name: "Retirement spending", fromAge: null, annualWithdrawal: 500000 },
+    ])
+    // retiring in the past behaves the same as retiring exactly now
+    expect(buildSpendingPhases(45, 40, 500000)).toEqual([
+      { id: "retirement-spending", name: "Retirement spending", fromAge: null, annualWithdrawal: 500000 },
+    ])
+  })
+
+  it("splits into a $0 accumulation phase and a real drawdown phase for a future retirement age", () => {
+    expect(buildSpendingPhases(45, 60, 500000)).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
+    ])
   })
 })
 
@@ -174,13 +186,13 @@ describe("buildMonteCarloWidget", () => {
   const nonPortfolioAccount = account({ id: "a2", category: "cash" })
 
   it("builds one pot per portfolio account, excluding debt/cash/other", () => {
-    const widget = buildMonteCarloWidget(0, 6, [portfolioAccount, nonPortfolioAccount], 45, 90, 500000)
+    const widget = buildMonteCarloWidget(0, 6, [portfolioAccount, nonPortfolioAccount], 45, 45, 90, 500000)
     expect(widget.meta?.pots).toHaveLength(1)
     expect(widget.meta?.pots?.[0]?.accountId).toBe("a1")
   })
 
-  it("sets withdrawalStrategy, ages, spending phase, and a flat tax model", () => {
-    const widget = buildMonteCarloWidget(0, 6, [portfolioAccount], 45, 90, 500000)
+  it("sets withdrawalStrategy, ages, spending phases, and a flat tax model", () => {
+    const widget = buildMonteCarloWidget(0, 6, [portfolioAccount], 45, 45, 90, 500000)
     expect(widget.meta).toMatchObject({
       withdrawalStrategy: "proportional",
       currentAge: 45,
@@ -188,11 +200,16 @@ describe("buildMonteCarloWidget", () => {
       taxModel: "flat",
       inflationMean: 0.03,
     })
-    expect(widget.meta?.spendingPhases).toEqual([buildSpendingPhase(500000)])
+    expect(widget.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 45, 500000))
+  })
+
+  it("threads a future retirement age into the spending phases", () => {
+    const widget = buildMonteCarloWidget(0, 6, [portfolioAccount], 45, 60, 90, 500000)
+    expect(widget.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 60, 500000))
   })
 
   it("throws a clear error when a portfolio account has no allocationPreset set", () => {
     const incomplete = account({ id: "a3", category: "hsa", allocationPreset: null })
-    expect(() => buildMonteCarloWidget(0, 6, [incomplete], 45, 90, 500000)).toThrow(/allocationPreset/)
+    expect(() => buildMonteCarloWidget(0, 6, [incomplete], 45, 45, 90, 500000)).toThrow(/allocationPreset/)
   })
 })

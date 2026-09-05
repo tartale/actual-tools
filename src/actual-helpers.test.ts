@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   addDays,
+  ageFromBirthDate,
   addMonths,
   addTagToNotes,
   averageSpent,
@@ -184,6 +185,25 @@ describe("addDays", () => {
     expect(addDays("2026-08-30", 5)).toBe("2026-09-04")
     expect(addDays("2026-01-03", -5)).toBe("2025-12-29")
     expect(addDays("2026-12-31", 1)).toBe("2027-01-01")
+  })
+})
+
+describe("ageFromBirthDate", () => {
+  it("counts whole years elapsed", () => {
+    expect(ageFromBirthDate("1985-03-22", new Date("2026-09-05T00:00:00Z"))).toBe(41)
+  })
+
+  it("doesn't count this year's birthday until it's happened", () => {
+    expect(ageFromBirthDate("1985-09-10", new Date("2026-09-05T00:00:00Z"))).toBe(40)
+    expect(ageFromBirthDate("1985-09-05", new Date("2026-09-05T00:00:00Z"))).toBe(41)
+  })
+
+  it("rejects a malformed date the same way validateDateFormat does", () => {
+    expect(() => ageFromBirthDate("1985/03/22")).toThrow("Invalid date format: 1985/03/22")
+  })
+
+  it("rejects a birth date in the future", () => {
+    expect(() => ageFromBirthDate("2030-01-01", new Date("2026-09-05T00:00:00Z"))).toThrow("Birth date is in the future: 2030-01-01")
   })
 })
 

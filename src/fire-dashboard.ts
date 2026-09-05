@@ -238,23 +238,34 @@ export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteC
   }
 }
 
-// Function to build a single spending phase covering the whole plan, from a real trailing-spend
-// figure -- the same annual spend already computed for the crossover widget's console sanity
-// check, not a separate guess.
-export function buildSpendingPhase(annualSpendCents: number): MonteCarloSpendingPhaseMeta {
-  return { id: "current-spending", name: "Current spending", fromAge: null, annualWithdrawal: annualSpendCents }
+// Function to build the plan's spending phases from a real trailing-spend figure -- the same
+// annual spend already computed for the crossover widget's console sanity check, not a separate
+// guess. A single spending phase's `fromAge` is a no-op in Actual's own simulation engine (its
+// per-year loop always falls back to the earliest phase's amount before checking any fromAge), so
+// a future retirement age only has an effect if modeled as TWO phases: $0 while accumulating, then
+// the real spend once retirementAge is reached. Already retired (or retiring today) collapses back
+// to the single always-on phase.
+export function buildSpendingPhases(currentAge: number, retirementAge: number, annualSpendCents: number): MonteCarloSpendingPhaseMeta[] {
+  if (retirementAge <= currentAge) {
+    return [{ id: "retirement-spending", name: "Retirement spending", fromAge: null, annualWithdrawal: annualSpendCents }]
+  }
+  return [
+    { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+    { id: "retirement-spending", name: "Retirement spending", fromAge: retirementAge, annualWithdrawal: annualSpendCents },
+  ]
 }
 
 // Function to build the monte-carlo-card widget: one pot per portfolio account (linked to its live
-// balance), a single spending phase from real trailing spend, and a flat tax model. Everything
-// else (return model, withdrawal rule, contributions, simulation count) is left unset so Actual's
-// own UI defaults apply once the widget is opened -- this only sets what Actual can't infer on its
-// own (account-linked pots, real spending, the plan's age window).
+// balance), spending phases split around the retirement age, and a flat tax model. Everything else
+// (return model, withdrawal rule, contributions, simulation count) is left unset so Actual's own UI
+// defaults apply once the widget is opened -- this only sets what Actual can't infer on its own
+// (account-linked pots, real spending, the plan's age window).
 export function buildMonteCarloWidget(
   x: number,
   y: number,
   accounts: readonly ClassifiedAccount[],
   currentAge: number,
+  retirementAge: number,
   targetAge: number,
   annualSpendCents: number,
 ): ExportImportDashboardWidget<MonteCarloCardMeta> {
@@ -278,7 +289,7 @@ export function buildMonteCarloWidget(
       name: "Monte Carlo",
       pots,
       withdrawalStrategy: "proportional",
-      spendingPhases: [buildSpendingPhase(annualSpendCents)],
+      spendingPhases: buildSpendingPhases(currentAge, retirementAge, annualSpendCents),
       inflationMean: 0.03,
       taxModel: "flat",
       currentAge,

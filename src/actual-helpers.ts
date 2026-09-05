@@ -115,6 +115,24 @@ export function validateDateFormat(date: string): void {
   }
 }
 
+// Function to compute whole years elapsed since a yyyy-mm-dd birth date, as of a given date
+// (defaults to now) -- lets the Monte Carlo widget derive a real current age from a stable
+// birth date instead of asking the user to compute and re-type their age every run.
+export function ageFromBirthDate(birthDate: string, asOf: Date = new Date()): number {
+  validateDateFormat(birthDate)
+  const [birthYear, birthMonth, birthDay] = birthDate.split("-").map(Number) as [number, number, number]
+  let age = asOf.getUTCFullYear() - birthYear
+  const hadBirthdayThisYear =
+    asOf.getUTCMonth() + 1 > birthMonth || (asOf.getUTCMonth() + 1 === birthMonth && asOf.getUTCDate() >= birthDay)
+  if (!hadBirthdayThisYear) {
+    age--
+  }
+  if (age < 0) {
+    throw new Error(`Birth date is in the future: ${birthDate}`)
+  }
+  return age
+}
+
 // Function to shift a yyyy-mm-dd date by a (possibly negative) number of days
 export function addDays(date: string, delta: number): string {
   validateDateFormat(date)

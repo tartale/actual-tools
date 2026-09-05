@@ -3,12 +3,14 @@
 import { writeFileSync } from "node:fs"
 
 import {
+  ageFromBirthDate,
   averageSpent,
   fetchAccountBalance,
   fetchCategoryGroups,
   fetchHistoricalSpent,
   formatUsd,
   loadConfigFromEnv,
+  validateDateFormat,
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
 import { buildFireDashboard, buildMonteCarloWidget, portfolioAccountIds } from "./fire-dashboard.ts"
@@ -19,17 +21,21 @@ import type { HelpPage } from "./cli-format.ts"
 const DEFAULT_OUTPUT_PATH = "fire-dashboard.json"
 const HISTORY_MONTHS = 12
 const BALANCE_SINCE_DATE = "1970-01-01"
+// Conservative default planning horizon: assume the money needs to last to this age rather than
+// asking the user to estimate their own lifespan. Overridable via --plan-to-age.
+const DEFAULT_PLAN_TO_AGE = 100
 
 interface Options {
   outputPath: string
   configPath: string
   dryRun: boolean
-  currentAge: number
-  targetAge: number
+  birthDate: string
+  retirementAge: number
+  planToAge: number
 }
 
 const HELP_PAGE: HelpPage = {
-  usage: "./actual reports fire --current-age N --target-age N [OPTIONS]",
+  usage: "./actual reports fire --retirement-age N [OPTIONS]",
   description:
     "Builds an Actual-native FIRE dashboard (net worth, trailing-12-month spending, a " +
     "safe-withdrawal-rate crossover projection, and a Monte Carlo retirement simulation -- " +
@@ -41,8 +47,15 @@ const HELP_PAGE: HelpPage = {
     {
       label: "Options",
       entries: [
-        { name: "--current-age N", description: "Your current age, for the Monte Carlo simulation window. Required." },
-        { name: "--target-age N", description: "The age the plan should last to. Required." },
+        { name: "--retirement-age N", description: "The age you plan to retire (start drawing down your portfolio) at. Required." },
+        {
+          name: "--birth-date YYYY-MM-DD",
+          description: "Your birth date, to compute your current age. Overrides AB_BIRTH_DATE. One of the two is required.",
+        },
+        {
+          name: "--plan-to-age N",
+          description: `Assume the plan needs to last to this age, instead of guessing your lifespan (default: ${DEFAULT_PLAN_TO_AGE}).`,
+        },
         { name: "-o, --output PATH", description: `Where to write the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
         {
           name: "-f, --config PATH",
@@ -82,8 +95,9 @@ function parseArguments(argv: readonly string[]): Options {
   let outputPath = DEFAULT_OUTPUT_PATH
   let configPath = DEFAULT_ACCOUNTS_CONFIG_PATH
   let dryRun = process.env.DRY_RUN === "true"
-  let currentAge: number | null = null
-  let targetAge: number | null = null
+  let birthDateArg: string | null = null
+  let retirementAge: number | null = null
+  let planToAge = DEFAULT_PLAN_TO_AGE
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string
@@ -103,11 +117,19 @@ function parseArguments(argv: readonly string[]): Options {
       i++
     } else if (arg === "-n" || arg === "--dry-run") {
       dryRun = true
-    } else if (arg === "--current-age") {
-      currentAge = parseAgeArgument(arg, argv[i + 1])
+    } else if (arg === "--birth-date") {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith("-")) {
+        usage("Missing argument for --birth-date")
+      }
+      validateDateFormat(value)
+      birthDateArg = value
       i++
-    } else if (arg === "--target-age") {
-      targetAge = parseAgeArgument(arg, argv[i + 1])
+    } else if (arg === "--retirement-age") {
+      retirementAge = parseAgeArgument(arg, argv[i + 1])
+      i++
+    } else if (arg === "--plan-to-age") {
+      planToAge = parseAgeArgument(arg, argv[i + 1])
       i++
     } else if (arg === "-h" || arg === "--help") {
       process.stdout.write(`${renderHelp(process.stdout, HELP_PAGE)}\n`)
@@ -117,17 +139,16 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  if (currentAge === null) {
-    usage("Missing required option: --current-age")
+  const birthDate = birthDateArg ?? process.env.AB_BIRTH_DATE
+  if (!birthDate) {
+    usage("Missing birth date: set AB_BIRTH_DATE or pass --birth-date YYYY-MM-DD")
   }
-  if (targetAge === null) {
-    usage("Missing required option: --target-age")
-  }
-  if (targetAge <= currentAge) {
-    usage(`--target-age (${targetAge}) must be greater than --current-age (${currentAge})`)
+  validateDateFormat(birthDate)
+  if (retirementAge === null) {
+    usage("Missing required option: --retirement-age")
   }
 
-  return { outputPath, configPath, dryRun, currentAge, targetAge }
+  return { outputPath, configPath, dryRun, birthDate, retirementAge, planToAge }
 }
 
 // Function to get the current month as a yyyy-mm string
@@ -152,6 +173,11 @@ async function trailingAnnualSpend(config: ActualConfig, categoryIds: readonly s
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2))
   const config: ActualConfig = loadConfigFromEnv()
+
+  const currentAge = ageFromBirthDate(options.birthDate)
+  if (options.planToAge <= currentAge) {
+    usage(`--plan-to-age (${options.planToAge}) must be greater than your current age (${currentAge})`)
+  }
 
   const { accounts, configFound } = await loadClassifiedAccounts(config, options.configPath)
   if (!configFound) {
@@ -182,7 +208,9 @@ async function main(): Promise<void> {
   console.log(`Expense categories (${expenseCategoryIds.length}): trailing 12-month spend ${formatUsd(annualSpend)}/yr`)
 
   const dashboard = buildFireDashboard(expenseCategoryIds, portfolioIds)
-  dashboard.widgets.push(buildMonteCarloWidget(0, 6, accounts, options.currentAge, options.targetAge, annualSpend))
+  dashboard.widgets.push(
+    buildMonteCarloWidget(0, 6, accounts, currentAge, options.retirementAge, options.planToAge, annualSpend),
+  )
   const json = JSON.stringify(dashboard, null, 2)
 
   if (options.dryRun) {

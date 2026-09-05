@@ -7,12 +7,13 @@ instance, talking to its REST API wrapper.
 
 All tools read the same environment variables:
 
-| Variable       | Description                                    |
-| -------------- | ---------------------------------------------- |
-| `AB_BASE_URL`  | API base URL, e.g. `http://host:5007/v1`       |
-| `AB_BUDGET_ID` | Budget (sync) ID                               |
-| `AB_API_KEY`   | API key, sent as the `x-api-key` header        |
-| `DRY_RUN`      | `true` to report changes without writing them  |
+| Variable         | Description                                                     |
+| ---------------- | ---------------------------------------------------------------- |
+| `AB_BASE_URL`    | API base URL, e.g. `http://host:5007/v1`                        |
+| `AB_BUDGET_ID`   | Budget (sync) ID                                                |
+| `AB_API_KEY`     | API key, sent as the `x-api-key` header                        |
+| `DRY_RUN`        | `true` to report changes without writing them                  |
+| `AB_BIRTH_DATE`  | Your birth date (`YYYY-MM-DD`), used only by `reports fire`     |
 
 ## `./actual`
 
@@ -237,24 +238,40 @@ projection, and a Monte Carlo retirement simulation — using Actual's own
 built-in dashboard widgets rather than reimplementing FIRE math.
 
 ```
-./actual reports fire --current-age N --target-age N [-o PATH] [-f PATH] [-n]
+./actual reports fire --retirement-age N [--birth-date YYYY-MM-DD] [--plan-to-age N] [-o PATH] [-f PATH] [-n]
 ```
 
-- `--current-age N`, `--target-age N` — the plan's age window for the Monte
-  Carlo simulation. Required; not derivable from Actual's own data.
+- `--retirement-age N` — the age you plan to retire (start drawing down your
+  portfolio) at. Required.
+- `--birth-date YYYY-MM-DD` — your birth date, used to compute your current
+  age. Overrides `AB_BIRTH_DATE` (see below). One of the two is required —
+  since a birth date doesn't change, set the env var once and skip typing it
+  every run.
+- `--plan-to-age N` — assume the plan needs to last to this age (default:
+  `100`). This exists so you don't have to estimate your own lifespan: 100
+  is a deliberately conservative "the money should outlast you" assumption,
+  not a life-expectancy guess. Only override it if you want a different
+  assumption.
 - `-o`, `--output PATH` — where to write the dashboard JSON (default:
   `fire-dashboard.json`).
 - `-f`, `--config PATH` — path to `accounts.json` (default: repo root).
 - `-n`, `--dry-run` — print the plan and the JSON without writing the file.
   Also enabled by setting `DRY_RUN=true`.
 
+`AB_BIRTH_DATE` (`YYYY-MM-DD`) is a config env var alongside `AB_BASE_URL`/
+`AB_BUDGET_ID`/`AB_API_KEY` — it's personal, not per-run data, so it belongs
+in the environment rather than typed on every invocation.
+
 The Monte Carlo widget gets one pot per portfolio account (linked to its
-live balance, using the allocation you picked in `accounts classify`), a
-spending phase from the same trailing-12-month spend, and a flat 22%/15%/0%
-tax-deferred/taxable/tax-free withdrawal tax rate. Everything else (return
-model, withdrawal rules, contributions, simulation count) is left for you to
-set in Actual's own UI once the widget is open — this only sets what Actual
-can't infer on its own.
+live balance, using the allocation you picked in `accounts classify`) and a
+flat 22%/15%/0% tax-deferred/taxable/tax-free withdrawal tax rate. Spending
+is split around your retirement age: $0/yr before it (assumes you're living
+off other income while still working), then the real trailing-12-month
+spend from it onward. If `--retirement-age` is today or in the past, that
+collapses to a single always-on phase at the real spend. Everything else
+(return model, withdrawal rules, contributions, simulation count) is left
+for you to set in Actual's own UI once the widget is open — this only sets
+what Actual can't infer on its own.
 
 **Monte Carlo Analysis is an experimental Actual feature** — enable it under
 Settings → Advanced → Experimental features → Monte Carlo Analysis Report,
@@ -282,8 +299,8 @@ undo/ctrl-z covers a bad import), never your main dashboard. Re-running
 refresh it, not a mistake to avoid.
 
 ```sh
-./actual reports fire --current-age 45 --target-age 90      # net worth + spending + crossover + Monte Carlo
-./actual reports fire --current-age 45 --target-age 90 -n   # preview without writing
+./actual reports fire --retirement-age 60      # AB_BIRTH_DATE set in the environment
+./actual reports fire --retirement-age 60 -n   # preview without writing
 ```
 
 ## Layout
