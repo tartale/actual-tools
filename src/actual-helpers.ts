@@ -491,7 +491,7 @@ export async function promptChoice(
   defaultIndex: number | null,
 ): Promise<number> {
   const optionLines = options.map((option, index) => `  ${index + 1}) ${option}`).join("\n")
-  const defaultLabel = defaultIndex === null ? "" : ` [${defaultIndex + 1}]`
+  const defaultLabel = defaultIndex === null ? "" : ` [${defaultIndex + 1} - ${options[defaultIndex]}]`
   const question = `${optionLines}\n${promptText}${defaultLabel}: `
 
   while (true) {

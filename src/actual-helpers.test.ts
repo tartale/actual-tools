@@ -797,7 +797,7 @@ describe("promptChoice", () => {
     await promptChoice(tty, "Which one?", options, 1)
     expect(tty.prompts[0]).toContain("1) retirement-tax-deferred")
     expect(tty.prompts[0]).toContain("2) retirement-roth")
-    expect(tty.prompts[0]).toContain("Which one? [2]:")
+    expect(tty.prompts[0]).toContain("Which one? [2 - retirement-roth]:")
   })
 
   it("omits a default marker when there is no default", async () => {
