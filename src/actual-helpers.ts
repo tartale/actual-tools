@@ -483,15 +483,18 @@ export async function confirmViaTty(promptText: string): Promise<boolean> {
 // Function to prompt for one numbered choice among options, via an already-open TTY interface (so
 // a caller asking several questions in a row only opens the terminal once). When `defaultIndex` is
 // given, pressing Enter with no input accepts it; when null, a valid number is required -- there
-// is no way to skip the question.
+// is no way to skip the question. `defaultLabels`, when given, is used instead of `options` just
+// for the bracketed default marker -- for a caller whose option text carries an inline description
+// (e.g. "equity-80 (80% stocks / 20% bonds)") but wants the marker to show only the bare value.
 export async function promptChoice(
   tty: TtyInterface,
   promptText: string,
   options: readonly string[],
   defaultIndex: number | null,
+  defaultLabels: readonly string[] = options,
 ): Promise<number> {
   const optionLines = options.map((option, index) => `  ${index + 1}) ${option}`).join("\n")
-  const defaultLabel = defaultIndex === null ? "" : ` [${defaultIndex + 1}: ${options[defaultIndex]}]`
+  const defaultLabel = defaultIndex === null ? "" : ` [${defaultIndex + 1}: ${defaultLabels[defaultIndex]}]`
   const question = `${optionLines}\n${promptText}${defaultLabel}: `
 
   while (true) {

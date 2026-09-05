@@ -121,6 +121,7 @@ async function classifyOneAccount(
       "What's a reasonable stock/bond mix for this account?",
       presetOptions,
       defaultPresetIndex,
+      MONTE_CARLO_ALLOCATION_PRESETS,
     )
     allocationPreset = MONTE_CARLO_ALLOCATION_PRESETS[presetIndex] as (typeof MONTE_CARLO_ALLOCATION_PRESETS)[number]
   }
