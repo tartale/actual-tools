@@ -513,7 +513,9 @@ export async function promptChoice(
 ): Promise<number> {
   const optionLines = options.map((option, index) => `  ${index + 1}) ${option}`).join("\n")
   const defaultLabel = defaultIndex === null ? "" : ` [${defaultIndex + 1}: ${defaultLabels[defaultIndex]}]`
-  const question = `${optionLines}\n${promptText}${defaultLabel}: `
+  // trimStart so an empty promptText (the question already fully covered by a preceding
+  // explanatory line) doesn't leave a stray leading space before the bracket, e.g. " [1: hampel]:"
+  const question = `${optionLines}\n${`${promptText}${defaultLabel}: `.trimStart()}`
 
   while (true) {
     const answer = (await tty.question(question)).trim()
@@ -535,7 +537,9 @@ export async function promptChoice(
 // a bare number either way, never the unit itself.
 export async function promptNumber(tty: TtyInterface, promptText: string, defaultValue: number | null, unit = ""): Promise<number> {
   const defaultLabel = defaultValue === null ? "" : ` [${defaultValue}${unit}]`
-  const question = `${promptText}${defaultLabel}: `
+  // trimStart so an empty promptText (the question already fully covered by a preceding
+  // explanatory line) doesn't leave a stray leading space before the bracket, e.g. " [4%]:"
+  const question = `${promptText}${defaultLabel}: `.trimStart()
 
   while (true) {
     const answer = (await tty.question(question)).trim()

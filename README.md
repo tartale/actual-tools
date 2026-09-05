@@ -251,9 +251,9 @@ widget's single contribution figure and threaded individually into the
 Monte Carlo widget's per-account contributions — asked once, per account,
 feeding both.
 
-Every step writes `config.json` immediately, not just at the very end, so
-quitting partway through (ctrl-c or otherwise) keeps everything answered so
-far.
+`config.json` is written after every single question, not just at the end
+of a section, so quitting partway through (ctrl-c or otherwise) never loses
+more than the one answer in flight.
 
 ### Picking up dashboard changes
 

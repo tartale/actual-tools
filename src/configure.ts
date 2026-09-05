@@ -36,9 +36,9 @@ import {
   traitsForCategory,
   writeFireConfig,
 } from "./fire-accounts.ts"
-import type { FireAccountCategory, FireAccountOverride, FireConfig } from "./fire-accounts.ts"
+import type { FireAccountCategory, FireConfig } from "./fire-accounts.ts"
 import { extractConfigFromDashboard } from "./fire-dashboard.ts"
-import type { ExistingDashboard, MonteCarloTaxBandMeta, MonteCarloWithdrawalRuleMeta } from "./fire-dashboard.ts"
+import type { ExistingDashboard, MonteCarloTaxBandMeta } from "./fire-dashboard.ts"
 import { DEFAULT_IRS_LIMITS_PATH, isIrsLimitsStale, loadIrsLimits } from "./irs-limits.ts"
 import type { IrsLimits } from "./irs-limits.ts"
 import { renderHelp } from "./cli-format.ts"
@@ -249,17 +249,27 @@ function explainIrsLimits(category: FireAccountCategory, limits: IrsLimits | nul
   }
 }
 
+// A Save callback persists whatever is currently in `draft` (the in-progress config being built up
+// this run) to disk immediately -- called after every single question is answered, not just at
+// section boundaries, so an interrupted session (ctrl-c, a crash) never loses more than the one
+// question in flight.
+type Save = () => void
+
 // Function to interactively classify one account: shows its name and balance, offers an existing
 // override or an inferred heuristic guess as the default (in that order of preference), and forces
 // an explicit choice when neither is available. Portfolio accounts additionally get an allocation
-// and a monthly contribution question.
+// and a monthly contribution question. Mutates `draft.accounts[index]` (already pre-seeded by the
+// caller) and saves after each of this account's questions.
 async function classifyOneAccount(
   tty: TtyInterface,
   account: Account,
   balanceCents: number,
+  index: number,
+  draft: FireConfig,
   existingConfig: FireConfig,
   irsLimits: IrsLimits | null,
-): Promise<FireAccountOverride> {
+  save: Save,
+): Promise<void> {
   const override = findOverride(account, existingConfig)
   const heuristic = classifyByHeuristic(account.name)
   const defaultCategory = override?.category ?? heuristic?.category ?? null
@@ -279,8 +289,9 @@ async function classifyOneAccount(
   const taxTreatment = carryOver?.taxTreatment ?? traits.taxTreatment
   const accessAge = carryOver?.accessAge ?? traits.accessAge
 
-  let allocationPreset = traits.allocationPreset
-  let monthlyContribution: number | undefined
+  draft.accounts[index] = { match: account.id, category, taxTreatment, accessAge, allocationPreset: traits.allocationPreset, monthlyContribution: undefined }
+  save()
+
   if (isPortfolioCategory(category)) {
     const defaultPreset = carryOver?.allocationPreset ?? traits.allocationPreset
     const defaultPresetIndex = defaultPreset === null ? null : MONTE_CARLO_ALLOCATION_PRESETS.indexOf(defaultPreset)
@@ -292,28 +303,32 @@ async function classifyOneAccount(
       defaultPresetIndex,
       MONTE_CARLO_ALLOCATION_PRESETS,
     )
-    allocationPreset = MONTE_CARLO_ALLOCATION_PRESETS[presetIndex] as (typeof MONTE_CARLO_ALLOCATION_PRESETS)[number]
+    const allocationPreset = MONTE_CARLO_ALLOCATION_PRESETS[presetIndex] as (typeof MONTE_CARLO_ALLOCATION_PRESETS)[number]
+    draft.accounts[index] = { ...draft.accounts[index], allocationPreset }
+    save()
 
     explain("Paid in at the start of each year (grown to an annual amount) and invested alongside the account's own balance from then on.")
     explainIrsLimits(category, irsLimits)
     const defaultMonthlyDollars = carryOver?.monthlyContribution ? carryOver.monthlyContribution / 100 : 0
     const monthlyDollars = await promptNumber(tty, "Monthly contribution to this account, in dollars (0 for none)", defaultMonthlyDollars)
-    monthlyContribution = monthlyDollars > 0 ? Math.round(monthlyDollars * 100) : undefined
+    draft.accounts[index] = { ...draft.accounts[index], monthlyContribution: monthlyDollars > 0 ? Math.round(monthlyDollars * 100) : undefined }
+    save()
   }
-
-  return { match: account.id, category, taxTreatment, accessAge, allocationPreset, monthlyContribution }
 }
 
 // Function to ask for a birth date, defaulting to (and validating the same way as) the existing
-// config's, if present.
-async function askBirthDate(tty: TtyInterface, existing: FireConfig): Promise<string> {
-  const defaultLabel = existing.birthDate ? ` [${existing.birthDate}]` : ""
+// config's, if present. Mutates draft.birthDate and saves once answered.
+async function askBirthDate(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
+  const existingBirthDate = draft.birthDate
+  const defaultLabel = existingBirthDate ? ` [${existingBirthDate}]` : ""
   while (true) {
     const answer = (await tty.question(`\nYour birth date (YYYY-MM-DD)${defaultLabel}: `)).trim()
-    const value = answer === "" && existing.birthDate ? existing.birthDate : answer
+    const value = answer === "" && existingBirthDate ? existingBirthDate : answer
     try {
       validateDateFormat(value)
-      return value
+      draft.birthDate = value
+      save()
+      return
     } catch {
       process.stderr.write("Please enter a date as YYYY-MM-DD.\n")
     }
@@ -323,50 +338,57 @@ async function askBirthDate(tty: TtyInterface, existing: FireConfig): Promise<st
 // Function to ask for one or more retirement ages, defaulting to the existing config's list --
 // including defaulting "add another?" to yes when the existing config already had more ages than
 // asked so far, so re-running configure against a multi-age config doesn't silently drop any.
-async function askRetirementAges(tty: TtyInterface, existing: FireConfig): Promise<number[]> {
-  const ages: number[] = [await promptNumber(tty, "\nAge you plan to retire at", existing.retirementAges[0] ?? null)]
-  while (await confirmOnTty(tty, "Compare another retirement age too?", ages.length < existing.retirementAges.length)) {
-    ages.push(await promptNumber(tty, "Another retirement age", existing.retirementAges[ages.length] ?? null))
+// Mutates draft.retirementAges and saves after each age (including the first).
+async function askRetirementAges(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
+  const existingAges = draft.retirementAges
+  draft.retirementAges = [await promptNumber(tty, "\nAge you plan to retire at", existingAges[0] ?? null)]
+  save()
+  while (await confirmOnTty(tty, "Compare another retirement age too?", draft.retirementAges.length < existingAges.length)) {
+    const nextAge = await promptNumber(tty, "Another retirement age", existingAges[draft.retirementAges.length] ?? null)
+    draft.retirementAges = [...draft.retirementAges, nextAge]
+    save()
   }
-  return ages
 }
 
 // Function to ask how long the plan should be assumed to last -- a conservative default (see
-// DEFAULT_PLAN_TO_AGE), not a lifespan estimate.
-async function askPlanToAge(tty: TtyInterface, existing: FireConfig): Promise<number> {
-  return promptNumber(tty, "\nAssume the plan needs to last to this age (a conservative default, not a lifespan estimate)", existing.planToAge)
+// DEFAULT_PLAN_TO_AGE), not a lifespan estimate. Mutates draft.planToAge and saves once answered.
+async function askPlanToAge(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
+  draft.planToAge = await promptNumber(tty, "\nAssume the plan needs to last to this age (a conservative default, not a lifespan estimate)", draft.planToAge)
+  save()
 }
 
 // Function to ask for every crossover-card assumption. Percent-style fields are asked as
-// human-friendly numbers (e.g. "4" for 4%) and divided by 100 for storage.
-async function askCrossoverAssumptions(tty: TtyInterface, existing: FireConfig): Promise<FireConfig["crossover"]> {
-  const current = existing.crossover
+// human-friendly numbers (e.g. "4" for 4%) and divided by 100 for storage. Mutates draft.crossover
+// field by field, saving after each one.
+async function askCrossoverAssumptions(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
+  const crossover = draft.crossover
 
   explain(
     "\nSafe withdrawal rate: the amount you plan to withdraw from your investable portfolio each " +
       "year to fund your living expenses (see the \"4% rule\").",
   )
-  const safeWithdrawalRatePct = await promptNumber(tty, "Safe withdrawal rate, as a percent (e.g. 4 for 4%)", current.safeWithdrawalRate * 100, "%")
+  const safeWithdrawalRatePct = await promptNumber(tty, "", crossover.safeWithdrawalRate * 100, "%")
+  crossover.safeWithdrawalRate = safeWithdrawalRatePct / 100
+  save()
 
   explain(
     "Estimated return: the expected annual return rate for your investments, used to project " +
       "portfolio growth. Leave at 0 to let Actual compute its own historical estimate instead.",
   )
-  const estimatedReturnPct = await promptNumber(
-    tty,
-    "Estimated annual return, as a percent (0 for Actual's own estimate)",
-    current.estimatedReturn === null ? 0 : current.estimatedReturn * 100,
-    "%",
-  )
+  const estimatedReturnPct = await promptNumber(tty, "", crossover.estimatedReturn === null ? 0 : crossover.estimatedReturn * 100, "%")
+  crossover.estimatedReturn = estimatedReturnPct > 0 ? estimatedReturnPct / 100 : null
+  save()
 
   explain("Expense projection method -- how past expenses are projected into the future.")
   const projectionTypeIndex = await promptChoice(
     tty,
-    "Expense projection method",
+    "",
     labeledOptions(CROSSOVER_PROJECTION_TYPES, CROSSOVER_PROJECTION_TYPE_LABELS),
-    CROSSOVER_PROJECTION_TYPES.indexOf(current.projectionType),
+    CROSSOVER_PROJECTION_TYPES.indexOf(crossover.projectionType),
     CROSSOVER_PROJECTION_TYPES,
   )
+  crossover.projectionType = CROSSOVER_PROJECTION_TYPES[projectionTypeIndex] as (typeof CROSSOVER_PROJECTION_TYPES)[number]
+  save()
 
   explain(
     "Target income, as a percent of your projected expenses (Actual's own label for this field). " +
@@ -374,33 +396,33 @@ async function askCrossoverAssumptions(tty: TtyInterface, existing: FireConfig):
       "spend more in retirement (e.g. 110 pads expenses by 10%). Below 100 = plan to spend less " +
       "(e.g. 90, if you expect no more commuting or a paid-off mortgage).",
   )
-  const expenseAdjustmentFactorPct = await promptNumber(tty, "Target income, as a percent of projected expenses", current.expenseAdjustmentFactor * 100, "%")
+  const expenseAdjustmentFactorPct = await promptNumber(tty, "", crossover.expenseAdjustmentFactor * 100, "%")
+  crossover.expenseAdjustmentFactor = expenseAdjustmentFactorPct / 100
+  save()
 
-  const showHiddenCategories = await confirmOnTty(tty, "Show hidden categories in the category selector?", current.showHiddenCategories)
-
-  return {
-    safeWithdrawalRate: safeWithdrawalRatePct / 100,
-    estimatedReturn: estimatedReturnPct > 0 ? estimatedReturnPct / 100 : null,
-    projectionType: CROSSOVER_PROJECTION_TYPES[projectionTypeIndex] as (typeof CROSSOVER_PROJECTION_TYPES)[number],
-    expenseAdjustmentFactor: expenseAdjustmentFactorPct / 100,
-    showHiddenCategories,
-  }
+  crossover.showHiddenCategories = await confirmOnTty(tty, "Show hidden categories in the category selector?", crossover.showHiddenCategories)
+  save()
 }
 
 // Function to ask for the chosen dynamic withdrawal rule's own sub-fields, grouped exactly as
 // Actual's own MonteCarloWithdrawalRuleMeta groups them. Skipped entirely for "none", the default.
-async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawalRuleMeta): Promise<MonteCarloWithdrawalRuleMeta> {
+// Mutates draft.monteCarlo.withdrawalRule field by field, saving after each one (including the type
+// choice itself).
+async function askWithdrawalRule(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
+  const current = draft.monteCarlo.withdrawalRule
   const typeIndex = await promptChoice(
     tty,
-    "Dynamic withdrawal rule (adjusts spending based on portfolio performance)",
+    "",
     labeledOptions(MONTE_CARLO_WITHDRAWAL_RULE_TYPES, MONTE_CARLO_WITHDRAWAL_RULE_TYPE_LABELS),
     MONTE_CARLO_WITHDRAWAL_RULE_TYPES.indexOf(current.type),
     MONTE_CARLO_WITHDRAWAL_RULE_TYPES,
   )
   const type = MONTE_CARLO_WITHDRAWAL_RULE_TYPES[typeIndex] as (typeof MONTE_CARLO_WITHDRAWAL_RULE_TYPES)[number]
+  draft.monteCarlo.withdrawalRule = { type }
+  save()
 
   if (type === "none") {
-    return { type }
+    return
   }
   if (type === "guardrails") {
     explain(
@@ -410,16 +432,18 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
         "by the increase percent.",
     )
     const prosperityTriggerPct = await promptNumber(tty, "Prosperity trigger, as a percent below the initial rate", (current.prosperityTriggerPct ?? 0.2) * 100, "%")
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, prosperityTriggerPct: prosperityTriggerPct / 100 }
+    save()
     const prosperityIncreasePct = await promptNumber(tty, "Prosperity increase, as a percent", (current.prosperityIncreasePct ?? 0.1) * 100, "%")
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, prosperityIncreasePct: prosperityIncreasePct / 100 }
+    save()
     const preservationTriggerPct = await promptNumber(tty, "Preservation trigger, as a percent above the initial rate", (current.preservationTriggerPct ?? 0.2) * 100, "%")
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, preservationTriggerPct: preservationTriggerPct / 100 }
+    save()
     const preservationCutPct = await promptNumber(tty, "Preservation cut, as a percent", (current.preservationCutPct ?? 0.1) * 100, "%")
-    return {
-      type,
-      prosperityTriggerPct: prosperityTriggerPct / 100,
-      prosperityIncreasePct: prosperityIncreasePct / 100,
-      preservationTriggerPct: preservationTriggerPct / 100,
-      preservationCutPct: preservationCutPct / 100,
-    }
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, preservationCutPct: preservationCutPct / 100 }
+    save()
+    return
   }
   if (type === "ratcheting") {
     explain(
@@ -427,9 +451,15 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
         "starting level for this many years in a row, raise withdrawals by the increase percent.",
     )
     const balanceThresholdMultiple = await promptNumber(tty, "Balance threshold multiple (e.g. 1.5 = 150% of initial)", current.balanceThresholdMultiple ?? 1.5)
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, balanceThresholdMultiple }
+    save()
     const consecutiveYears = await promptNumber(tty, "Consecutive years above threshold before ratcheting up", current.consecutiveYears ?? 3)
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, consecutiveYears }
+    save()
     const ratchetIncreasePct = await promptNumber(tty, "Ratchet increase, as a percent", (current.ratchetIncreasePct ?? 0.05) * 100, "%")
-    return { type, balanceThresholdMultiple, consecutiveYears, ratchetIncreasePct: ratchetIncreasePct / 100 }
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, ratchetIncreasePct: ratchetIncreasePct / 100 }
+    save()
+    return
   }
   if (type === "floor-ceiling") {
     explain(
@@ -438,8 +468,12 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
         "the inflation-adjusted planned amount.",
     )
     const floorPct = await promptNumber(tty, "Floor, as a percent below the inflation-adjusted initial withdrawal", (current.floorPct ?? 0.15) * 100, "%")
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, floorPct: floorPct / 100 }
+    save()
     const ceilingPct = await promptNumber(tty, "Ceiling, as a percent above the inflation-adjusted initial withdrawal", (current.ceilingPct ?? 0.2) * 100, "%")
-    return { type, floorPct: floorPct / 100, ceilingPct: ceilingPct / 100 }
+    draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, ceilingPct: ceilingPct / 100 }
+    save()
+    return
   }
   // boundaries
   explain(
@@ -448,38 +482,47 @@ async function askWithdrawalRule(tty: TtyInterface, current: MonteCarloWithdrawa
       "increase percent.",
   )
   const upperRateThreshold = await promptNumber(tty, "Upper withdrawal-rate threshold, as a percent", (current.upperRateThreshold ?? 0.06) * 100, "%")
+  draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, upperRateThreshold: upperRateThreshold / 100 }
+  save()
   const upperCutPct = await promptNumber(tty, "Cut when the upper threshold is hit, as a percent", (current.upperCutPct ?? 0.1) * 100, "%")
+  draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, upperCutPct: upperCutPct / 100 }
+  save()
   const lowerRateThreshold = await promptNumber(tty, "Lower withdrawal-rate threshold, as a percent", (current.lowerRateThreshold ?? 0.04) * 100, "%")
+  draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, lowerRateThreshold: lowerRateThreshold / 100 }
+  save()
   const lowerIncreasePct = await promptNumber(tty, "Increase when the lower threshold is hit, as a percent", (current.lowerIncreasePct ?? 0.05) * 100, "%")
-  return {
-    type,
-    upperRateThreshold: upperRateThreshold / 100,
-    upperCutPct: upperCutPct / 100,
-    lowerRateThreshold: lowerRateThreshold / 100,
-    lowerIncreasePct: lowerIncreasePct / 100,
-  }
+  draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, lowerIncreasePct: lowerIncreasePct / 100 }
+  save()
 }
 
 // Function to ask for one or more progressive tax bands, only ever called when taxModel is
-// "bands" -- "flat", the default, skips this entirely.
-async function askTaxBands(tty: TtyInterface, existing: readonly MonteCarloTaxBandMeta[]): Promise<MonteCarloTaxBandMeta[]> {
+// "bands" -- "flat", the default, skips this entirely. Mutates draft.monteCarlo.taxBands, saving
+// after each band (both its threshold and its rate).
+async function askTaxBands(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
+  const existing = draft.monteCarlo.taxBands
   const bands: MonteCarloTaxBandMeta[] = []
   let index = 0
   do {
     const existingBand = existing[index]
     const fromDollars = await promptNumber(tty, `Tax band ${index + 1}: income threshold, in dollars`, existingBand ? (existingBand.from ?? 0) / 100 : 0)
+    bands.push({ id: `band-${index + 1}`, from: Math.round(fromDollars * 100), rate: existingBand?.rate ?? 0 })
+    draft.monteCarlo.taxBands = [...bands]
+    save()
+
     const ratePct = await promptNumber(tty, `Tax band ${index + 1}: rate, as a percent`, existingBand ? (existingBand.rate ?? 0) * 100 : 0, "%")
-    bands.push({ id: `band-${index + 1}`, from: Math.round(fromDollars * 100), rate: ratePct / 100 })
+    bands[index] = { ...bands[index]!, rate: ratePct / 100 }
+    draft.monteCarlo.taxBands = [...bands]
+    save()
+
     index++
   } while (await confirmOnTty(tty, "Add another tax band?", index < existing.length))
-  return bands
 }
 
 // Function to ask for every monte-carlo-card assumption not already derived from account
 // classification (pots) or the personal/retirement-age answers above (spendingPhases, currentAge,
-// targetAge).
-async function askMonteCarloAssumptions(tty: TtyInterface, existing: FireConfig): Promise<FireConfig["monteCarlo"]> {
-  const current = existing.monteCarlo
+// targetAge). Mutates draft.monteCarlo field by field, saving after each one.
+async function askMonteCarloAssumptions(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
+  const monteCarlo = draft.monteCarlo
 
   explain(
     "\nWithdrawal strategy -- how the annual withdrawal is taken when you have more than one pot. " +
@@ -487,69 +530,64 @@ async function askMonteCarloAssumptions(tty: TtyInterface, existing: FireConfig)
   )
   const strategyIndex = await promptChoice(
     tty,
-    "Withdrawal strategy across pots",
+    "",
     labeledOptions(MONTE_CARLO_WITHDRAWAL_STRATEGIES, MONTE_CARLO_WITHDRAWAL_STRATEGY_LABELS),
-    MONTE_CARLO_WITHDRAWAL_STRATEGIES.indexOf(current.withdrawalStrategy),
+    MONTE_CARLO_WITHDRAWAL_STRATEGIES.indexOf(monteCarlo.withdrawalStrategy),
     MONTE_CARLO_WITHDRAWAL_STRATEGIES,
   )
-  const withdrawalStrategy = MONTE_CARLO_WITHDRAWAL_STRATEGIES[strategyIndex] as (typeof MONTE_CARLO_WITHDRAWAL_STRATEGIES)[number]
+  monteCarlo.withdrawalStrategy = MONTE_CARLO_WITHDRAWAL_STRATEGIES[strategyIndex] as (typeof MONTE_CARLO_WITHDRAWAL_STRATEGIES)[number]
+  save()
 
   explain("Return model -- how each simulated year's investment return is generated.")
   const returnModelIndex = await promptChoice(
     tty,
-    "Return model",
+    "",
     labeledOptions(MONTE_CARLO_RETURN_MODELS, MONTE_CARLO_RETURN_MODEL_LABELS),
-    MONTE_CARLO_RETURN_MODELS.indexOf(current.returnModel),
+    MONTE_CARLO_RETURN_MODELS.indexOf(monteCarlo.returnModel),
     MONTE_CARLO_RETURN_MODELS,
   )
-  const returnModel = MONTE_CARLO_RETURN_MODELS[returnModelIndex] as (typeof MONTE_CARLO_RETURN_MODELS)[number]
+  monteCarlo.returnModel = MONTE_CARLO_RETURN_MODELS[returnModelIndex] as (typeof MONTE_CARLO_RETURN_MODELS)[number]
+  save()
 
   explain("Dynamic withdrawal rule -- adjusts your withdrawal each year based on how the pots are doing.")
-  const withdrawalRule = await askWithdrawalRule(tty, current.withdrawalRule)
+  await askWithdrawalRule(tty, draft, save)
 
   explain(
     "Minimum withdrawal: the annual withdrawal never drops below this amount, no matter what the " +
       "rule says. Only applies in years with planned spending (a $0 spending phase still takes " +
       "nothing). Rises with inflation like your planned spending. 0 = no floor.",
   )
-  const minimumWithdrawalDollars = await promptNumber(tty, "Minimum annual withdrawal, in dollars (0 for no floor)", current.minimumWithdrawal / 100)
+  const minimumWithdrawalDollars = await promptNumber(tty, "", monteCarlo.minimumWithdrawal / 100)
+  monteCarlo.minimumWithdrawal = Math.round(minimumWithdrawalDollars * 100)
+  save()
 
   explain("Mean inflation: your planned spending grows with it each year so its buying power is maintained. 0 = flat, uninflated withdrawals.")
-  const inflationMeanPct = await promptNumber(
-    tty,
-    "Mean yearly inflation, as a percent (0 for flat, uninflated withdrawals)",
-    current.inflationMean === null ? 0 : current.inflationMean * 100,
-    "%",
-  )
+  const inflationMeanPct = await promptNumber(tty, "", monteCarlo.inflationMean === null ? 0 : monteCarlo.inflationMean * 100, "%")
+  monteCarlo.inflationMean = inflationMeanPct > 0 ? inflationMeanPct / 100 : null
+  save()
 
   explain("Inflation volatility: real-world inflation bounces around year to year rather than staying fixed -- when set, each simulated year draws its own rate around the mean.")
-  const inflationStdDevPct = await promptNumber(tty, "Yearly inflation volatility, as a percent", current.inflationStdDev * 100, "%")
+  const inflationStdDevPct = await promptNumber(tty, "", monteCarlo.inflationStdDev * 100, "%")
+  monteCarlo.inflationStdDev = inflationStdDevPct / 100
+  save()
 
   explain("Tax model -- your yearly spending is what you keep after tax; the simulation withdraws extra to cover it.")
   const taxModelIndex = await promptChoice(
     tty,
-    "Tax model",
+    "",
     labeledOptions(MONTE_CARLO_TAX_MODELS, MONTE_CARLO_TAX_MODEL_LABELS),
-    MONTE_CARLO_TAX_MODELS.indexOf(current.taxModel),
+    MONTE_CARLO_TAX_MODELS.indexOf(monteCarlo.taxModel),
     MONTE_CARLO_TAX_MODELS,
   )
-  const taxModel = MONTE_CARLO_TAX_MODELS[taxModelIndex] as (typeof MONTE_CARLO_TAX_MODELS)[number]
-  const taxBands = taxModel === "bands" ? await askTaxBands(tty, current.taxBands) : current.taxBands
+  monteCarlo.taxModel = MONTE_CARLO_TAX_MODELS[taxModelIndex] as (typeof MONTE_CARLO_TAX_MODELS)[number]
+  save()
+  if (monteCarlo.taxModel === "bands") {
+    await askTaxBands(tty, draft, save)
+  }
 
   explain("Simulation count: how many random scenarios to run. More gives a steadier result but takes slightly longer.")
-  const simulationCount = await promptNumber(tty, "Number of simulations to run", current.simulationCount)
-
-  return {
-    withdrawalStrategy,
-    returnModel,
-    withdrawalRule,
-    minimumWithdrawal: Math.round(minimumWithdrawalDollars * 100),
-    inflationMean: inflationMeanPct > 0 ? inflationMeanPct / 100 : null,
-    inflationStdDev: inflationStdDevPct / 100,
-    taxModel,
-    taxBands,
-    simulationCount,
-  }
+  monteCarlo.simulationCount = await promptNumber(tty, "", monteCarlo.simulationCount)
+  save()
 }
 
 async function main(): Promise<void> {
@@ -572,47 +610,41 @@ async function main(): Promise<void> {
   try {
     const existingConfig = await maybeImportFromDashboard(tty, options.configPath, options.dashboardPath, loadedConfig)
 
-    let overrides = existingConfig.accounts
+    // A mutable working copy every ask* function updates field-by-field, saved to disk after each
+    // individual question -- so an interrupted session never loses more than the one answer in
+    // flight, not a whole section's worth. Nested objects/arrays are cloned so mutating them here
+    // never reaches back into existingConfig.
+    const draft: FireConfig = {
+      ...existingConfig,
+      crossover: { ...existingConfig.crossover },
+      monteCarlo: { ...existingConfig.monteCarlo, withdrawalRule: { ...existingConfig.monteCarlo.withdrawalRule }, taxBands: [...existingConfig.monteCarlo.taxBands] },
+    }
+    const save: Save = () => writeFireConfig(options.configPath, draft)
+
     if (sections.includes("accounts")) {
       const accounts = await fetchAllOpenAccounts(actualConfig)
       const balances = await Promise.all(accounts.map((account) => fetchAccountBalance(actualConfig, account.id, BALANCE_SINCE_DATE)))
-      overrides = []
+      draft.accounts = []
       for (const [index, account] of accounts.entries()) {
-        overrides.push(await classifyOneAccount(tty, account, balances[index] as number, existingConfig, irsLimits))
-        // Write after every step, not just at the very end, so an interrupted session (ctrl-c, a
-        // crash) keeps everything answered so far instead of losing it all.
-        writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides })
+        await classifyOneAccount(tty, account, balances[index] as number, index, draft, existingConfig, irsLimits, save)
       }
     }
 
-    let birthDate = existingConfig.birthDate
-    let retirementAges = existingConfig.retirementAges
-    let planToAge = existingConfig.planToAge
     if (sections.includes("personal")) {
-      birthDate = await askBirthDate(tty, existingConfig)
-      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate })
-
-      retirementAges = await askRetirementAges(tty, existingConfig)
-      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges })
-
-      planToAge = await askPlanToAge(tty, existingConfig)
-      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges, planToAge })
+      await askBirthDate(tty, draft, save)
+      await askRetirementAges(tty, draft, save)
+      await askPlanToAge(tty, draft, save)
     }
 
-    let crossover = existingConfig.crossover
     if (sections.includes("crossover")) {
-      crossover = await askCrossoverAssumptions(tty, existingConfig)
-      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges, planToAge, crossover })
+      await askCrossoverAssumptions(tty, draft, save)
     }
 
-    let monteCarlo = existingConfig.monteCarlo
     if (sections.includes("monte-carlo")) {
-      monteCarlo = await askMonteCarloAssumptions(tty, existingConfig)
+      await askMonteCarloAssumptions(tty, draft, save)
     }
 
-    const finalConfig: FireConfig = { ...existingConfig, accounts: overrides, birthDate, retirementAges, planToAge, crossover, monteCarlo }
-    writeFireConfig(options.configPath, finalConfig)
-
+    save()
     console.log(`\nWrote ${options.configPath}.`)
   } finally {
     tty.close()
