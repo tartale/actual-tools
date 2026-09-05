@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-05T01:19:57.864Z
+  modified: 2026-09-05T01:32:36.913Z
 ---
 
 `balance-to-zero.sh` is being fully replaced (no backward compat) by
@@ -140,8 +140,8 @@ word-wrapping the top-level page description, only per-entry descriptions —
 invisible until this command's longer description exposed it at normal
 terminal widths.
 
-**Two more `set-values` actions added** (2026-09-05): `repeat` copies last
-month's **budgeted** figure forward (`fetchPreviousBudgeted`, reads
+**Two more `set-values` actions added** (2026-09-05): one copies last month's
+**budgeted** figure forward (`fetchPreviousBudgeted`, reads
 `CategoryMonth.budgeted`) — the odd one out among the actions, since every
 other one derives from actual *spending*, not what was previously budgeted.
 And the ACTION argument can now be a literal dollar amount instead of a
@@ -149,7 +149,17 @@ preset (`parseDollarAmount`, e.g. `set-values 249.99 2026-08`) — tried as a
 fallback only after `isAction()` fails, parsed as a plain decimal string (no
 `$`, up to 2 decimal places) and rounded to cents to avoid float imprecision.
 `Options.action` is now `Action | number`; `computeNewBudget` dispatches on
-`typeof action === "number"` first, then `"balance"`/`"repeat"`/history.
+`typeof action === "number"` first, then `"balance"`/budgeted-copy/history.
+
+**Renamed right after, same session**: the original three spending-average
+actions (`previous`/`previous-3`/`previous-12`, N=1/3/12 months of actual
+spending) became `spent`/`spent-3`/`spent-12`, freeing up the name `previous`
+for the new budgeted-copy action above (which had briefly been called
+`repeat`). So today: `previous` = last month's *budgeted* amount,
+`spent`/`spent-3`/`spent-12` = actual spending averages. `HistoryAction` is
+now `"spent" | "spent-3" | "spent-12"`; `HISTORY_MONTHS` keys match. Easy to
+mix up when reading old commit messages/plan text that still say "previous"
+meaning the pre-rename spending action — check the date.
 
 **How to apply**: the full plan snapshot is at
 `.claude/plans/set-budget-migration.md` in the repo (the machine-local copy

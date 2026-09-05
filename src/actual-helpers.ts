@@ -50,15 +50,15 @@ export interface Transaction {
   subtransactions?: Transaction[]
 }
 
-export type HistoryAction = "previous" | "previous-3" | "previous-12"
-export type Action = "balance" | "repeat" | HistoryAction
+export type HistoryAction = "spent" | "spent-3" | "spent-12"
+export type Action = "balance" | "previous" | HistoryAction
 
-export const ACTIONS: readonly Action[] = ["balance", "previous", "previous-3", "previous-12", "repeat"]
+export const ACTIONS: readonly Action[] = ["balance", "spent", "spent-3", "spent-12", "previous"]
 
 export const HISTORY_MONTHS: Record<HistoryAction, number> = {
-  previous: 1,
-  "previous-3": 3,
-  "previous-12": 12,
+  spent: 1,
+  "spent-3": 3,
+  "spent-12": 12,
 }
 
 export function isAction(value: string): value is Action {

@@ -168,14 +168,14 @@ describe("monthRange", () => {
 })
 
 describe("isAction", () => {
-  it("recognises the four supported actions", () => {
-    for (const action of ["balance", "previous", "previous-3", "previous-12"]) {
+  it("recognises the five supported actions", () => {
+    for (const action of ["balance", "spent", "spent-3", "spent-12", "previous"]) {
       expect(isAction(action)).toBe(true)
     }
   })
 
-  it("rejects everything else", () => {
-    for (const bad of ["", "Balance", "previous-6", "zero"]) {
+  it("rejects everything else, including the old pre-rename action names", () => {
+    for (const bad of ["", "Balance", "spent-6", "zero", "repeat", "previous-3", "previous-12"]) {
       expect(isAction(bad)).toBe(false)
     }
   })

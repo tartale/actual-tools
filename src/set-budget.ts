@@ -41,10 +41,10 @@ const HELP_PAGE: HelpPage = {
       label: "Actions",
       entries: [
         { name: "balance", description: "Set the budget so the category's balance for the month becomes zero." },
-        { name: "previous", description: "Set the budget to the previous month's actual spending." },
-        { name: "previous-3", description: "Set the budget to the average actual spending of the previous 3 months." },
-        { name: "previous-12", description: "Set the budget to the average actual spending of the previous 12 months." },
-        { name: "repeat", description: "Set the budget to the same amount budgeted the previous month." },
+        { name: "spent", description: "Set the budget to the previous month's actual spending." },
+        { name: "spent-3", description: "Set the budget to the average actual spending of the previous 3 months." },
+        { name: "spent-12", description: "Set the budget to the average actual spending of the previous 12 months." },
+        { name: "previous", description: "Set the budget to the same amount budgeted the previous month." },
         { name: "NUMBER", description: "Set the budget to exactly this dollar amount, e.g. 500 or 249.99." },
       ],
     },
@@ -148,7 +148,7 @@ async function computeNewBudget(
   if (action === "balance") {
     return computeBalanceBudget(category)
   }
-  if (action === "repeat") {
+  if (action === "previous") {
     return fetchPreviousBudgeted(config, category.id, month, monthCache)
   }
   return computeHistoricalBudget(config, category.id, month, HISTORY_MONTHS[action], monthCache)
