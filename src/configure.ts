@@ -46,10 +46,17 @@ const BALANCE_SINCE_DATE = "1970-01-01"
 
 const DEFAULT_DASHBOARD_PATH = "fire-dashboard.json"
 
+// The four question groups configure asks about, in the order asked. -s/--section narrows a run
+// down to just the ones named, so re-running to tweak one thing (e.g. this year's contributions)
+// doesn't require re-answering everything else too.
+const CONFIGURE_SECTIONS = ["accounts", "personal", "crossover", "monte-carlo"] as const
+type ConfigureSection = (typeof CONFIGURE_SECTIONS)[number]
+
 interface Options {
   configPath: string
   dashboardPath: string
   irsLimitsPath: string
+  sections: ConfigureSection[]
 }
 
 const HELP_PAGE: HelpPage = {
@@ -80,6 +87,13 @@ const HELP_PAGE: HelpPage = {
             `Path to the IRS contribution limits reference file (default: ${DEFAULT_IRS_LIMITS_PATH}) -- shown next to ` +
             "retirement/HSA contribution questions. Missing is fine, just skips that context.",
         },
+        {
+          name: "-s, --section NAME",
+          description:
+            `Only ask this section's questions, leaving everything else as it already is in the config file. ` +
+            `Repeatable. One of: ${CONFIGURE_SECTIONS.join(", ")}. Default: all of them. Account classification is ` +
+            "always included on a first run (an empty account list would leave reports fire with no portfolio).",
+        },
         { name: "-h, --help", description: "Show this message and exit." },
       ],
     },
@@ -105,6 +119,7 @@ function parseArguments(argv: readonly string[]): Options {
   let configPath = DEFAULT_CONFIG_PATH
   let dashboardPath = DEFAULT_DASHBOARD_PATH
   let irsLimitsPath = DEFAULT_IRS_LIMITS_PATH
+  const sections: ConfigureSection[] = []
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string
@@ -129,6 +144,16 @@ function parseArguments(argv: readonly string[]): Options {
       }
       irsLimitsPath = value
       i++
+    } else if (arg === "-s" || arg === "--section") {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith("-")) {
+        usage("Missing argument for --section")
+      }
+      if (!(CONFIGURE_SECTIONS as readonly string[]).includes(value)) {
+        usage(`Unknown section "${value}". Valid sections: ${CONFIGURE_SECTIONS.join(", ")}.`)
+      }
+      sections.push(value as ConfigureSection)
+      i++
     } else if (arg === "-h" || arg === "--help") {
       process.stdout.write(`${renderHelp(process.stdout, HELP_PAGE)}\n`)
       process.exit(0)
@@ -137,7 +162,7 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  return { configPath, dashboardPath, irsLimitsPath }
+  return { configPath, dashboardPath, irsLimitsPath, sections: sections.length > 0 ? sections : [...CONFIGURE_SECTIONS] }
 }
 
 // Function to read a dashboard JSON file, tolerating anything that doesn't parse as one -- this is
@@ -519,36 +544,60 @@ async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2))
   const actualConfig: ActualConfig = loadConfigFromEnv()
 
-  const accounts = await fetchAllOpenAccounts(actualConfig)
-  const { config: loadedConfig } = loadFireConfig(options.configPath)
-  const balances = await Promise.all(accounts.map((account) => fetchAccountBalance(actualConfig, account.id, BALANCE_SINCE_DATE)))
+  const { config: loadedConfig, found: configFound } = loadFireConfig(options.configPath)
   const irsLimits = loadIrsLimits(options.irsLimitsPath)
+
+  let sections = options.sections
+  if (!configFound && !sections.includes("accounts")) {
+    console.log(`No existing ${options.configPath} found -- account classification is required at least once; including it despite -s.`)
+    sections = [...sections, "accounts"]
+  }
+  if (sections.length < CONFIGURE_SECTIONS.length) {
+    console.log(`Only asking: ${sections.join(", ")}. Everything else keeps its current value in ${options.configPath}.`)
+  }
 
   const tty = openTtyInterface()
   try {
     const existingConfig = await maybeImportFromDashboard(tty, options.configPath, options.dashboardPath, loadedConfig)
 
-    const overrides: FireAccountOverride[] = []
-    for (const [index, account] of accounts.entries()) {
-      overrides.push(await classifyOneAccount(tty, account, balances[index] as number, existingConfig, irsLimits))
-      // Write after every step, not just at the very end, so an interrupted session (ctrl-c, a
-      // crash) keeps everything answered so far instead of losing it all.
-      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides })
+    let overrides = existingConfig.accounts
+    if (sections.includes("accounts")) {
+      const accounts = await fetchAllOpenAccounts(actualConfig)
+      const balances = await Promise.all(accounts.map((account) => fetchAccountBalance(actualConfig, account.id, BALANCE_SINCE_DATE)))
+      overrides = []
+      for (const [index, account] of accounts.entries()) {
+        overrides.push(await classifyOneAccount(tty, account, balances[index] as number, existingConfig, irsLimits))
+        // Write after every step, not just at the very end, so an interrupted session (ctrl-c, a
+        // crash) keeps everything answered so far instead of losing it all.
+        writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides })
+      }
     }
 
-    const birthDate = await askBirthDate(tty, existingConfig)
-    writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate })
+    let birthDate = existingConfig.birthDate
+    let retirementAges = existingConfig.retirementAges
+    let planToAge = existingConfig.planToAge
+    if (sections.includes("personal")) {
+      birthDate = await askBirthDate(tty, existingConfig)
+      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate })
 
-    const retirementAges = await askRetirementAges(tty, existingConfig)
-    writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges })
+      retirementAges = await askRetirementAges(tty, existingConfig)
+      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges })
 
-    const planToAge = await askPlanToAge(tty, existingConfig)
-    writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges, planToAge })
+      planToAge = await askPlanToAge(tty, existingConfig)
+      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges, planToAge })
+    }
 
-    const crossover = await askCrossoverAssumptions(tty, existingConfig)
-    writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges, planToAge, crossover })
+    let crossover = existingConfig.crossover
+    if (sections.includes("crossover")) {
+      crossover = await askCrossoverAssumptions(tty, existingConfig)
+      writeFireConfig(options.configPath, { ...existingConfig, accounts: overrides, birthDate, retirementAges, planToAge, crossover })
+    }
 
-    const monteCarlo = await askMonteCarloAssumptions(tty, existingConfig)
+    let monteCarlo = existingConfig.monteCarlo
+    if (sections.includes("monte-carlo")) {
+      monteCarlo = await askMonteCarloAssumptions(tty, existingConfig)
+    }
+
     const finalConfig: FireConfig = { ...existingConfig, accounts: overrides, birthDate, retirementAges, planToAge, crossover, monteCarlo }
     writeFireConfig(options.configPath, finalConfig)
 

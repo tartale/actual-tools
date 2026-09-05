@@ -155,7 +155,7 @@ session, and writes it to `config.json`. Replaces the old
 longer flow, not the whole thing).
 
 ```
-./actual configure [-f PATH] [-d PATH] [-i PATH]
+./actual configure [-f PATH] [-d PATH] [-i PATH] [-s SECTION]...
 ```
 
 - `-f`, `--config PATH` — path to the config file to read defaults from and
@@ -166,6 +166,15 @@ longer flow, not the whole thing).
 - `-i`, `--irs-limits PATH` — path to the IRS contribution limits reference
   file (default: `irs-limits.json`) — see "IRS contribution limits" below.
   Missing is fine; that context is just skipped.
+- `-s`, `--section NAME` — only ask this section's questions, leaving
+  everything else as it already is in `config.json`. Repeatable; one of
+  `accounts`, `personal` (birth date, retirement ages, plan-to-age),
+  `crossover`, `monte-carlo`. Default: all four. Useful for a quick re-run
+  — e.g. `./actual configure -s crossover` to update just the safe
+  withdrawal rate without re-answering everything else. Account
+  classification is always included on a first run (with no existing
+  config file yet) even if you didn't ask for it, since an empty account
+  list would leave `reports fire` with no portfolio to work with.
 
 ### Account classification
 
