@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 5809572f-3c7a-469d-b142-d0b41ca0bf68
-  modified: 2026-09-05T01:48:37.561Z
+  modified: 2026-09-05T01:57:01.027Z
 ---
 
 `balance-to-zero.sh` is being fully replaced (no backward compat) by
@@ -166,14 +166,20 @@ the bash file is `git rm`'d, matching the precedent set when `balance-to-zero.sh
 was replaced — no backward-compat shim. `lib/cli-format.sh` stays, since
 `actual`'s own top-level/`budget` help still uses it.
 
-Two real fixes made during the port, both confirmed with the user before
+**Correction (still 2026-09-05, same session)**: initially assumed tagging
+both sides of a matched pair was the intended behavior, since the bash
+help text said so and only the uncleared side was ever actually patched
+(`clearedId`/`clearedNotes` computed and unused — flagged as a discrepancy
+pending this port, in an earlier session). The user corrected this: the
+bash *implementation* was right all along — only the uncleared transaction
+should ever be tagged — and it was the bash *help text* that was stale.
+Reverted to uncleared-only tagging (`patchTransactionNotes` called once, on
+the uncleared side only); the cleared transaction is read to confirm a
+match but never written to. Help text/README now say this explicitly. Don't
+re-introduce both-sides tagging without asking again.
+
+One real fix made during the port, confirmed with the user before
 finalizing:
-- **Both sides of a matched pair are now tagged** (`patchTransactionNotes`
-  called for both the uncleared and the cleared transaction). The bash
-  version's help text always claimed this, but only ever patched the
-  uncleared side — `clearedId`/`clearedNotes` were computed and unused (this
-  was flagged and left in place, specifically pending this port, in an
-  earlier session).
 - **`DRY_RUN`/`-n` now actually prevents the write.** The bash version called
   `curlWithStatus` (the PATCH) unconditionally, and only used `DRY_RUN` to
   skip checking the response afterward — the write always fired regardless.

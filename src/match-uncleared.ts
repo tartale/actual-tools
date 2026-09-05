@@ -29,7 +29,7 @@ const HELP_PAGE: HelpPage = {
     "An imported bank transaction sometimes appears twice: once as a pending, uncleared row, then " +
     "again as a separate cleared row once it posts, instead of the same row being updated in place. " +
     "This finds those pairs -- same account, a similar payee and amount, within 5 days -- and tags " +
-    "both with #cleared so they read as one transaction, not two.",
+    "the uncleared row with #cleared so it reads as already accounted for.",
   sections: [
     {
       label: "Options",
@@ -144,25 +144,19 @@ async function main(): Promise<void> {
     console.log(formatMatchLine(transaction, match))
 
     if (options.dryRun) {
-      console.log("  Would tag both sides with #cleared.")
-      matchedCount++
-      clearedCandidates = clearedCandidates.filter((candidate) => candidate.id !== match.id)
-      continue
+      console.log("  Would tag the uncleared transaction with #cleared.")
+    } else {
+      try {
+        await patchTransactionNotes(config, transaction.id, addTagToNotes(transaction.notes, TAG))
+      } catch (error) {
+        console.error(`Warning: failed to tag uncleared transaction ${transaction.id}: ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
     }
 
-    try {
-      await patchTransactionNotes(config, transaction.id, addTagToNotes(transaction.notes, TAG))
-      await patchTransactionNotes(config, match.id, addTagToNotes(match.notes, TAG))
-    } catch (error) {
-      // If the uncleared side succeeded but the cleared side failed, the pair is left half-tagged:
-      // the uncleared transaction won't be revisited on a future run (it no longer matches the
-      // "untagged" filter above), but the cleared side will still show up as an untagged
-      // candidate. Rare (a mid-run API failure), but worth a clear warning rather than a silent
-      // retry that will never actually happen.
-      console.error(`Warning: failed to tag matched pair (${transaction.id} / ${match.id}): ${error instanceof Error ? error.message : String(error)}`)
-      continue
-    }
-
+    // Only the uncleared side is tagged -- the cleared transaction is just consulted to confirm a
+    // match, not itself modified. Still drop it from further consideration so a later uncleared
+    // transaction in this same run doesn't also claim it.
     clearedCandidates = clearedCandidates.filter((candidate) => candidate.id !== match.id)
     matchedCount++
   }

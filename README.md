@@ -124,8 +124,8 @@ Examples:
 An imported bank transaction sometimes appears twice: once as a pending,
 uncleared row, then again as a separate cleared row once it posts, instead of
 the same row being updated in place. This finds those pairs — same account, a
-similar payee and amount, within 5 days — and tags both with `#cleared` so
-they read as one transaction, not two.
+similar payee and amount, within 5 days — and tags the uncleared row with
+`#cleared` so it reads as already accounted for.
 
 ```
 ./actual budget match-uncleared [-s YYYY-MM-DD] [-n]
