@@ -327,6 +327,17 @@ export async function fetchOnBudgetAccounts(config: ActualConfig): Promise<Accou
   return (body.data as Account[]).filter((account) => !account.closed && !account.offbudget)
 }
 
+// Function to fetch every open account, on- or off-budget. Retirement, investment, and debt
+// accounts are typically off-budget, so this is what classification needs (fetchOnBudgetAccounts
+// deliberately excludes exactly those accounts).
+export async function fetchAllOpenAccounts(config: ActualConfig): Promise<Account[]> {
+  const body = await actualRequest(config, `/budgets/${config.budgetId}/accounts`)
+  if (!isDataArray(body)) {
+    throw new Error(`Unexpected response fetching accounts: ${JSON.stringify(body)}`)
+  }
+  return (body.data as Account[]).filter((account) => !account.closed)
+}
+
 // Function to fetch an account's transactions on or after `sinceDate` (the API has no upper
 // bound, so callers filter the result down to whatever end date they need)
 export async function fetchAccountTransactions(config: ActualConfig, accountId: string, sinceDate: string): Promise<Transaction[]> {
@@ -338,6 +349,24 @@ export async function fetchAccountTransactions(config: ActualConfig, accountId: 
     throw new Error(`Unexpected response fetching transactions for account ${accountId}: ${JSON.stringify(body)}`)
   }
   return body.data as Transaction[]
+}
+
+// Function to sum a list of transactions' amounts. The API has no running-balance field, but the
+// sum of an account's entire transaction history *is* its current balance -- an accounting
+// identity, not an approximation. Deliberately does not flatten splits or exclude transfers (the
+// way fetchAllTransactionsSince does): a split parent's amount already equals its children's sum,
+// and a transfer's two legs are both real postings to two different accounts that must count.
+// Applying either of those filters here would break the identity, not improve it.
+export function sumTransactionAmounts(transactions: readonly Transaction[]): number {
+  return transactions.reduce((total, transaction) => total + transaction.amount, 0)
+}
+
+// Function to compute an account's current balance via the transaction-sum identity above.
+// `sinceDate` must predate the account's first transaction or the sum will be wrong; pass a date
+// far enough in the past (e.g. "1970-01-01") when there's no better bound available.
+export async function fetchAccountBalance(config: ActualConfig, accountId: string, sinceDate: string): Promise<number> {
+  const transactions = await fetchAccountTransactions(config, accountId, sinceDate)
+  return sumTransactionAmounts(transactions)
 }
 
 // Function to replace a split (parent) transaction with its individually-categorized

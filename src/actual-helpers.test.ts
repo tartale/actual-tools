@@ -7,7 +7,9 @@ import {
   averageSpent,
   computeBalanceBudget,
   computeHistoricalBudget,
+  fetchAccountBalance,
   fetchAccountTransactions,
+  fetchAllOpenAccounts,
   fetchAllTransactionsSince,
   fetchCategoryGroups,
   fetchHistoricalSpent,
@@ -28,6 +30,7 @@ import {
   parseDollarAmount,
   patchCategoryBudget,
   patchTransactionNotes,
+  sumTransactionAmounts,
   shouldUpdateCategory,
   validateDateFormat,
   validateMonthFormat,
@@ -594,6 +597,24 @@ describe("fetchOnBudgetAccounts", () => {
   })
 })
 
+describe("fetchAllOpenAccounts", () => {
+  it("keeps off-budget accounts but still excludes closed ones", async () => {
+    const accounts = [
+      { id: "a1", name: "Checking", offbudget: false, closed: false },
+      { id: "a2", name: "401k", offbudget: true, closed: false },
+      { id: "a3", name: "Closed Account", offbudget: true, closed: true },
+    ]
+    stubFetch([{ body: { data: accounts } }])
+
+    await expect(fetchAllOpenAccounts(config)).resolves.toEqual([accounts[0], accounts[1]])
+  })
+
+  it("rejects a response without a data array", async () => {
+    stubFetch([{ body: { data: null } }])
+    await expect(fetchAllOpenAccounts(config)).rejects.toThrow("Unexpected response fetching accounts")
+  })
+})
+
 describe("fetchAccountTransactions", () => {
   it("requests an account's transactions since a date", async () => {
     const transactions = [transaction({ id: "t1" })]
@@ -606,6 +627,27 @@ describe("fetchAccountTransactions", () => {
   it("names the account in its error", async () => {
     stubFetch([{ body: { nope: true } }])
     await expect(fetchAccountTransactions(config, "acct-1", "2026-08-01")).rejects.toThrow("transactions for account acct-1")
+  })
+})
+
+describe("sumTransactionAmounts", () => {
+  it("returns 0 for an empty list", () => {
+    expect(sumTransactionAmounts([])).toBe(0)
+  })
+
+  it("sums positive and negative amounts, including split children and both transfer legs", () => {
+    const amounts = [transaction({ id: "t1", amount: 10000 }), transaction({ id: "t2", amount: -3500 }), transaction({ id: "t3", amount: -20 })]
+    expect(sumTransactionAmounts(amounts)).toBe(6480)
+  })
+})
+
+describe("fetchAccountBalance", () => {
+  it("sums the account's transactions since the given date", async () => {
+    const transactions = [transaction({ id: "t1", amount: 50000 }), transaction({ id: "t2", amount: -12500 })]
+    const { calls } = stubFetch([{ body: { data: transactions } }])
+
+    await expect(fetchAccountBalance(config, "acct-1", "1970-01-01")).resolves.toBe(37500)
+    expect(calls[0]?.url).toBe("https://actual.test/v1/budgets/budget-1/accounts/acct-1/transactions?since_date=1970-01-01")
   })
 })
 

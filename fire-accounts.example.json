@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "accounts": [
+    { "match": "My Weird Brokerage Nickname", "category": "taxable-investment", "taxTreatment": "taxable" },
+    { "match": "Old Employer 401k", "category": "retirement-tax-deferred", "accessAge": 55 }
+  ]
+}
