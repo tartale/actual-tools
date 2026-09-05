@@ -191,7 +191,7 @@ Monte Carlo widget (see below):
   3) equity-60 (60% stocks / 40% bonds)
   4) equity-40 (40% stocks / 60% bonds)
   5) cash (100% cash)
-What's a reasonable stock/bond mix for this account? [2: equity-80]:
+What's an estimate of the stock/bond mix for this account? [2: equity-80]:
 ```
 
 Every run rewrites `accounts.json` from scratch, covering every

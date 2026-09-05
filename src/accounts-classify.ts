@@ -118,7 +118,7 @@ async function classifyOneAccount(
     )
     const presetIndex = await promptChoice(
       tty,
-      "What's a reasonable stock/bond mix for this account?",
+      "What's an estimate of the stock/bond mix for this account?",
       presetOptions,
       defaultPresetIndex,
       MONTE_CARLO_ALLOCATION_PRESETS,
