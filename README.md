@@ -43,10 +43,13 @@ Actions:
 | `previous`    | the previous month's actual spending                              |
 | `previous-3`  | the average actual spending of the previous 3 months              |
 | `previous-12` | the average actual spending of the previous 12 months             |
+| `repeat`      | the same amount **budgeted** the previous month                   |
+| a number      | exactly that dollar amount, e.g. `500` or `249.99`                 |
 
 The `previous*` actions use actual **spending**, not what was previously
 budgeted, and count months with no activity as $0 rather than shrinking the
-divisor.
+divisor. `repeat` is the odd one out — it copies last month's *budgeted*
+figure forward, not its spending.
 
 Options:
 
@@ -65,6 +68,8 @@ Examples:
 ```sh
 ./actual budget set-values balance 2026-08                 # zero every balance
 ./actual budget set-values -c Groceries previous-3 2026-08 # 3-month average
+./actual budget set-values -c Rent repeat 2026-08          # copy July's budgeted amount
+./actual budget set-values -c "Gym Membership" 49.99 2026-08 # set an exact amount
 ./actual budget set-values -n -c "Monthly Expenses (Fixed)" previous 2026-08 2026-01
 ```
 

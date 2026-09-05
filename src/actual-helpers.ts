@@ -50,11 +50,12 @@ export interface Transaction {
   subtransactions?: Transaction[]
 }
 
-export type Action = "balance" | "previous" | "previous-3" | "previous-12"
+export type HistoryAction = "previous" | "previous-3" | "previous-12"
+export type Action = "balance" | "repeat" | HistoryAction
 
-export const ACTIONS: readonly Action[] = ["balance", "previous", "previous-3", "previous-12"]
+export const ACTIONS: readonly Action[] = ["balance", "previous", "previous-3", "previous-12", "repeat"]
 
-export const HISTORY_MONTHS: Record<Exclude<Action, "balance">, number> = {
+export const HISTORY_MONTHS: Record<HistoryAction, number> = {
   previous: 1,
   "previous-3": 3,
   "previous-12": 12,
@@ -62,6 +63,15 @@ export const HISTORY_MONTHS: Record<Exclude<Action, "balance">, number> = {
 
 export function isAction(value: string): value is Action {
   return (ACTIONS as readonly string[]).includes(value)
+}
+
+// Function to parse a plain decimal dollar string (e.g. "500", "249.99", "-12.5") into cents,
+// or null if it isn't one. Used to let an ACTION argument be a literal amount instead of a preset.
+export function parseDollarAmount(value: string): number | null {
+  if (!/^-?\d+(\.\d{1,2})?$/.test(value)) {
+    return null
+  }
+  return Math.round(parseFloat(value) * 100)
 }
 
 // Function to load and validate required environment variables
@@ -262,6 +272,21 @@ export async function computeHistoricalBudget(
 ): Promise<number> {
   const spentAmounts = await fetchHistoricalSpent(config, categoryId, month, monthsBack, monthCache)
   return averageSpent(spentAmounts)
+}
+
+// Function to fetch what a category was budgeted the single month before `month` (not what it
+// spent). A month where the category doesn't appear counts as $0, matching the "missing month"
+// convention used everywhere else in this module.
+export async function fetchPreviousBudgeted(
+  config: ActualConfig,
+  categoryId: string,
+  month: string,
+  monthCache: Map<string, CategoryMonth[]>,
+): Promise<number> {
+  const priorMonth = addMonths(month, -1)
+  const priorCategories = await getCachedMonthCategories(config, priorMonth, monthCache)
+  const priorCategory = priorCategories.find((category) => category.id === categoryId)
+  return priorCategory ? priorCategory.budgeted : 0
 }
 
 // Function to set a category's budgeted amount for a given month

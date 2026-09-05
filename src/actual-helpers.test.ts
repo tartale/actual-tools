@@ -13,6 +13,7 @@ import {
   fetchHistoricalSpent,
   fetchMonthCategories,
   fetchOnBudgetAccounts,
+  fetchPreviousBudgeted,
   findIncomeFilterMatches,
   formatCategoryLine,
   formatUsd,
@@ -21,6 +22,7 @@ import {
   isAction,
   loadConfigFromEnv,
   monthRange,
+  parseDollarAmount,
   patchCategoryBudget,
   patchTransactionNotes,
   shouldUpdateCategory,
@@ -97,6 +99,30 @@ describe("formatUsd", () => {
     expect(formatUsd(0)).toBe("$0.00")
     expect(formatUsd(5)).toBe("$0.05")
     expect(formatUsd(-5)).toBe("-$0.05")
+  })
+})
+
+describe("parseDollarAmount", () => {
+  it("parses whole and fractional dollar amounts into cents", () => {
+    expect(parseDollarAmount("500")).toBe(50000)
+    expect(parseDollarAmount("249.99")).toBe(24999)
+    expect(parseDollarAmount("0.05")).toBe(5)
+    expect(parseDollarAmount("0")).toBe(0)
+  })
+
+  it("parses negative amounts", () => {
+    expect(parseDollarAmount("-12.50")).toBe(-1250)
+  })
+
+  it("rounds away floating-point imprecision", () => {
+    expect(parseDollarAmount("19.99")).toBe(1999)
+    expect(parseDollarAmount("0.29")).toBe(29)
+  })
+
+  it("rejects anything that isn't a plain decimal number", () => {
+    for (const bad of ["", "abc", "$500", "500 ", " 500", "5.999", "5.", "5-", "1e10", "previous"]) {
+      expect(parseDollarAmount(bad)).toBeNull()
+    }
   })
 })
 
@@ -391,6 +417,27 @@ describe("fetchHistoricalSpent", () => {
     vi.stubGlobal("fetch", async () => ({ ok: true, status: 200, json: async () => ({ data: [] }) }))
     const cache = new Map<string, CategoryMonth[]>()
     await expect(fetchHistoricalSpent(config, "cat-1", "2026-08", 3, cache)).resolves.toEqual([0, 0, 0])
+  })
+})
+
+describe("fetchPreviousBudgeted", () => {
+  it("returns what the category was budgeted the single month before, not what it spent", async () => {
+    const byMonth: Record<string, CategoryMonth[]> = {
+      "2026-07": [categoryMonth({ id: "cat-1", budgeted: 15000, spent: -12000 })],
+    }
+    vi.stubGlobal("fetch", async (url: string) => {
+      const month = url.split("/months/")[1]?.split("/")[0] as string
+      return { ok: true, status: 200, json: async () => ({ data: byMonth[month] ?? [] }) }
+    })
+
+    const cache = new Map<string, CategoryMonth[]>()
+    await expect(fetchPreviousBudgeted(config, "cat-1", "2026-08", cache)).resolves.toBe(15000)
+  })
+
+  it("treats a month without the category as $0 budgeted", async () => {
+    vi.stubGlobal("fetch", async () => ({ ok: true, status: 200, json: async () => ({ data: [] }) }))
+    const cache = new Map<string, CategoryMonth[]>()
+    await expect(fetchPreviousBudgeted(config, "cat-1", "2026-08", cache)).resolves.toBe(0)
   })
 })
 
