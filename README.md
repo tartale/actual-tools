@@ -172,7 +172,7 @@ Fidelity F5 401k -- current balance $543147.48
   5) debt
   6) cash
   7) other
-What kind of account is this? [1 - retirement-tax-deferred]:
+What kind of account is this? [1: retirement-tax-deferred]:
 ```
 
 The bracketed default is whichever answer wins: an existing entry in
