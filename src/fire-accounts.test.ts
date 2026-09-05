@@ -7,15 +7,18 @@ import { readFileSync, writeFileSync } from "node:fs"
 import {
   CATEGORY_TRAITS,
   FIRE_ACCOUNT_CATEGORIES,
+  MONTE_CARLO_ALLOCATION_PRESETS,
   classifyAccounts,
   classifyByHeuristic,
   findOverride,
+  isPortfolioCategory,
   loadClassifiedAccounts,
   loadFireAccountsConfig,
+  portfolioAccounts,
   traitsForCategory,
   writeFireAccountsConfig,
 } from "./fire-accounts.ts"
-import type { FireAccountsConfig } from "./fire-accounts.ts"
+import type { ClassifiedAccount, FireAccountsConfig } from "./fire-accounts.ts"
 import type { ActualConfig } from "./actual-helpers.ts"
 
 const config: ActualConfig = { baseUrl: "https://actual.test/v1", budgetId: "budget-1", apiKey: "secret-key" }
@@ -27,8 +30,18 @@ afterEach(() => {
 
 describe("classifyByHeuristic", () => {
   it("recognizes hsa accounts", () => {
-    expect(classifyByHeuristic("Fidelity HSA")).toEqual({ category: "hsa", taxTreatment: "tax-free", accessAge: null })
-    expect(classifyByHeuristic("Health Savings Account")).toEqual({ category: "hsa", taxTreatment: "tax-free", accessAge: null })
+    expect(classifyByHeuristic("Fidelity HSA")).toEqual({
+      category: "hsa",
+      taxTreatment: "tax-free",
+      accessAge: null,
+      allocationPreset: "equity-60",
+    })
+    expect(classifyByHeuristic("Health Savings Account")).toEqual({
+      category: "hsa",
+      taxTreatment: "tax-free",
+      accessAge: null,
+      allocationPreset: "equity-60",
+    })
   })
 
   it("recognizes roth accounts", () => {
@@ -36,6 +49,7 @@ describe("classifyByHeuristic", () => {
       category: "retirement-roth",
       taxTreatment: "tax-free",
       accessAge: 59,
+      allocationPreset: "equity-80",
     })
   })
 
@@ -49,19 +63,25 @@ describe("classifyByHeuristic", () => {
         category: "retirement-tax-deferred",
         taxTreatment: "tax-deferred",
         accessAge: 59,
+        allocationPreset: "equity-80",
       })
     }
   })
 
   it("recognizes debt accounts", () => {
     for (const name of ["Prince Circle Mortgage", "Car Loan", "Chase Credit Card", "HELOC", "Line of Credit"]) {
-      expect(classifyByHeuristic(name)).toEqual({ category: "debt", taxTreatment: "none", accessAge: null })
+      expect(classifyByHeuristic(name)).toEqual({ category: "debt", taxTreatment: "none", accessAge: null, allocationPreset: null })
     }
   })
 
   it("recognizes taxable investment accounts", () => {
     for (const name of ["E*Trade Investment Account", "Vanguard Brokerage", "Taxable Account"]) {
-      expect(classifyByHeuristic(name)).toEqual({ category: "investment-taxable", taxTreatment: "taxable", accessAge: null })
+      expect(classifyByHeuristic(name)).toEqual({
+        category: "investment-taxable",
+        taxTreatment: "taxable",
+        accessAge: null,
+        allocationPreset: "equity-80",
+      })
     }
   })
 
@@ -169,6 +189,18 @@ describe("loadFireAccountsConfig", () => {
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
     expect(() => loadFireAccountsConfig("/fake/path")).toThrow('unknown taxTreatment "bogus"')
   })
+
+  it("throws on an unrecognized allocationPreset value", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", category: "investment-taxable", allocationPreset: "bogus" }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireAccountsConfig("/fake/path")).toThrow('unknown allocationPreset "bogus"')
+  })
+
+  it("accepts a null allocationPreset", () => {
+    const validConfig = { version: 1, accounts: [{ match: "x", category: "debt", allocationPreset: null }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
+    expect(loadFireAccountsConfig("/fake/path")).toEqual({ config: validConfig, found: true })
+  })
 })
 
 describe("loadClassifiedAccounts", () => {
@@ -185,20 +217,30 @@ describe("loadClassifiedAccounts", () => {
     const result = await loadClassifiedAccounts(config, "/fake/accounts.json")
     expect(result.configFound).toBe(false)
     expect(result.accounts).toEqual([
-      { id: "a1", name: "Fidelity 401k", offbudget: true, category: "retirement-tax-deferred", taxTreatment: "tax-deferred", accessAge: 59, source: "heuristic" },
+      {
+        id: "a1",
+        name: "Fidelity 401k",
+        offbudget: true,
+        category: "retirement-tax-deferred",
+        taxTreatment: "tax-deferred",
+        accessAge: 59,
+        allocationPreset: "equity-80",
+        source: "heuristic",
+      },
     ])
   })
 })
 
 describe("traitsForCategory", () => {
-  it("returns the category alongside its default tax treatment and access age", () => {
+  it("returns the category alongside its default tax treatment, access age, and allocation preset", () => {
     expect(traitsForCategory("retirement-tax-deferred")).toEqual({
       category: "retirement-tax-deferred",
       taxTreatment: "tax-deferred",
       accessAge: 59,
+      allocationPreset: "equity-80",
     })
-    expect(traitsForCategory("cash")).toEqual({ category: "cash", taxTreatment: "none", accessAge: null })
-    expect(traitsForCategory("other")).toEqual({ category: "other", taxTreatment: "none", accessAge: null })
+    expect(traitsForCategory("cash")).toEqual({ category: "cash", taxTreatment: "none", accessAge: null, allocationPreset: null })
+    expect(traitsForCategory("other")).toEqual({ category: "other", taxTreatment: "none", accessAge: null, allocationPreset: null })
   })
 
   it("has an entry in CATEGORY_TRAITS and FIRE_ACCOUNT_CATEGORIES for every category", () => {
@@ -215,5 +257,55 @@ describe("writeFireAccountsConfig", () => {
     writeFireAccountsConfig("/fake/accounts.json", written)
 
     expect(writeFileSync).toHaveBeenCalledWith("/fake/accounts.json", `${JSON.stringify(written, null, 2)}\n`)
+  })
+})
+
+describe("isPortfolioCategory", () => {
+  it("is true for retirement/HSA/taxable-investment categories", () => {
+    for (const category of ["retirement-tax-deferred", "retirement-roth", "hsa", "investment-taxable"] as const) {
+      expect(isPortfolioCategory(category)).toBe(true)
+    }
+  })
+
+  it("is false for debt, cash, and other", () => {
+    for (const category of ["debt", "cash", "other"] as const) {
+      expect(isPortfolioCategory(category)).toBe(false)
+    }
+  })
+})
+
+describe("portfolioAccounts", () => {
+  // Function to build a classified account with sensible defaults for the fields a test ignores
+  function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount, "id" | "category">): ClassifiedAccount {
+    return {
+      name: "Some Account",
+      offbudget: true,
+      taxTreatment: "none",
+      accessAge: null,
+      allocationPreset: null,
+      source: "heuristic",
+      ...overrides,
+    }
+  }
+
+  it("keeps only portfolio-category accounts", () => {
+    const accounts = [
+      account({ id: "a1", category: "retirement-tax-deferred" }),
+      account({ id: "a2", category: "debt" }),
+      account({ id: "a3", category: "investment-taxable" }),
+      account({ id: "a4", category: "cash" }),
+    ]
+    expect(portfolioAccounts(accounts).map((a) => a.id)).toEqual(["a1", "a3"])
+  })
+})
+
+describe("MONTE_CARLO_ALLOCATION_PRESETS", () => {
+  it("has an implied return/volatility entry for every category that uses it", () => {
+    for (const category of FIRE_ACCOUNT_CATEGORIES) {
+      const preset = CATEGORY_TRAITS[category].allocationPreset
+      if (preset !== null) {
+        expect(MONTE_CARLO_ALLOCATION_PRESETS).toContain(preset)
+      }
+    }
   })
 })

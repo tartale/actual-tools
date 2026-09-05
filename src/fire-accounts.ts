@@ -22,6 +22,19 @@ export type TaxTreatment = "tax-deferred" | "tax-free" | "taxable" | "none"
 
 export const TAX_TREATMENTS: readonly TaxTreatment[] = ["tax-deferred", "tax-free", "taxable", "none"]
 
+// Mirrors Actual's own MonteCarloAllocationPreset, minus "custom" -- we always generate a concrete
+// preset, never ask for hand-typed return/volatility numbers. See fire-dashboard.ts for the exact
+// mean/stdDev each preset implies (ALLOCATION_PRESET_RETURNS, vendored from Actual's own source).
+export type MonteCarloAllocationPreset = "equity-100" | "equity-80" | "equity-60" | "equity-40" | "cash"
+
+export const MONTE_CARLO_ALLOCATION_PRESETS: readonly MonteCarloAllocationPreset[] = [
+  "equity-100",
+  "equity-80",
+  "equity-60",
+  "equity-40",
+  "cash",
+]
+
 export interface FireAccountTraits {
   category: FireAccountCategory
   taxTreatment: TaxTreatment
@@ -29,6 +42,9 @@ export interface FireAccountTraits {
   // yet known. Unused until a later phase's Monte Carlo pots -- computed now so the schema doesn't
   // need to change later.
   accessAge: number | null
+  // Equity/bond mix for a Monte Carlo "pot"; null for non-portfolio categories (debt/cash/other),
+  // which are never pots at all.
+  allocationPreset: MonteCarloAllocationPreset | null
 }
 
 export type ClassificationSource = "override" | "heuristic" | "default"
@@ -47,6 +63,7 @@ export interface FireAccountOverride {
   category: FireAccountCategory
   taxTreatment?: TaxTreatment
   accessAge?: number | null
+  allocationPreset?: MonteCarloAllocationPreset | null
 }
 
 export interface FireAccountsConfig {
@@ -77,19 +94,38 @@ export const FIRE_ACCOUNT_CATEGORIES: readonly FireAccountCategory[] = [
 ]
 
 export const CATEGORY_TRAITS: Record<FireAccountCategory, Omit<FireAccountTraits, "category">> = {
-  "retirement-tax-deferred": { taxTreatment: "tax-deferred", accessAge: DEFAULT_ACCESS_AGE },
-  "retirement-roth": { taxTreatment: "tax-free", accessAge: DEFAULT_ACCESS_AGE },
-  hsa: { taxTreatment: "tax-free", accessAge: null },
-  "investment-taxable": { taxTreatment: "taxable", accessAge: null },
-  debt: { taxTreatment: "none", accessAge: null },
-  cash: { taxTreatment: "none", accessAge: null },
-  other: { taxTreatment: "none", accessAge: null },
+  "retirement-tax-deferred": { taxTreatment: "tax-deferred", accessAge: DEFAULT_ACCESS_AGE, allocationPreset: "equity-80" },
+  "retirement-roth": { taxTreatment: "tax-free", accessAge: DEFAULT_ACCESS_AGE, allocationPreset: "equity-80" },
+  hsa: { taxTreatment: "tax-free", accessAge: null, allocationPreset: "equity-60" },
+  "investment-taxable": { taxTreatment: "taxable", accessAge: null, allocationPreset: "equity-80" },
+  debt: { taxTreatment: "none", accessAge: null, allocationPreset: null },
+  cash: { taxTreatment: "none", accessAge: null, allocationPreset: null },
+  other: { taxTreatment: "none", accessAge: null, allocationPreset: null },
 }
 
-// Function to build the full traits for a category, using CATEGORY_TRAITS' default tax
-// treatment/access age
+// Function to build the full traits for a category, using CATEGORY_TRAITS' defaults
 export function traitsForCategory(category: FireAccountCategory): FireAccountTraits {
   return { category, ...CATEGORY_TRAITS[category] }
+}
+
+// Categories that count as part of an investable portfolio -- eligible for a Monte Carlo "pot"
+// and for the crossover-card's safe-withdrawal-rate calculation. Debt isn't investable; cash/other
+// are a spending buffer, not portfolio.
+const PORTFOLIO_CATEGORIES: readonly FireAccountCategory[] = [
+  "retirement-tax-deferred",
+  "retirement-roth",
+  "hsa",
+  "investment-taxable",
+]
+
+// Function to test whether a category counts as part of the investable portfolio
+export function isPortfolioCategory(category: FireAccountCategory): boolean {
+  return PORTFOLIO_CATEGORIES.includes(category)
+}
+
+// Function to filter classified accounts down to the investable portfolio
+export function portfolioAccounts(accounts: readonly ClassifiedAccount[]): ClassifiedAccount[] {
+  return accounts.filter((account) => isPortfolioCategory(account.category))
 }
 
 // Ordered, case-insensitive name-pattern rules. Order matters: more specific patterns (roth, hsa)
@@ -139,6 +175,7 @@ export function classifyAccounts(
         category: override.category,
         taxTreatment: override.taxTreatment ?? "none",
         accessAge: override.accessAge ?? null,
+        allocationPreset: override.allocationPreset ?? null,
         source: "override" as const,
       }
     }
@@ -200,6 +237,15 @@ export function loadFireAccountsConfig(path: string): LoadedFireAccountsConfig {
       throw new Error(
         `Invalid accounts config in ${path}: unknown taxTreatment "${override.taxTreatment}" for "${override.match}". ` +
           `Valid values: ${TAX_TREATMENTS.join(", ")}.`,
+      )
+    }
+    if (
+      override.allocationPreset != null &&
+      !MONTE_CARLO_ALLOCATION_PRESETS.includes(override.allocationPreset)
+    ) {
+      throw new Error(
+        `Invalid accounts config in ${path}: unknown allocationPreset "${override.allocationPreset}" for "${override.match}". ` +
+          `Valid values: ${MONTE_CARLO_ALLOCATION_PRESETS.join(", ")}.`,
       )
     }
   }

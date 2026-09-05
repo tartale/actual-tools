@@ -181,6 +181,19 @@ The bracketed default is whichever answer wins: an existing entry in
 accept it. **Accounts with no existing entry and no name-based guess show no
 default** — you have to type a number; there's no way to skip one.
 
+For accounts classified as retirement, HSA, or taxable investment, there's a
+second question — a stock/bond allocation, used only if you generate the
+Monte Carlo widget (see below):
+
+```
+  1) equity-100
+  2) equity-80
+  3) equity-60
+  4) equity-40
+  5) cash
+What's a reasonable stock/bond mix for this account? (used for Monte Carlo retirement projections) [2: equity-80]:
+```
+
 Every run rewrites `accounts.json` from scratch, covering every
 currently-open account — running it again is the normal way to fix a wrong
 answer or pick up a newly-added account, not something to avoid.
@@ -188,22 +201,25 @@ answer or pick up a newly-added account, not something to avoid.
 ### `accounts.json`
 
 A gitignored JSON file (it names your real accounts) mapping an account —
-by id — to a category, tax treatment, and access age:
+by id — to a category, tax treatment, access age, and (for portfolio
+accounts) an allocation preset:
 
 ```json
 {
   "version": 1,
   "accounts": [
-    { "match": "691a0cae-4eed-4cfb-a42d-5878c7bdba88", "category": "investment-taxable", "taxTreatment": "taxable", "accessAge": null }
+    { "match": "691a0cae-4eed-4cfb-a42d-5878c7bdba88", "category": "investment-taxable", "taxTreatment": "taxable", "accessAge": null, "allocationPreset": "equity-80" }
   ]
 }
 ```
 
 Valid `category` values: `retirement-tax-deferred`, `retirement-roth`, `hsa`,
-`investment-taxable`, `debt`, `cash`, `other`. This is structured per-account
-data, not a scalar, so it's a separate file rather than another `AB_*`
-environment variable. You won't normally hand-edit it — `./actual accounts
-classify` both reads and writes it.
+`investment-taxable`, `debt`, `cash`, `other`. Valid `allocationPreset`
+values: `equity-100`, `equity-80`, `equity-60`, `equity-40`, `cash`, or
+`null` for non-portfolio categories. This is structured per-account data,
+not a scalar, so it's a separate file rather than another `AB_*` environment
+variable. You won't normally hand-edit it — `./actual accounts classify`
+both reads and writes it.
 
 ## `./actual reports fire`
 
@@ -214,7 +230,7 @@ projection — using Actual's own built-in dashboard widgets rather than
 reimplementing FIRE math.
 
 ```
-./actual reports fire [-o PATH] [-f PATH] [-n]
+./actual reports fire [-o PATH] [-f PATH] [-n] [-m --current-age N --target-age N]
 ```
 
 - `-o`, `--output PATH` — where to write the dashboard JSON (default:
@@ -222,6 +238,22 @@ reimplementing FIRE math.
 - `-f`, `--config PATH` — path to `accounts.json` (default: repo root).
 - `-n`, `--dry-run` — print the plan and the JSON without writing the file.
   Also enabled by setting `DRY_RUN=true`.
+- `-m`, `--monte-carlo` — also add a Monte Carlo retirement-simulation
+  widget: one pot per portfolio account (linked to its live balance, using
+  the allocation you picked in `accounts classify`), a spending phase from
+  the same trailing-12-month spend, and a flat 22%/15%/0% tax-deferred/
+  taxable/tax-free withdrawal tax rate. Requires `--current-age`/
+  `--target-age`; everything else (return model, withdrawal rules,
+  contributions, simulation count) is left for you to set in Actual's own
+  UI once the widget is open — this only sets what Actual can't infer on
+  its own.
+- `--current-age N`, `--target-age N` — the plan's age window. Required with
+  `-m`; not derivable from Actual's own data.
+
+**Monte Carlo Analysis is an experimental Actual feature** — enable it under
+Settings → Advanced → Experimental features → Monte Carlo Analysis Report,
+or the imported widget won't render. It's also a newer feature than the
+other three widgets, so its shape could still change.
 
 **Refuses to run without an `accounts.json`** — run `./actual accounts
 classify` first. It also refuses to run if no account classifies as
@@ -242,6 +274,12 @@ merge mode. Always import onto a page you're fine wiping (Actual's own
 undo/ctrl-z covers a bad import), never your main dashboard. Re-running
 `reports fire` and re-importing onto that same page is the normal way to
 refresh it, not a mistake to avoid.
+
+```sh
+./actual reports fire                                       # net worth + spending + crossover
+./actual reports fire -m --current-age 45 --target-age 90   # ...plus a Monte Carlo widget
+./actual reports fire -n                                     # preview without writing
+```
 
 ## Layout
 

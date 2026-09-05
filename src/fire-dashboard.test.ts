@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest"
 
-import { buildCrossoverWidget, buildFireDashboard, buildNetWorthWidget, buildSpendingWidget, portfolioAccountIds } from "./fire-dashboard.ts"
+import {
+  ALLOCATION_PRESET_RETURNS,
+  buildCrossoverWidget,
+  buildFireDashboard,
+  buildMonteCarloWidget,
+  buildNetWorthWidget,
+  buildPot,
+  buildSpendingPhase,
+  buildSpendingWidget,
+  portfolioAccountIds,
+} from "./fire-dashboard.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 
 // Function to build a classified account with sensible defaults for the fields a test ignores
@@ -10,6 +20,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     offbudget: true,
     taxTreatment: "none",
     accessAge: null,
+    allocationPreset: null,
     source: "heuristic",
     ...overrides,
   }
@@ -107,5 +118,81 @@ describe("buildFireDashboard", () => {
     const dashboard = buildFireDashboard(["cat-1", "cat-2"], ["acct-1"])
     const crossover = dashboard.widgets.find((widget) => widget.type === "crossover-card")
     expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["cat-1", "cat-2"], incomeAccountIds: ["acct-1"] })
+  })
+})
+
+// Function to build a portfolio account with a non-null allocationPreset, narrowed to the type
+// buildPot requires -- the account() helper's return type keeps allocationPreset nullable since
+// that's correct for ClassifiedAccount in general (non-portfolio accounts always have null there)
+function portfolioTestAccount(
+  overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount, "id" | "category"> & { allocationPreset: NonNullable<ClassifiedAccount["allocationPreset"]> },
+) {
+  return account(overrides) as ClassifiedAccount & { allocationPreset: NonNullable<ClassifiedAccount["allocationPreset"]> }
+}
+
+describe("buildPot", () => {
+  it("links the pot to the account's live balance", () => {
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" }))
+    expect(pot.accountId).toBe("a1")
+  })
+
+  it("sets expectedReturnMean/returnStdDev explicitly from the preset, not just the preset label", () => {
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" }))
+    expect(pot.allocationPreset).toBe("equity-80")
+    expect(pot.expectedReturnMean).toBe(ALLOCATION_PRESET_RETURNS["equity-80"].mean)
+    expect(pot.returnStdDev).toBe(ALLOCATION_PRESET_RETURNS["equity-80"].stdDev)
+  })
+
+  it("carries the account's access age through unchanged", () => {
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "retirement-tax-deferred", accessAge: 59, allocationPreset: "equity-80" }))
+    expect(pot.accessAge).toBe(59)
+  })
+
+  it("derives the withdrawal tax rate from tax treatment", () => {
+    const cases: [ClassifiedAccount["taxTreatment"], number][] = [
+      ["tax-deferred", 0.22],
+      ["taxable", 0.15],
+      ["tax-free", 0],
+      ["none", 0],
+    ]
+    for (const [taxTreatment, expectedRate] of cases) {
+      const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", taxTreatment, allocationPreset: "equity-80" }))
+      expect(pot.withdrawalTaxRate).toBe(expectedRate)
+    }
+  })
+})
+
+describe("buildSpendingPhase", () => {
+  it("covers the whole plan from a real trailing-spend figure", () => {
+    const phase = buildSpendingPhase(500000)
+    expect(phase).toEqual({ id: "current-spending", name: "Current spending", fromAge: null, annualWithdrawal: 500000 })
+  })
+})
+
+describe("buildMonteCarloWidget", () => {
+  const portfolioAccount = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" })
+  const nonPortfolioAccount = account({ id: "a2", category: "cash" })
+
+  it("builds one pot per portfolio account, excluding debt/cash/other", () => {
+    const widget = buildMonteCarloWidget(0, 6, [portfolioAccount, nonPortfolioAccount], 45, 90, 500000)
+    expect(widget.meta?.pots).toHaveLength(1)
+    expect(widget.meta?.pots?.[0]?.accountId).toBe("a1")
+  })
+
+  it("sets withdrawalStrategy, ages, spending phase, and a flat tax model", () => {
+    const widget = buildMonteCarloWidget(0, 6, [portfolioAccount], 45, 90, 500000)
+    expect(widget.meta).toMatchObject({
+      withdrawalStrategy: "proportional",
+      currentAge: 45,
+      targetAge: 90,
+      taxModel: "flat",
+      inflationMean: 0.03,
+    })
+    expect(widget.meta?.spendingPhases).toEqual([buildSpendingPhase(500000)])
+  })
+
+  it("throws a clear error when a portfolio account has no allocationPreset set", () => {
+    const incomplete = account({ id: "a3", category: "hsa", allocationPreset: null })
+    expect(() => buildMonteCarloWidget(0, 6, [incomplete], 45, 90, 500000)).toThrow(/allocationPreset/)
   })
 })

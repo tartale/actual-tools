@@ -5,8 +5,10 @@ import type { Account, ActualConfig, TtyInterface } from "./actual-helpers.ts"
 import {
   DEFAULT_ACCOUNTS_CONFIG_PATH,
   FIRE_ACCOUNT_CATEGORIES,
+  MONTE_CARLO_ALLOCATION_PRESETS,
   classifyByHeuristic,
   findOverride,
+  isPortfolioCategory,
   loadFireAccountsConfig,
   traitsForCategory,
   writeFireAccountsConfig,
@@ -31,7 +33,9 @@ const HELP_PAGE: HelpPage = {
     "retirement, taxable investment, HSA, debt, cash, or other -- and writes the result to the " +
     "accounts config file. An existing entry, or an inferred guess from the account's name, is " +
     "offered as the default for each account; accounts with no inferred guess must be classified " +
-    "explicitly. Feeds ./actual reports fire.",
+    "explicitly. Portfolio accounts (retirement/HSA/taxable investment) get a second question for " +
+    "a stock/bond allocation, used by the Monte Carlo retirement projection. Feeds ./actual " +
+    "reports fire.",
   sections: [
     {
       label: "Options",
@@ -95,7 +99,26 @@ async function classifyOneAccount(
   const category = FIRE_ACCOUNT_CATEGORIES[chosenIndex] as (typeof FIRE_ACCOUNT_CATEGORIES)[number]
   const traits = traitsForCategory(category)
 
-  return { match: account.id, category: traits.category, taxTreatment: traits.taxTreatment, accessAge: traits.accessAge }
+  let allocationPreset = traits.allocationPreset
+  if (isPortfolioCategory(category)) {
+    const defaultPreset = override?.allocationPreset ?? traits.allocationPreset
+    const defaultPresetIndex = defaultPreset === null ? null : MONTE_CARLO_ALLOCATION_PRESETS.indexOf(defaultPreset)
+    const presetIndex = await promptChoice(
+      tty,
+      "What's a reasonable stock/bond mix for this account? (used for Monte Carlo retirement projections)",
+      MONTE_CARLO_ALLOCATION_PRESETS,
+      defaultPresetIndex,
+    )
+    allocationPreset = MONTE_CARLO_ALLOCATION_PRESETS[presetIndex] as (typeof MONTE_CARLO_ALLOCATION_PRESETS)[number]
+  }
+
+  return {
+    match: account.id,
+    category: traits.category,
+    taxTreatment: traits.taxTreatment,
+    accessAge: traits.accessAge,
+    allocationPreset,
+  }
 }
 
 async function main(): Promise<void> {
