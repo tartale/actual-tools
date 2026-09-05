@@ -35,7 +35,7 @@ interface Options {
 }
 
 const HELP_PAGE: HelpPage = {
-  usage: "./actual reports fire --retirement-age N [OPTIONS]",
+  usage: "./actual reports fire -r N [OPTIONS]",
   description:
     "Builds an Actual-native FIRE dashboard (net worth, trailing-12-month spending, a " +
     "safe-withdrawal-rate crossover projection, and a Monte Carlo retirement simulation -- " +
@@ -48,18 +48,18 @@ const HELP_PAGE: HelpPage = {
       label: "Options",
       entries: [
         {
-          name: "--retirement-age N",
+          name: "-r, --retirement-age N",
           description:
             "The age you plan to retire (start drawing down your portfolio) at. Required, can be used " +
             "multiple times to compare retirement ages -- each gets its own Monte Carlo widget, stacked " +
             "on the dashboard (Actual has no way to overlay multiple Monte Carlo configs on one chart).",
         },
         {
-          name: "--birth-date YYYY-MM-DD",
+          name: "-b, --birth-date YYYY-MM-DD",
           description: "Your birth date, to compute your current age. Overrides AB_BIRTH_DATE. One of the two is required.",
         },
         {
-          name: "--plan-to-age N",
+          name: "-p, --plan-to-age N",
           description: `Assume the plan needs to last to this age, instead of guessing your lifespan (default: ${DEFAULT_PLAN_TO_AGE}).`,
         },
         { name: "-o, --output PATH", description: `Where to write the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
@@ -123,7 +123,7 @@ function parseArguments(argv: readonly string[]): Options {
       i++
     } else if (arg === "-n" || arg === "--dry-run") {
       dryRun = true
-    } else if (arg === "--birth-date") {
+    } else if (arg === "-b" || arg === "--birth-date") {
       const value = argv[i + 1]
       if (value === undefined || value.startsWith("-")) {
         usage("Missing argument for --birth-date")
@@ -131,10 +131,10 @@ function parseArguments(argv: readonly string[]): Options {
       validateDateFormat(value)
       birthDateArg = value
       i++
-    } else if (arg === "--retirement-age") {
+    } else if (arg === "-r" || arg === "--retirement-age") {
       retirementAges.push(parseAgeArgument(arg, argv[i + 1]))
       i++
-    } else if (arg === "--plan-to-age") {
+    } else if (arg === "-p" || arg === "--plan-to-age") {
       planToAge = parseAgeArgument(arg, argv[i + 1])
       i++
     } else if (arg === "-h" || arg === "--help") {

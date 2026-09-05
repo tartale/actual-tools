@@ -4,7 +4,7 @@ description: "Status/design for ./actual reports fire and ./actual accounts clas
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-09-05T06:37:23.752Z
+  modified: 2026-09-05T06:39:49.568Z
   originSessionId: 860c6192-bf02-40b0-9166-e69d50daa24b
 ---
 
@@ -162,3 +162,5 @@ Resolved with the user (all confirmed, no guessing): `--retirement-age` required
 - Tests: `fire-dashboard.test.ts` gained a `buildMonteCarloWidgets` describe block (single-age plain name, multi-age unique names + correct non-overlapping stacked `y` coordinates + per-widget correct spending phases) plus a `buildMonteCarloWidget` name-override test. 174 tests total (4 new).
 - Verified live: `--retirement-age 55 --retirement-age 60 --retirement-age 65` produced three `monte-carlo-card` widgets at `y: 6, 10, 14` named `"Monte Carlo — Retire at 55/60/65"`; a single `--retirement-age 60` still produces one widget named plain `"Monte Carlo"` (no regression for the common case); omitting `--retirement-age` entirely still errors clearly.
 - README: `--retirement-age` flag description, a new "Comparing multiple retirement ages" callout explaining the stacked-not-overlaid reality, and a three-age example invocation added.
+
+**Eighth round, same session: short flags added.** `-r`/`--retirement-age`, `-b`/`--birth-date`, `-p`/`--plan-to-age` (none conflict with this file's existing `-o`/`-f`/`-n`/`-h`). Usage line shortened to `-r N` in the summary. README examples switched to the short forms (`-r 55 -r 60 -r 65`).

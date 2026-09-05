@@ -238,21 +238,21 @@ projection, and a Monte Carlo retirement simulation — using Actual's own
 built-in dashboard widgets rather than reimplementing FIRE math.
 
 ```
-./actual reports fire --retirement-age N [--birth-date YYYY-MM-DD] [--plan-to-age N] [-o PATH] [-f PATH] [-n]
+./actual reports fire -r N [-b YYYY-MM-DD] [-p N] [-o PATH] [-f PATH] [-n]
 ```
 
-- `--retirement-age N` — the age you plan to retire (start drawing down your
-  portfolio) at. Required, can be passed multiple times to compare
-  retirement ages side by side (see below).
-- `--birth-date YYYY-MM-DD` — your birth date, used to compute your current
-  age. Overrides `AB_BIRTH_DATE` (see below). One of the two is required —
-  since a birth date doesn't change, set the env var once and skip typing it
-  every run.
-- `--plan-to-age N` — assume the plan needs to last to this age (default:
-  `100`). This exists so you don't have to estimate your own lifespan: 100
-  is a deliberately conservative "the money should outlast you" assumption,
-  not a life-expectancy guess. Only override it if you want a different
-  assumption.
+- `-r`, `--retirement-age N` — the age you plan to retire (start drawing
+  down your portfolio) at. Required, can be passed multiple times to
+  compare retirement ages side by side (see below).
+- `-b`, `--birth-date YYYY-MM-DD` — your birth date, used to compute your
+  current age. Overrides `AB_BIRTH_DATE` (see below). One of the two is
+  required — since a birth date doesn't change, set the env var once and
+  skip typing it every run.
+- `-p`, `--plan-to-age N` — assume the plan needs to last to this age
+  (default: `100`). This exists so you don't have to estimate your own
+  lifespan: 100 is a deliberately conservative "the money should outlast
+  you" assumption, not a life-expectancy guess. Only override it if you
+  want a different assumption.
 - `-o`, `--output PATH` — where to write the dashboard JSON (default:
   `fire-dashboard.json`).
 - `-f`, `--config PATH` — path to `accounts.json` (default: repo root).
@@ -274,9 +274,9 @@ collapses to a single always-on phase at the real spend. Everything else
 for you to set in Actual's own UI once the widget is open — this only sets
 what Actual can't infer on its own.
 
-**Comparing multiple retirement ages**: pass `--retirement-age` more than
-once (e.g. `--retirement-age 55 --retirement-age 60 --retirement-age 65`)
-to get one Monte Carlo widget per age, stacked vertically on the dashboard
+**Comparing multiple retirement ages**: pass `-r`/`--retirement-age` more
+than once (e.g. `-r 55 -r 60 -r 65`) to get one Monte Carlo widget per age,
+stacked vertically on the dashboard
 page and each labeled with its age (e.g. "Monte Carlo — Retire at 60"). This
 isn't a single overlaid chart — Actual's dashboard has no way to compare
 multiple Monte Carlo configs on one chart, each widget holds exactly one —
@@ -309,9 +309,9 @@ undo/ctrl-z covers a bad import), never your main dashboard. Re-running
 refresh it, not a mistake to avoid.
 
 ```sh
-./actual reports fire --retirement-age 60                                       # AB_BIRTH_DATE set in the environment
-./actual reports fire --retirement-age 55 --retirement-age 60 --retirement-age 65   # compare three retirement ages
-./actual reports fire --retirement-age 60 -n                                    # preview without writing
+./actual reports fire -r 60                # AB_BIRTH_DATE set in the environment
+./actual reports fire -r 55 -r 60 -r 65    # compare three retirement ages
+./actual reports fire -r 60 -n             # preview without writing
 ```
 
 ## Layout
