@@ -309,12 +309,18 @@ dashboard-export format, which you import yourself, once:
 **Import replaces every widget already on the target page** — always
 import onto a page you're fine wiping, never your main dashboard.
 Regenerating and re-importing onto that same page is the normal way to
-refresh it. **Regenerating preserves customizations to an existing output
-file**: real-data fields always refresh (account/category ids, pot values
-and contributions, your current age, retirement-age-driven spending), but
+refresh it. **Regenerating preserves customizations you've already made**:
+real-data fields always refresh (account/category ids, pot values and
+contributions, your current age, retirement-age-driven spending), but
 anything else you tweaked afterward — an assumption, an extra pot field, a
 hand-added contribution or spending phase, or a widget of a type this tool
-never generated — survives.
+never generated — survives. The merge basis is, in order: whatever is
+**live in Actual right now** on a dashboard page literally named "FIRE"
+(read the same way `Check` does, via ActualQL), so settings you tuned
+inside Actual itself are never silently reverted; if no such page exists
+or the live lookup isn't reachable, the last file this tool wrote to its
+output path; if neither exists, this is treated as a first-time
+generation.
 
 **Monte Carlo Analysis is an experimental Actual feature** — enable it
 under Settings → Advanced → Experimental features → Monte Carlo Analysis

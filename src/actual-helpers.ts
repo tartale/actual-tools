@@ -90,7 +90,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): ActualC
 // Function to format a cent amount as a USD string, e.g. -415295 -> -$4152.95
 export function formatUsd(cents: number): string {
   const sign = cents < 0 ? "-" : ""
-  return `${sign}$${(Math.abs(cents) / 100).toFixed(2)}`
+  return `${sign}$${(Math.abs(cents) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 // Function to format an error for display, including its cause when present. Node's own fetch()
@@ -245,8 +245,8 @@ export function averageSpent(spentAmounts: readonly number[]): number {
 // Function to format a single category status line: status first (log-style), then the field columns
 export function formatCategoryLine(month: string, status: string, budgetedCents: number, balanceCents: number, name: string): string {
   const statusCol = status.padEnd(18)
-  const budgetedCol = formatUsd(budgetedCents).padEnd(11)
-  const balanceCol = formatUsd(balanceCents).padEnd(11)
+  const budgetedCol = formatUsd(budgetedCents).padEnd(12)
+  const balanceCol = formatUsd(balanceCents).padEnd(12)
   return `${statusCol}; month: ${month}; budgeted = ${budgetedCol}; balance = ${balanceCol}; name: ${name}`
 }
 

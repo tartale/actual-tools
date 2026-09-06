@@ -4,6 +4,7 @@ import {
   averageSpent,
   fetchAccountBalance,
   fetchCategoryGroups,
+  fetchDashboardPages,
   fetchDashboardWidgets,
   fetchHistoricalSpent,
   formatError,
@@ -91,6 +92,42 @@ function loadExistingDashboard(path: string): ExistingDashboard | null {
   }
 }
 
+// Function to read back whatever is actually live on the "FIRE" dashboard page in Actual right
+// now, as the merge basis for preserving hand-tuned settings (withdrawal strategy, tax model,
+// inflation, safe withdrawal rate, ...) that this app deliberately doesn't expose -- the true
+// source of truth once something has been imported, and a real fix over the previous approach of
+// merging against the local server-side output file: since Generate downloads to the browser
+// rather than only writing a server-side file, that local copy can go stale the moment a person
+// tunes a setting inside Actual itself, silently reverting it on the next regenerate. Scoped to a
+// page literally named "FIRE" (this tool's own documented convention) specifically so an unrelated
+// widget from another page (e.g. a net-worth-card most budgets already have on their main page)
+// doesn't get mistaken for this dashboard's own. Returns null -- not an error -- when there's no
+// such page yet, or when the run-query endpoint is unavailable (advisory, same as everywhere else
+// this repo reads live dashboard state); the caller falls back to the local file in that case.
+async function fetchLiveExistingDashboard(actualConfig: ActualConfig): Promise<ExistingDashboard | null> {
+  try {
+    const pages = await fetchDashboardPages(actualConfig)
+    const firePage = pages.find((page) => page.name.trim().toLowerCase() === "fire")
+    if (!firePage) {
+      return null
+    }
+    const widgets = await fetchDashboardWidgets<Record<string, unknown>>(actualConfig, firePage.id)
+    return {
+      version: 1,
+      widgets: widgets.map((widget) => ({
+        type: widget.type,
+        x: widget.x,
+        y: widget.y,
+        width: widget.width,
+        height: widget.height,
+        meta: widget.meta ?? null,
+      })),
+    }
+  } catch {
+    return null
+  }
+}
+
 export interface GenerateOptions {
   outputPath: string
   currentAge: number
@@ -112,7 +149,12 @@ export interface GenerateResult {
   ruleOf55Boosts: RuleOf55Boost[]
   outputPath: string
   widgetTypes: string[]
-  preservedExisting: boolean
+  // Where hand-tuned settings (withdrawal strategy, tax model, inflation, safe withdrawal rate,
+  // ...) were preserved from, if anywhere -- "live" (a page literally named "FIRE" in Actual right
+  // now, the true source of truth once something's been imported) beats "local" (the last file
+  // this tool wrote, used only when the live page isn't found or reachable); "none" means nothing
+  // to preserve, i.e. this is effectively a first-time generation.
+  mergeSource: "live" | "local" | "none"
   // The generated dashboard, pre-serialized -- lets a caller (the web UI) hand it straight to the
   // browser as a download, without a second round trip to re-read what was just written.
   dashboardJson: string
@@ -159,7 +201,11 @@ export async function generateDashboard(
     ...buildMonteCarloWidgets(0, 6, accounts, options.currentAge, options.retirementAges, options.planToAge, annualSpend, DEFAULT_MONTE_CARLO_ASSUMPTIONS),
   )
 
-  const existing = loadExistingDashboard(options.outputPath)
+  const liveExisting = await fetchLiveExistingDashboard(actualConfig)
+  const localExisting = loadExistingDashboard(options.outputPath)
+  const existing = liveExisting ?? localExisting
+  const mergeSource: GenerateResult["mergeSource"] = liveExisting ? "live" : localExisting ? "local" : "none"
+
   const dashboard = mergeGeneratedDashboard(generated, existing)
   const dashboardJson = `${JSON.stringify(dashboard, null, 2)}\n`
   writeFileSync(options.outputPath, dashboardJson)
@@ -172,7 +218,7 @@ export async function generateDashboard(
     ruleOf55Boosts,
     outputPath: options.outputPath,
     widgetTypes: dashboard.widgets.map((widget) => widget.type),
-    preservedExisting: existing !== null,
+    mergeSource,
     dashboardJson,
   }
 }

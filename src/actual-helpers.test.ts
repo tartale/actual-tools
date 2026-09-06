@@ -103,11 +103,15 @@ describe("loadConfigFromEnv", () => {
 
 describe("formatUsd", () => {
   it("formats positive, negative and zero amounts", () => {
-    expect(formatUsd(415295)).toBe("$4152.95")
-    expect(formatUsd(-415295)).toBe("-$4152.95")
+    expect(formatUsd(415295)).toBe("$4,152.95")
+    expect(formatUsd(-415295)).toBe("-$4,152.95")
     expect(formatUsd(0)).toBe("$0.00")
     expect(formatUsd(5)).toBe("$0.05")
     expect(formatUsd(-5)).toBe("-$0.05")
+  })
+
+  it("adds a thousands separator for larger amounts", () => {
+    expect(formatUsd(291215557)).toBe("$2,912,155.57")
   })
 })
 
@@ -461,13 +465,13 @@ describe("averageSpent", () => {
 describe("formatCategoryLine", () => {
   it("pads the status and amount columns", () => {
     expect(formatCategoryLine("2026-08", "Update applied", 12500, -2500, "Groceries")).toBe(
-      "Update applied    ; month: 2026-08; budgeted = $125.00    ; balance = -$25.00    ; name: Groceries",
+      "Update applied    ; month: 2026-08; budgeted = $125.00     ; balance = -$25.00     ; name: Groceries",
     )
   })
 
   it("keeps the columns aligned for the widest amounts", () => {
     expect(formatCategoryLine("2026-08", "Update not needed", -99999999, 99999999, "Rent")).toBe(
-      "Update not needed ; month: 2026-08; budgeted = -$999999.99; balance = $999999.99 ; name: Rent",
+      "Update not needed ; month: 2026-08; budgeted = -$999,999.99; balance = $999,999.99 ; name: Rent",
     )
   })
 })

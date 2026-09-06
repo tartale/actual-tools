@@ -384,7 +384,9 @@ function renderFinding(finding) {
 
 async function runCheck() {
   const container = document.getElementById("checkResult")
-  container.innerHTML = `<div class="empty-note">Checking…</div>`
+  const refreshBtn = document.getElementById("refreshAnalysisBtn")
+  refreshBtn.disabled = true
+  container.innerHTML = `<div class="empty-note">Analyzing…</div>`
   try {
     const result = await api("/api/retirement/check")
     container.innerHTML = ""
@@ -408,6 +410,8 @@ async function runCheck() {
     }
   } catch (error) {
     container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+  } finally {
+    refreshBtn.disabled = false
   }
 }
 
@@ -438,7 +442,7 @@ async function runGenerate() {
       <div class="line">Portfolio accounts (${r.portfolioAccountCount}): current total <span class="num">${usd(r.portfolioTotal)}</span></div>
       <div class="line">Expense categories (${r.expenseCategoryCount}): trailing 12-month spend <span class="num">${usd(r.annualSpend)}</span>/yr</div>
       ${boostLines}
-      <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span> (${r.widgetTypes.length} widgets: ${r.widgetTypes.join(", ")}).${r.preservedExisting ? " Preserved customizations from the existing file." : ""}</div>
+      <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span> (${r.widgetTypes.length} widgets: ${r.widgetTypes.join(", ")}).${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>
       <div class="import-steps">
         Import it into Actual:
         <ol>
@@ -466,6 +470,7 @@ document.getElementById("retireAges").addEventListener("change", (e) => {
 })
 document.getElementById("planToAge").addEventListener("change", (e) => runExclusive(() => patchPlan({ planToAge: parseFloat(e.target.value) }, "savedPlan")))
 document.getElementById("generateBtn").addEventListener("click", runGenerate)
+document.getElementById("refreshAnalysisBtn").addEventListener("click", runCheck)
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {

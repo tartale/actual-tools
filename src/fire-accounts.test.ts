@@ -666,13 +666,13 @@ describe("contributionLimitLines", () => {
 
   it("formats a Roth IRA's two age tiers with matching annual and monthly figures", () => {
     const lines = contributionLimitLines("roth-ira", IRS_LIMITS)
-    expect(lines).toEqual(["Roth IRA: $7500.00/yr [$625.00/mo]", "Roth IRA age 50+: $8600.00/yr [$716.67/mo]"])
+    expect(lines).toEqual(["Roth IRA: $7,500.00/yr [$625.00/mo]", "Roth IRA age 50+: $8,600.00/yr [$716.67/mo]"])
   })
 
   it("formats an employer plan's three age tiers", () => {
     const lines = contributionLimitLines("traditional-401k", IRS_LIMITS)
     expect(lines).toHaveLength(3)
-    expect(lines[0]).toContain("$24500.00/yr")
+    expect(lines[0]).toContain("$24,500.00/yr")
     expect(lines[1]).toContain("age 50-59, 64+")
     expect(lines[2]).toContain("age 60-63")
   })
@@ -680,11 +680,11 @@ describe("contributionLimitLines", () => {
   it("defaults to the self-only HSA tier, and switches to family when asked", () => {
     const selfLines = contributionLimitLines("hsa", IRS_LIMITS)
     expect(selfLines[0]).toContain("(self-only)")
-    expect(selfLines[0]).toContain("$4400.00/yr")
+    expect(selfLines[0]).toContain("$4,400.00/yr")
 
     const familyLines = contributionLimitLines("hsa", IRS_LIMITS, "family")
     expect(familyLines[0]).toContain("(family)")
-    expect(familyLines[0]).toContain("$8750.00/yr")
+    expect(familyLines[0]).toContain("$8,750.00/yr")
   })
 })
 
