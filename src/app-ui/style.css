@@ -73,11 +73,25 @@ body.busy .saving-pill { opacity: 1; }
 
 .app { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
 
+/* --- Privacy mode: an Actual-style eye toggle that blurs dollar figures (anything rendered via
+   app.js's moneySpan) without touching ages, percentages, or plain labels. --- */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 30px; height: 30px; border-radius: var(--radius-sm); background: var(--surface-2);
+  border: 1px solid var(--line); color: var(--ink-soft); cursor: pointer; padding: 0;
+}
+.icon-btn:hover { color: var(--ink); border-color: var(--accent); }
+.icon-btn .slash { opacity: 0; transition: opacity 0.15s; }
+body.privacy .icon-btn { color: var(--accent-selected); border-color: var(--accent); }
+body.privacy .icon-btn .slash { opacity: 1; }
+.money { transition: filter 0.15s ease; }
+body.privacy .money { filter: blur(6px); user-select: none; }
+
 /* --- Sidebar --- */
 .rail { background: var(--sidebar-bg); padding: 18px 14px; display: flex; flex-direction: column; gap: 26px; }
 .wordmark { font-weight: 700; font-size: 18px; letter-spacing: 0.3px; color: var(--ink-strong); display: flex; align-items: baseline; gap: 8px; }
 .wordmark .tag { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent-selected); border: 1px solid var(--sidebar-hover); padding: 1px 5px; border-radius: var(--radius-sm); }
-.subline { font-size: 11px; color: var(--ink-faint); margin-top: -18px; }
+.subline { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
 nav.sections { display: flex; flex-direction: column; gap: 1px; }
 .section-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 9px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); }
 .section-item.active { background: var(--accent-selected-bg); color: var(--accent-selected); }
@@ -88,7 +102,7 @@ nav.sections { display: flex; flex-direction: column; gap: 1px; }
 
 /* --- Main --- */
 main { padding: 26px 40px 56px; max-width: 1360px; }
-.page-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; gap: 20px; }
+.page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 20px; }
 h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color: var(--ink-strong); text-wrap: balance; }
 .page-head p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12.5px; max-width: 48ch; }
 
@@ -166,6 +180,13 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .acct-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 .acct-fields .field.full { grid-column: 1 / -1; }
 .acct-fields .field.hidden { display: none; }
+/* Allocation's option text spells out the stock/bond split (e.g. "equity-80 — 80% stocks / 20%
+   bonds") -- one quarter-width column truncates it, so this field gets two. */
+.field.wide { grid-column: span 2; }
+
+.income-section + .income-section { margin-top: 16px; }
+.income-label { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
+.income-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 
 .contrib-row { display: flex; align-items: center; gap: 6px; }
 .contrib-row input[type="number"] { flex: 1; }
@@ -219,11 +240,11 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
   .rail { flex-direction: row; overflow-x: auto; }
-  .summary, .plan-grid, .acct-fields { grid-template-columns: 1fr 1fr; }
+  .summary, .plan-grid, .acct-fields, .income-grid { grid-template-columns: 1fr 1fr; }
   .account-row { grid-template-columns: 1fr; }
   main { padding: 18px; }
 }
 
 @media (min-width: 861px) and (max-width: 1150px) {
-  .acct-fields { grid-template-columns: repeat(2, 1fr); }
+  .acct-fields, .income-grid { grid-template-columns: repeat(2, 1fr); }
 }

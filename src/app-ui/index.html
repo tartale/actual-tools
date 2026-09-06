@@ -30,6 +30,13 @@
           <h1>Retirement</h1>
           <p>Account facts feed the FIRE dashboard's Monte Carlo simulation; everything else — withdrawal rate, tax model, inflation — stays owned by Actual itself.</p>
         </div>
+        <button type="button" class="icon-btn" id="privacyToggle" title="Toggle privacy mode" aria-label="Toggle privacy mode" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 12C4.5 7 8 4.5 12 4.5S19.5 7 22 12c-2.5 5-6 7.5-10 7.5S4.5 17 2 12Z"/>
+            <circle cx="12" cy="12" r="3"/>
+            <path class="slash" d="M3 3l18 18"/>
+          </svg>
+        </button>
       </div>
 
       <div class="top-error" id="topError" hidden></div>
@@ -69,6 +76,56 @@
                 <label for="planToAge">Plan to age</label>
                 <input type="number" id="planToAge">
                 <div class="derived">Conservative horizon, not a lifespan estimate<span class="saved-flag" id="savedPlan">saved</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Retirement income</h2>
+            <span class="hint">Optional — reduces the portfolio draw once each starts<span class="saved-flag" id="savedIncome">saved</span></span>
+          </div>
+          <div class="card-body">
+            <div class="income-section">
+              <div class="income-label">Pension</div>
+              <div class="income-grid">
+                <div class="field">
+                  <label for="pensionStartAge">Starts at age</label>
+                  <input type="number" min="1" id="pensionStartAge">
+                </div>
+                <div class="field">
+                  <label for="pensionMonthlyAmount">Monthly amount</label>
+                  <div class="input-affix prefix-dollar">
+                    <input type="text" inputmode="decimal" id="pensionMonthlyAmount" placeholder="not entered">
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="income-section">
+              <div class="income-label">Social Security</div>
+              <div class="income-grid">
+                <div class="field">
+                  <label for="ss62">At 62</label>
+                  <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="ss62" placeholder="not entered"></div>
+                </div>
+                <div class="field">
+                  <label for="ss67">At 67 (full)</label>
+                  <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="ss67" placeholder="not entered"></div>
+                </div>
+                <div class="field">
+                  <label for="ss70">At 70</label>
+                  <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="ss70" placeholder="not entered"></div>
+                </div>
+                <div class="field">
+                  <label for="ssClaimAge">Plan to claim at</label>
+                  <select id="ssClaimAge">
+                    <option value="">Not set</option>
+                    <option value="62">62</option>
+                    <option value="67">67</option>
+                    <option value="70">70</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>

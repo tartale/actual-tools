@@ -202,6 +202,25 @@ process, not a background daemon.
 comma-separated), and the age to assume the plan needs to last to (a
 conservative default, not a lifespan estimate).
 
+**Retirement income** (optional): a pension (start age + monthly amount)
+and Social Security (the three SSA-statement reference figures — at 62, at
+67/full retirement age, and at 70 — plus which of those ages you actually
+plan to claim at). Both are guaranteed income sources, not portfolio pots,
+so they don't get an allocation or an access age; instead, each reduces
+how much the Monte Carlo simulation needs to draw from the portfolio once
+it starts, via extra spending phases stepping the withdrawal down at the
+right age (see `buildSpendingPhases` in `fire-dashboard.ts`). Left blank,
+neither has any effect. Entered as today's-dollars figures, same as
+trailing spend, so they scale with the same inflation assumption rather
+than losing real value every year the plan simulates forward.
+
+Every dollar box on the page (salary, contributions, mortgage figures,
+pension/Social Security) shows commas and cents at rest and a plain number
+while you're editing it. The eye icon in the top-right blurs every dollar
+figure on the page (an Actual-style privacy toggle) — handy before
+sharing a screen; it's a per-browser display preference, not saved to
+`config.json`.
+
 **Accounts**: every open account, each with an **account type** — not just
 a coarse category, but a concrete kind (Traditional 401(k)/403(b)/457/TSP,
 Roth 401(k)/403(b), Traditional IRA, Roth IRA, Inherited/Beneficiary IRA,

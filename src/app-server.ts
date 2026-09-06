@@ -34,6 +34,7 @@ import { loadIrsLimits } from "./irs-limits.ts"
 import { calculateMortgagePayoff } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
 import { checkDashboard, generateDashboard } from "./fire-generate.ts"
+import { retirementIncomeStreams } from "./fire-dashboard.ts"
 
 // A plain node:http server -- no new dependency, matching this repo's zero-runtime-deps
 // convention. Routes are namespaced under /api/retirement/ so a future /api/budget/... or
@@ -251,7 +252,9 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 // Function to require the dashboard config a generate/check run needs, throwing the same clear
 // messages the old CLI's usage() calls gave for a missing birth date/retirement age/planToAge.
-function requirePlan(fireConfig: FireConfig): { currentAge: number; retirementAges: number[]; planToAge: number } {
+function requirePlan(
+  fireConfig: FireConfig,
+): { currentAge: number; retirementAges: number[]; planToAge: number; incomeStreams: ReturnType<typeof retirementIncomeStreams> } {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
   }
@@ -262,7 +265,12 @@ function requirePlan(fireConfig: FireConfig): { currentAge: number; retirementAg
   if (fireConfig.dashboard.planToAge <= currentAge) {
     throw new Error(`Plan-to-age (${fireConfig.dashboard.planToAge}) must be greater than your current age (${currentAge}).`)
   }
-  return { currentAge, retirementAges: fireConfig.dashboard.retirementAges, planToAge: fireConfig.dashboard.planToAge }
+  return {
+    currentAge,
+    retirementAges: fireConfig.dashboard.retirementAges,
+    planToAge: fireConfig.dashboard.planToAge,
+    incomeStreams: retirementIncomeStreams(fireConfig.dashboard),
+  }
 }
 
 // Function to merge a partial account-edit body into that account's override (creating one if it
@@ -422,6 +430,33 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             throw new Error("planToAge must be a positive number.")
           }
           dashboard.planToAge = body.planToAge
+        }
+        if ("pensionStartAge" in body) {
+          if (body.pensionStartAge !== null && (typeof body.pensionStartAge !== "number" || body.pensionStartAge <= 0)) {
+            throw new Error("pensionStartAge must be a positive number or null.")
+          }
+          dashboard.pensionStartAge = body.pensionStartAge
+        }
+        if ("pensionMonthlyAmount" in body) {
+          if (body.pensionMonthlyAmount !== null && (typeof body.pensionMonthlyAmount !== "number" || body.pensionMonthlyAmount <= 0)) {
+            throw new Error("pensionMonthlyAmount must be a positive number or null.")
+          }
+          dashboard.pensionMonthlyAmount = body.pensionMonthlyAmount
+        }
+        if ("socialSecurityClaimingAge" in body) {
+          if (body.socialSecurityClaimingAge !== null && ![62, 67, 70].includes(body.socialSecurityClaimingAge as number)) {
+            throw new Error("socialSecurityClaimingAge must be 62, 67, 70, or null.")
+          }
+          dashboard.socialSecurityClaimingAge = body.socialSecurityClaimingAge as 62 | 67 | 70 | null
+        }
+        for (const field of ["socialSecurityMonthlyAt62", "socialSecurityMonthlyAt67", "socialSecurityMonthlyAt70"] as const) {
+          if (field in body) {
+            const value = body[field]
+            if (value !== null && (typeof value !== "number" || value <= 0)) {
+              throw new Error(`${field} must be a positive number or null.`)
+            }
+            dashboard[field] = value
+          }
         }
         writeFireConfig(configPath, { ...fireConfig, dashboard })
         sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))

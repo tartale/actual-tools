@@ -314,12 +314,29 @@ export interface FireAccountOverride {
   mortgageBalanceAsOf?: number
 }
 
+// Which of the three SSA-statement reference ages (the ones the statement itself reports a
+// payout for) a person actually plans to claim at.
+export type SocialSecurityClaimingAge = 62 | 67 | 70
+
 // The plan-wide inputs the app needs that aren't a per-account fact: your birth date, the
-// retirement age(s) to compare, and how long the plan should last.
+// retirement age(s) to compare, how long the plan should last, and the two guaranteed-income
+// sources (pension, Social Security) that reduce how much the portfolio itself needs to fund once
+// each starts. Both are optional and independent of each other and of account classification --
+// neither is tied to any one Actual account.
 export interface DashboardConfig {
   birthDate: string | null
   retirementAges: number[]
   planToAge: number
+  // Cents/mo, null until entered. A pension with no start age (or vice versa) isn't applied --
+  // see retirementIncomeStreams in fire-dashboard.ts.
+  pensionStartAge: number | null
+  pensionMonthlyAmount: number | null
+  // The three SSA-statement figures are kept independently of which age is actually claimed, so
+  // switching the plan (e.g. deciding to wait until 70) doesn't lose the other two numbers.
+  socialSecurityClaimingAge: SocialSecurityClaimingAge | null
+  socialSecurityMonthlyAt62: number | null
+  socialSecurityMonthlyAt67: number | null
+  socialSecurityMonthlyAt70: number | null
 }
 
 export interface FireConfig {
@@ -336,6 +353,12 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   birthDate: null,
   retirementAges: [],
   planToAge: DEFAULT_PLAN_TO_AGE,
+  pensionStartAge: null,
+  pensionMonthlyAmount: null,
+  socialSecurityClaimingAge: null,
+  socialSecurityMonthlyAt62: null,
+  socialSecurityMonthlyAt67: null,
+  socialSecurityMonthlyAt70: null,
 }
 
 export const EMPTY_FIRE_CONFIG: FireConfig = {
@@ -854,6 +877,21 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.planToAge !== undefined && (typeof dashboardSource.planToAge !== "number" || dashboardSource.planToAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.planToAge must be a positive number.`)
   }
+  if (dashboardSource.pensionStartAge != null && (typeof dashboardSource.pensionStartAge !== "number" || dashboardSource.pensionStartAge <= 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.pensionStartAge must be a positive number.`)
+  }
+  if (dashboardSource.pensionMonthlyAmount != null && (typeof dashboardSource.pensionMonthlyAmount !== "number" || dashboardSource.pensionMonthlyAmount <= 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.pensionMonthlyAmount must be a positive number.`)
+  }
+  if (dashboardSource.socialSecurityClaimingAge != null && ![62, 67, 70].includes(dashboardSource.socialSecurityClaimingAge)) {
+    throw new Error(`Invalid config in ${path}: dashboard.socialSecurityClaimingAge must be 62, 67, or 70.`)
+  }
+  for (const field of ["socialSecurityMonthlyAt62", "socialSecurityMonthlyAt67", "socialSecurityMonthlyAt70"] as const) {
+    const value = dashboardSource[field]
+    if (value != null && (typeof value !== "number" || value <= 0)) {
+      throw new Error(`Invalid config in ${path}: dashboard.${field} must be a positive number.`)
+    }
+  }
 
   const config: FireConfig = {
     version: 1,
@@ -862,6 +900,12 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       birthDate: dashboardSource.birthDate ?? DEFAULT_DASHBOARD_CONFIG.birthDate,
       retirementAges: dashboardSource.retirementAges ?? DEFAULT_DASHBOARD_CONFIG.retirementAges,
       planToAge: dashboardSource.planToAge ?? DEFAULT_DASHBOARD_CONFIG.planToAge,
+      pensionStartAge: dashboardSource.pensionStartAge ?? DEFAULT_DASHBOARD_CONFIG.pensionStartAge,
+      pensionMonthlyAmount: dashboardSource.pensionMonthlyAmount ?? DEFAULT_DASHBOARD_CONFIG.pensionMonthlyAmount,
+      socialSecurityClaimingAge: dashboardSource.socialSecurityClaimingAge ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityClaimingAge,
+      socialSecurityMonthlyAt62: dashboardSource.socialSecurityMonthlyAt62 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt62,
+      socialSecurityMonthlyAt67: dashboardSource.socialSecurityMonthlyAt67 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt67,
+      socialSecurityMonthlyAt70: dashboardSource.socialSecurityMonthlyAt70 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt70,
     },
   }
 

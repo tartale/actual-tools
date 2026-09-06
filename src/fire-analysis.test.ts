@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 import { bridgeFinding, calculateMortgagePayoff, detectCrossoverMismatch, detectPotDrift, simulateBridge, toBridgeAccounts } from "./fire-analysis.ts"
 import type { BridgeAccount } from "./fire-analysis.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
-import type { MonteCarloCardMeta } from "./fire-dashboard.ts"
+import type { MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 
 // Function to build a bridge account with inert defaults -- no growth, no contributions, no tax --
 // so each test only has to state the one dimension it is actually exercising.
@@ -88,6 +88,21 @@ describe("simulateBridge", () => {
     expect(result.nextUnlockAfterDepletion).toBe(59)
     expect(result.lockedAtDepletion).toBe(5000)
     expect(bridgeFinding(result, 100).level).toBe("fail")
+  })
+
+  it("nets a later-starting income stream out of spend before inflating, extending the runway", () => {
+    const withoutIncome = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
+    expect(withoutIncome.depletionAge).toBe(60)
+
+    const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 55, annualAmount: 50 }
+    const withIncome = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0, [pension])
+    expect(withIncome.depletionAge).toBe(65)
+  })
+
+  it("never withdraws (and so never depletes) once income alone covers spend", () => {
+    const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 50, annualAmount: 1000 }
+    const result = simulateBridge([bridgeAccount({ id: "a1", balance: 100 })], 50, 50, 100, 100, 0, [pension])
+    expect(result.depletionAge).toBeNull()
   })
 
   it("grosses withdrawals up for tax, shortening the runway", () => {

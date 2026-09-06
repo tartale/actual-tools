@@ -1,5 +1,5 @@
 import { portfolioAccounts } from "./fire-accounts.ts"
-import type { ClassifiedAccount, MonteCarloAllocationPreset, TaxTreatment } from "./fire-accounts.ts"
+import type { ClassifiedAccount, DashboardConfig, MonteCarloAllocationPreset, TaxTreatment } from "./fire-accounts.ts"
 
 // Builds an Actual-native dashboard JSON (net worth, spending, and a FIRE crossover projection)
 // from classified accounts and expense categories. Pure -- no API calls, no file I/O.
@@ -329,6 +329,40 @@ export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteC
   }
 }
 
+// A guaranteed income source that isn't a portfolio pot at all (a pension, Social Security) --
+// once it starts, it reduces how much the simulation needs to draw from the pots themselves,
+// rather than being modeled as its own pot with its own growth/access-age rules.
+export interface RetirementIncomeStream {
+  id: string
+  name: string
+  startAge: number
+  annualAmount: number
+}
+
+// Function to derive the plan's guaranteed-income streams from the dashboard config -- a pension
+// needs both a start age and an amount to count (an age with no amount, or vice versa, isn't a
+// real stream yet), and Social Security only counts once a claiming age is chosen AND that age's
+// own figure has actually been entered. Order doesn't matter here -- buildSpendingPhases sorts by
+// start age itself.
+export function retirementIncomeStreams(dashboard: Pick<DashboardConfig, "pensionStartAge" | "pensionMonthlyAmount" | "socialSecurityClaimingAge" | "socialSecurityMonthlyAt62" | "socialSecurityMonthlyAt67" | "socialSecurityMonthlyAt70">): RetirementIncomeStream[] {
+  const streams: RetirementIncomeStream[] = []
+  if (dashboard.pensionStartAge != null && dashboard.pensionMonthlyAmount != null) {
+    streams.push({ id: "pension", name: "Pension", startAge: dashboard.pensionStartAge, annualAmount: dashboard.pensionMonthlyAmount * 12 })
+  }
+  const socialSecurityMonthly =
+    dashboard.socialSecurityClaimingAge === 62
+      ? dashboard.socialSecurityMonthlyAt62
+      : dashboard.socialSecurityClaimingAge === 67
+        ? dashboard.socialSecurityMonthlyAt67
+        : dashboard.socialSecurityClaimingAge === 70
+          ? dashboard.socialSecurityMonthlyAt70
+          : null
+  if (dashboard.socialSecurityClaimingAge != null && socialSecurityMonthly != null) {
+    streams.push({ id: "social-security", name: "Social Security", startAge: dashboard.socialSecurityClaimingAge, annualAmount: socialSecurityMonthly * 12 })
+  }
+  return streams
+}
+
 // Function to build the plan's spending phases from a real trailing-spend figure -- the same
 // annual spend already computed for the crossover widget's console sanity check, not a separate
 // guess. A single spending phase's `fromAge` is a no-op in Actual's own simulation engine (its
@@ -336,14 +370,47 @@ export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteC
 // a future retirement age only has an effect if modeled as TWO phases: $0 while accumulating, then
 // the real spend once retirementAge is reached. Already retired (or retiring today) collapses back
 // to the single always-on phase.
-export function buildSpendingPhases(currentAge: number, retirementAge: number, annualSpendCents: number): MonteCarloSpendingPhaseMeta[] {
-  if (retirementAge <= currentAge) {
-    return [{ id: "retirement-spending", name: "Retirement spending", fromAge: null, annualWithdrawal: annualSpendCents }]
+//
+// incomeStreams (pension, Social Security -- see retirementIncomeStreams) layer in as additional
+// phases: each one still active at retirement folds straight into the base retirement-spending
+// number (it was already reducing the draw from day one), while one that starts later gets its
+// own phase stepping the withdrawal down further from that age on. Withdrawal is floored at 0 --
+// guaranteed income exceeding spend doesn't mean the portfolio owes the plan money.
+export function buildSpendingPhases(
+  currentAge: number,
+  retirementAge: number,
+  annualSpendCents: number,
+  incomeStreams: readonly RetirementIncomeStream[] = [],
+): MonteCarloSpendingPhaseMeta[] {
+  const alreadyRetired = retirementAge <= currentAge
+  const effectiveStart = Math.max(retirementAge, currentAge)
+  const phases: MonteCarloSpendingPhaseMeta[] = []
+  if (!alreadyRetired) {
+    phases.push({ id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 })
   }
-  return [
-    { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
-    { id: "retirement-spending", name: "Retirement spending", fromAge: retirementAge, annualWithdrawal: annualSpendCents },
-  ]
+
+  const alreadyActive = incomeStreams.filter((stream) => stream.startAge <= effectiveStart)
+  const later = [...incomeStreams.filter((stream) => stream.startAge > effectiveStart)].sort((a, b) => a.startAge - b.startAge)
+
+  let cumulativeIncome = alreadyActive.reduce((sum, stream) => sum + stream.annualAmount, 0)
+  phases.push({
+    id: "retirement-spending",
+    name: "Retirement spending",
+    fromAge: alreadyRetired ? null : retirementAge,
+    annualWithdrawal: Math.max(0, annualSpendCents - cumulativeIncome),
+  })
+
+  for (const stream of later) {
+    cumulativeIncome += stream.annualAmount
+    phases.push({
+      id: `income-${stream.id}`,
+      name: `After ${stream.name}`,
+      fromAge: stream.startAge,
+      annualWithdrawal: Math.max(0, annualSpendCents - cumulativeIncome),
+    })
+  }
+
+  return phases
 }
 
 export const MONTE_CARLO_WIDGET_HEIGHT = 4
@@ -414,6 +481,7 @@ export function buildMonteCarloWidget(
   annualSpendCents: number,
   assumptions: MonteCarloAssumptions,
   name = "Monte Carlo",
+  incomeStreams: readonly RetirementIncomeStream[] = [],
 ): ExportImportDashboardWidget<MonteCarloCardMeta> {
   const eligibleAccounts = portfolioAccounts(accounts)
   const missingPreset = eligibleAccounts.find((account) => account.allocationPreset === null)
@@ -438,7 +506,7 @@ export function buildMonteCarloWidget(
       returnModel: assumptions.returnModel,
       withdrawalRule: assumptions.withdrawalRule,
       minimumWithdrawal: assumptions.minimumWithdrawal,
-      spendingPhases: buildSpendingPhases(currentAge, retirementAge, annualSpendCents),
+      spendingPhases: buildSpendingPhases(currentAge, retirementAge, annualSpendCents, incomeStreams),
       contributions: buildContributions(eligibleAccounts),
       inflationMean: assumptions.inflationMean,
       inflationStdDev: assumptions.inflationStdDev,
@@ -466,6 +534,7 @@ export function buildMonteCarloWidgets(
   targetAge: number,
   annualSpendCents: number,
   assumptions: MonteCarloAssumptions,
+  incomeStreams: readonly RetirementIncomeStream[] = [],
 ): ExportImportDashboardWidget<MonteCarloCardMeta>[] {
   return retirementAges.map((retirementAge, index) => {
     const name = retirementAges.length > 1 ? `Monte Carlo — Retire at ${retirementAge}` : "Monte Carlo"
@@ -479,6 +548,7 @@ export function buildMonteCarloWidgets(
       annualSpendCents,
       assumptions,
       name,
+      incomeStreams,
     )
   })
 }
@@ -534,14 +604,18 @@ function mergePots(generatedPots: MonteCarloPotMeta[], existingPotsRaw: unknown)
 }
 
 // The spending phase ids this module generates (see buildSpendingPhases) -- these are always fully
-// refreshed (fromAge/annualWithdrawal come straight from the current retirement age and trailing
-// spend), so a stale one (e.g. "pre-retirement" left over from a since-removed future retirement
-// age) is dropped rather than carried forward. Any other phase id is untouched, hand-added content.
-const OWNED_SPENDING_PHASE_IDS = new Set(["pre-retirement", "retirement-spending"])
+// refreshed (fromAge/annualWithdrawal come straight from the current retirement age, trailing
+// spend, and pension/Social Security config), so a stale one (e.g. "pre-retirement" left over from
+// a since-removed future retirement age, or "income-pension" after the pension is cleared) is
+// dropped rather than carried forward. "income-*" is a prefix, not a fixed set, since which income
+// streams exist varies run to run. Any other phase id is untouched, hand-added content.
+function isOwnedSpendingPhaseId(id: unknown): boolean {
+  return id === "pre-retirement" || id === "retirement-spending" || (typeof id === "string" && id.startsWith("income-"))
+}
 
 function mergeSpendingPhases(generatedPhases: MonteCarloSpendingPhaseMeta[], existingPhasesRaw: unknown): MonteCarloSpendingPhaseMeta[] {
   const existingPhases = Array.isArray(existingPhasesRaw) ? (existingPhasesRaw as MonteCarloSpendingPhaseMeta[]) : []
-  const extraPhases = existingPhases.filter((phase) => !OWNED_SPENDING_PHASE_IDS.has(phase?.id))
+  const extraPhases = existingPhases.filter((phase) => !isOwnedSpendingPhaseId(phase?.id))
   return [...generatedPhases, ...extraPhases]
 }
 

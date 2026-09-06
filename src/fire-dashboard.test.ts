@@ -12,10 +12,12 @@ import {
   effectiveAccessAge,
   mergeGeneratedDashboard,
   portfolioAccountIds,
+  retirementIncomeStreams,
   totalMonthlyContribution,
 } from "./fire-dashboard.ts"
-import type { CrossoverAssumptions, ExistingDashboard, MonteCarloAssumptions } from "./fire-dashboard.ts"
-import type { ClassifiedAccount } from "./fire-accounts.ts"
+import type { CrossoverAssumptions, ExistingDashboard, MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { ClassifiedAccount, DashboardConfig } from "./fire-accounts.ts"
+import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
 
 // Function to build a classified account with sensible defaults for the fields a test ignores
 function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount, "id" | "category">): ClassifiedAccount {
@@ -252,6 +254,75 @@ describe("buildSpendingPhases", () => {
       { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
       { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
     ])
+  })
+
+  it("folds an income stream already active at retirement straight into the base spending figure", () => {
+    const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 60, annualAmount: 120000 }
+    expect(buildSpendingPhases(45, 60, 500000, [pension])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 380000 },
+    ])
+  })
+
+  it("adds a stepped-down phase for an income stream starting after retirement", () => {
+    const socialSecurity: RetirementIncomeStream = { id: "social-security", name: "Social Security", startAge: 67, annualAmount: 240000 }
+    expect(buildSpendingPhases(45, 60, 500000, [socialSecurity])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
+      { id: "income-social-security", name: "After Social Security", fromAge: 67, annualWithdrawal: 260000 },
+    ])
+  })
+
+  it("stacks multiple later streams cumulatively, in start-age order regardless of input order", () => {
+    const socialSecurity: RetirementIncomeStream = { id: "social-security", name: "Social Security", startAge: 67, annualAmount: 240000 }
+    const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 63, annualAmount: 100000 }
+    expect(buildSpendingPhases(45, 60, 500000, [socialSecurity, pension])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
+      { id: "income-pension", name: "After Pension", fromAge: 63, annualWithdrawal: 400000 },
+      { id: "income-social-security", name: "After Social Security", fromAge: 67, annualWithdrawal: 160000 },
+    ])
+  })
+
+  it("floors the withdrawal at 0 rather than going negative when income exceeds spend", () => {
+    const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 60, annualAmount: 900000 }
+    expect(buildSpendingPhases(45, 60, 500000, [pension])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 0 },
+    ])
+  })
+})
+
+describe("retirementIncomeStreams", () => {
+  const base: Pick<
+    DashboardConfig,
+    "pensionStartAge" | "pensionMonthlyAmount" | "socialSecurityClaimingAge" | "socialSecurityMonthlyAt62" | "socialSecurityMonthlyAt67" | "socialSecurityMonthlyAt70"
+  > = DEFAULT_DASHBOARD_CONFIG
+
+  it("returns nothing when nothing is configured", () => {
+    expect(retirementIncomeStreams(base)).toEqual([])
+  })
+
+  it("requires both a pension start age and an amount before counting it", () => {
+    expect(retirementIncomeStreams({ ...base, pensionStartAge: 60 })).toEqual([])
+    expect(retirementIncomeStreams({ ...base, pensionMonthlyAmount: 100000 })).toEqual([])
+    expect(retirementIncomeStreams({ ...base, pensionStartAge: 60, pensionMonthlyAmount: 100000 })).toEqual([
+      { id: "pension", name: "Pension", startAge: 60, annualAmount: 1200000 },
+    ])
+  })
+
+  it("uses whichever of the three SSA figures matches the chosen claiming age", () => {
+    const withAllThree = { ...base, socialSecurityMonthlyAt62: 180000, socialSecurityMonthlyAt67: 240000, socialSecurityMonthlyAt70: 300000 }
+    expect(retirementIncomeStreams({ ...withAllThree, socialSecurityClaimingAge: 62 })).toEqual([
+      { id: "social-security", name: "Social Security", startAge: 62, annualAmount: 2160000 },
+    ])
+    expect(retirementIncomeStreams({ ...withAllThree, socialSecurityClaimingAge: 70 })).toEqual([
+      { id: "social-security", name: "Social Security", startAge: 70, annualAmount: 3600000 },
+    ])
+  })
+
+  it("doesn't count Social Security when a claiming age is set but that age's own figure is missing", () => {
+    expect(retirementIncomeStreams({ ...base, socialSecurityClaimingAge: 67, socialSecurityMonthlyAt62: 180000 })).toEqual([])
   })
 })
 

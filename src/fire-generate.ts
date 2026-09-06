@@ -22,7 +22,7 @@ import {
   portfolioAccountIds,
   totalMonthlyContribution,
 } from "./fire-dashboard.ts"
-import type { CrossoverCardMeta, ExistingDashboard, MonteCarloCardMeta } from "./fire-dashboard.ts"
+import type { CrossoverCardMeta, ExistingDashboard, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 import { bridgeFinding, detectCrossoverMismatch, detectPotDrift, simulateBridge, toBridgeAccounts } from "./fire-analysis.ts"
 import type { Finding } from "./fire-analysis.ts"
 
@@ -133,6 +133,7 @@ export interface GenerateOptions {
   currentAge: number
   retirementAges: readonly number[]
   planToAge: number
+  incomeStreams: readonly RetirementIncomeStream[]
 }
 
 export interface RuleOf55Boost {
@@ -198,7 +199,17 @@ export async function generateDashboard(
 
   const generated = buildFireDashboard(expenseCategoryIds, portfolioIds, DEFAULT_CROSSOVER_ASSUMPTIONS, totalMonthlyContribution(accounts))
   generated.widgets.push(
-    ...buildMonteCarloWidgets(0, 6, accounts, options.currentAge, options.retirementAges, options.planToAge, annualSpend, DEFAULT_MONTE_CARLO_ASSUMPTIONS),
+    ...buildMonteCarloWidgets(
+      0,
+      6,
+      accounts,
+      options.currentAge,
+      options.retirementAges,
+      options.planToAge,
+      annualSpend,
+      DEFAULT_MONTE_CARLO_ASSUMPTIONS,
+      options.incomeStreams,
+    ),
   )
 
   const liveExisting = await fetchLiveExistingDashboard(actualConfig)
@@ -230,6 +241,7 @@ export interface CheckOptions {
   // Used only when no crossover widget exists yet to derive real numbers from instead.
   fallbackAnnualSpend: number
   fallbackInflationMean: number
+  incomeStreams: readonly RetirementIncomeStream[]
 }
 
 export interface AccountContribution {
@@ -302,7 +314,10 @@ export async function checkDashboard(
   const balances = new Map(balanceEntries)
   const bridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount)
   const bridgeFindings = options.retirementAges.map((retirementAge) =>
-    bridgeFinding(simulateBridge(bridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean), options.planToAge),
+    bridgeFinding(
+      simulateBridge(bridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, options.incomeStreams),
+      options.planToAge,
+    ),
   )
 
   return {

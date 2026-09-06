@@ -32,6 +32,38 @@ function usd(cents) {
   return sign + "$" + (Math.abs(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+// Wraps a read-only dollar figure so privacy mode (see the eye toggle) can blur it without
+// touching the ones still being edited (plain <input> values are never wrapped in this).
+function moneySpan(cents) {
+  return `<span class="num money">${usd(cents)}</span>`
+}
+
+// A dollar <input> stores/shows a comma-formatted string ("1,500.00") at rest, since a native
+// type="number" input can never render commas -- these are type="text" instead. Strips any
+// currency symbol/commas/whitespace before parsing, so pasting a formatted figure back in (or
+// leaving one from the last render) still works.
+function parseMoneyInputCents(text) {
+  const cleaned = text.replace(/[^0-9.-]/g, "")
+  if (cleaned === "" || cleaned === "-") return null
+  const dollars = parseFloat(cleaned)
+  return Number.isFinite(dollars) ? Math.round(dollars * 100) : null
+}
+function formatMoneyInputValue(cents) {
+  return cents == null ? "" : (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+// Function to wire the focus/blur pair every dollar <input> needs: plain digits while editing (so
+// typing isn't fighting inserted commas), reformatted with commas the moment it's not.
+function attachMoneyFormatting(input) {
+  if (!input) return
+  input.addEventListener("focus", () => {
+    const cents = parseMoneyInputCents(input.value)
+    input.value = cents == null ? "" : (cents / 100).toString()
+  })
+  input.addEventListener("blur", () => {
+    input.value = formatMoneyInputValue(parseMoneyInputCents(input.value))
+  })
+}
+
 function showError(message) {
   const el = document.getElementById("topError")
   el.textContent = message
@@ -95,12 +127,13 @@ function render() {
   if (!STATE) return
   renderSummary()
   renderPlan()
+  renderIncome()
   renderAccounts()
 }
 
 function renderSummary() {
   const portfolioTotal = STATE.accounts.filter((a) => a.isPortfolio).reduce((sum, a) => sum + a.balance, 0)
-  document.getElementById("sumPortfolio").textContent = usd(portfolioTotal)
+  document.getElementById("sumPortfolio").innerHTML = moneySpan(portfolioTotal)
   document.getElementById("sumAge").textContent = STATE.currentAge ?? "—"
   document.getElementById("sumAges").textContent = STATE.dashboard.retirementAges.length ? STATE.dashboard.retirementAges.join(", ") : "—"
   document.getElementById("sumPlanToAge").textContent = STATE.dashboard.planToAge
@@ -117,6 +150,27 @@ function renderPlan() {
   if (document.activeElement !== agesInput) agesInput.value = STATE.dashboard.retirementAges.join(", ")
   if (document.activeElement !== planInput) planInput.value = STATE.dashboard.planToAge
   document.getElementById("ageDerived").textContent = STATE.currentAge ?? "—"
+}
+
+// Renders the optional Pension/Social Security boxes and attaches their money-field formatting --
+// these patch the same /api/retirement/plan route as birth date/retirement ages, since they're
+// plan-wide facts, not tied to any one Actual account.
+function renderIncome() {
+  const d = STATE.dashboard
+  const fields = [
+    ["pensionStartAge", d.pensionStartAge ?? ""],
+    ["ss62", formatMoneyInputValue(d.socialSecurityMonthlyAt62)],
+    ["ss67", formatMoneyInputValue(d.socialSecurityMonthlyAt67)],
+    ["ss70", formatMoneyInputValue(d.socialSecurityMonthlyAt70)],
+  ]
+  fields.forEach(([id, value]) => {
+    const el = document.getElementById(id)
+    if (document.activeElement !== el) el.value = value
+  })
+  const pensionAmountEl = document.getElementById("pensionMonthlyAmount")
+  if (document.activeElement !== pensionAmountEl) pensionAmountEl.value = formatMoneyInputValue(d.pensionMonthlyAmount)
+  const claimSelect = document.getElementById("ssClaimAge")
+  if (document.activeElement !== claimSelect) claimSelect.value = d.socialSecurityClaimingAge == null ? "" : String(d.socialSecurityClaimingAge)
 }
 
 function parseRetirementAges(text) {
@@ -153,9 +207,9 @@ function renderAccounts() {
     const ruleOf55Note = account.ruleOf55SeparationAge ? ` — Rule of 55 at ${account.ruleOf55SeparationAge}` : ""
 
     const showContribution = typeInfo.contributionAllowed
-    const contributionValue = account.monthlyContribution != null ? (account.monthlyContribution / 100).toString() : ""
+    const contributionValue = formatMoneyInputValue(account.monthlyContribution)
     const maxCaption = account.monthlyContributionIsMax
-      ? `<div class="derived">≈ ${usd(account.monthlyContribution ?? 0)}/mo — remainder of the ${typeInfo.limitGroup} limit after other accounts</div>`
+      ? `<div class="derived">≈ ${moneySpan(account.monthlyContribution ?? 0)}/mo — remainder of the ${typeInfo.limitGroup} limit after other accounts</div>`
       : ""
 
     const isRuleOf55Active = account.ruleOf55SeparationAge != null
@@ -165,7 +219,7 @@ function renderAccounts() {
 
     const employer = account.employerContribution
     const employerNote = employer
-      ? `<div class="derived${employer.exceedsLimit ? " warn-text" : ""}">Employer ≈ ${usd(employer.employerAnnualContribution)}/yr — combined with yours: ${usd(employer.combinedAnnual)}/yr of a ${usd(employer.combinedLimit)}/yr IRC §415(c) limit${employer.exceedsLimit ? " (exceeds it)" : ""}</div>`
+      ? `<div class="derived${employer.exceedsLimit ? " warn-text" : ""}">Employer ≈ ${moneySpan(employer.employerAnnualContribution)}/yr — combined with yours: ${moneySpan(employer.combinedAnnual)}/yr of a ${moneySpan(employer.combinedLimit)}/yr IRC §415(c) limit${employer.exceedsLimit ? " (exceeds it)" : ""}</div>`
       : ""
 
     const payoff = account.mortgagePayoff
@@ -178,7 +232,7 @@ function renderAccounts() {
     row.innerHTML = `
       <div class="acct-id">
         <div class="name">${escapeHtml(account.name)}</div>
-        <div class="balance num">${usd(account.balance)}</div>
+        <div class="balance">${moneySpan(account.balance)}</div>
         <div class="cat-note">${accessNote}${ruleOf55Note}</div>
       </div>
       <div class="acct-fields">
@@ -186,7 +240,7 @@ function renderAccounts() {
           <label>Account type</label>
           <select data-field="type">${typeOptions}</select>
         </div>
-        <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
+        <div class="field wide ${typeInfo.isPortfolio ? "" : "hidden"}">
           <label>Allocation</label>
           <select data-field="allocationPreset">${allocOptions}</select>
         </div>
@@ -194,7 +248,7 @@ function renderAccounts() {
           <label>Monthly contribution</label>
           <div class="contrib-row">
             <div class="input-affix prefix-dollar">
-              <input type="number" min="0" step="0.01" data-field="monthlyContribution" value="${contributionValue}" placeholder="0" ${account.monthlyContributionIsMax || contributionDisabled ? "disabled" : ""}>
+              <input type="text" inputmode="decimal" data-field="monthlyContribution" value="${contributionValue}" placeholder="0" ${account.monthlyContributionIsMax || contributionDisabled ? "disabled" : ""}>
             </div>
             ${typeInfo.limitGroup ? `<button type="button" class="toggle ${account.monthlyContributionIsMax ? "on" : ""}" data-toggle-max ${contributionDisabled ? "disabled" : ""}><span class="dot"></span>Max</button>` : ""}
           </div>
@@ -212,7 +266,7 @@ function renderAccounts() {
           <div class="field">
             <label>Annual salary</label>
             <div class="input-affix prefix-dollar">
-              <input type="number" min="0" step="0.01" data-field="annualSalary" value="${account.annualSalary != null ? (account.annualSalary / 100) : ""}" placeholder="not entered" ${isRuleOf55Active ? "" : "disabled"}>
+              <input type="text" inputmode="decimal" data-field="annualSalary" value="${formatMoneyInputValue(account.annualSalary)}" placeholder="not entered" ${isRuleOf55Active ? "" : "disabled"}>
             </div>
           </div>
           <div class="field">
@@ -247,7 +301,7 @@ function renderAccounts() {
         <div class="field">
           <label>Monthly payment</label>
           <div class="input-affix prefix-dollar">
-            <input type="number" min="0" step="0.01" data-field="mortgageMonthlyPayment" value="${account.mortgageMonthlyPayment != null ? (account.mortgageMonthlyPayment / 100) : ""}" placeholder="not entered">
+            <input type="text" inputmode="decimal" data-field="mortgageMonthlyPayment" value="${formatMoneyInputValue(account.mortgageMonthlyPayment)}" placeholder="not entered">
           </div>
         </div>
         <div class="field">
@@ -257,12 +311,12 @@ function renderAccounts() {
         <div class="field">
           <label>Balance on that date</label>
           <div class="input-affix prefix-dollar">
-            <input type="number" min="0" step="0.01" data-field="mortgageBalanceAsOf" value="${account.mortgageBalanceAsOf != null ? (account.mortgageBalanceAsOf / 100) : ""}" placeholder="not entered">
+            <input type="text" inputmode="decimal" data-field="mortgageBalanceAsOf" value="${formatMoneyInputValue(account.mortgageBalanceAsOf)}" placeholder="not entered">
           </div>
         </div>
         ${payoffNote}` : ""}
         ${!typeInfo.isPortfolio ? `<div class="no-fields-note">Not part of the investable portfolio — no allocation or contribution to set.</div>` : ""}
-        ${!typeInfo.isPortfolio ? "" : account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>` : (showContribution ? `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>` : "")}
+        ${!typeInfo.isPortfolio ? "" : account.limitLines.length ? `<div class="limit-lines money">${account.limitLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>` : (showContribution ? `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>` : "")}
       </div>
     `
 
@@ -273,9 +327,9 @@ function renderAccounts() {
     }
     const contribInput = row.querySelector("input[data-field='monthlyContribution']")
     if (contribInput) {
+      attachMoneyFormatting(contribInput)
       contribInput.addEventListener("change", (e) => {
-        const dollars = e.target.value === "" ? null : parseFloat(e.target.value)
-        runExclusive(() => patchAccount(account.id, { monthlyContribution: dollars === null ? null : Math.round(dollars * 100) }))
+        runExclusive(() => patchAccount(account.id, { monthlyContribution: parseMoneyInputCents(e.target.value) }))
       })
     }
     const ruleActiveCheckbox = row.querySelector("[data-field='ruleOf55Active']")
@@ -293,9 +347,9 @@ function renderAccounts() {
     }
     const salaryInput = row.querySelector("input[data-field='annualSalary']")
     if (salaryInput) {
+      attachMoneyFormatting(salaryInput)
       salaryInput.addEventListener("change", (e) => {
-        const dollars = e.target.value === "" ? null : parseFloat(e.target.value)
-        runExclusive(() => patchAccount(account.id, { annualSalary: dollars === null ? null : Math.round(dollars * 100) }))
+        runExclusive(() => patchAccount(account.id, { annualSalary: parseMoneyInputCents(e.target.value) }))
       })
     }
     const matchRateInput = row.querySelector("input[data-field='employerMatchRate']")
@@ -326,9 +380,9 @@ function renderAccounts() {
     }
     const mortgagePaymentInput = row.querySelector("input[data-field='mortgageMonthlyPayment']")
     if (mortgagePaymentInput) {
+      attachMoneyFormatting(mortgagePaymentInput)
       mortgagePaymentInput.addEventListener("change", (e) => {
-        const dollars = e.target.value === "" ? null : parseFloat(e.target.value)
-        runExclusive(() => patchAccount(account.id, { mortgageMonthlyPayment: dollars === null ? null : Math.round(dollars * 100) }))
+        runExclusive(() => patchAccount(account.id, { mortgageMonthlyPayment: parseMoneyInputCents(e.target.value) }))
       })
     }
     const mortgageDateInput = row.querySelector("input[data-field='mortgageBalanceAsOfDate']")
@@ -339,9 +393,9 @@ function renderAccounts() {
     }
     const mortgageBalanceInput = row.querySelector("input[data-field='mortgageBalanceAsOf']")
     if (mortgageBalanceInput) {
+      attachMoneyFormatting(mortgageBalanceInput)
       mortgageBalanceInput.addEventListener("change", (e) => {
-        const dollars = e.target.value === "" ? null : parseFloat(e.target.value)
-        runExclusive(() => patchAccount(account.id, { mortgageBalanceAsOf: dollars === null ? null : Math.round(dollars * 100) }))
+        runExclusive(() => patchAccount(account.id, { mortgageBalanceAsOf: parseMoneyInputCents(e.target.value) }))
       })
     }
     const maxToggle = row.querySelector("[data-toggle-max]")
@@ -439,8 +493,8 @@ async function runGenerate() {
       .map((b) => `<div class="line boost">Rule of 55 applied: ${escapeHtml(b.accountName)} accessible from age ${b.to} (was ${b.from ?? "none"}).</div>`)
       .join("")
     result.innerHTML = `
-      <div class="line">Portfolio accounts (${r.portfolioAccountCount}): current total <span class="num">${usd(r.portfolioTotal)}</span></div>
-      <div class="line">Expense categories (${r.expenseCategoryCount}): trailing 12-month spend <span class="num">${usd(r.annualSpend)}</span>/yr</div>
+      <div class="line">Portfolio accounts (${r.portfolioAccountCount}): current total ${moneySpan(r.portfolioTotal)}</div>
+      <div class="line">Expense categories (${r.expenseCategoryCount}): trailing 12-month spend ${moneySpan(r.annualSpend)}/yr</div>
       ${boostLines}
       <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span> (${r.widgetTypes.length} widgets: ${r.widgetTypes.join(", ")}).${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>
       <div class="import-steps">
@@ -469,6 +523,31 @@ document.getElementById("retireAges").addEventListener("change", (e) => {
   }
 })
 document.getElementById("planToAge").addEventListener("change", (e) => runExclusive(() => patchPlan({ planToAge: parseFloat(e.target.value) }, "savedPlan")))
+
+document.getElementById("pensionStartAge").addEventListener("change", (e) => {
+  const age = e.target.value === "" ? null : parseFloat(e.target.value)
+  runExclusive(() => patchPlan({ pensionStartAge: age === null || age <= 0 ? null : age }, "savedIncome"))
+})
+const pensionAmountInput = document.getElementById("pensionMonthlyAmount")
+attachMoneyFormatting(pensionAmountInput)
+pensionAmountInput.addEventListener("change", (e) => {
+  runExclusive(() => patchPlan({ pensionMonthlyAmount: parseMoneyInputCents(e.target.value) }, "savedIncome"))
+})
+;[
+  ["ss62", "socialSecurityMonthlyAt62"],
+  ["ss67", "socialSecurityMonthlyAt67"],
+  ["ss70", "socialSecurityMonthlyAt70"],
+].forEach(([id, field]) => {
+  const input = document.getElementById(id)
+  attachMoneyFormatting(input)
+  input.addEventListener("change", (e) => {
+    runExclusive(() => patchPlan({ [field]: parseMoneyInputCents(e.target.value) }, "savedIncome"))
+  })
+})
+document.getElementById("ssClaimAge").addEventListener("change", (e) => {
+  runExclusive(() => patchPlan({ socialSecurityClaimingAge: e.target.value === "" ? null : parseInt(e.target.value, 10) }, "savedIncome"))
+})
+
 document.getElementById("generateBtn").addEventListener("click", runGenerate)
 document.getElementById("refreshAnalysisBtn").addEventListener("click", runCheck)
 
@@ -481,5 +560,30 @@ document.querySelectorAll(".tab").forEach((tab) => {
     if (tab.dataset.tab === "analyze") runCheck()
   })
 })
+
+// Privacy mode -- an Actual-style eye toggle that blurs dollar figures (anything wrapped in
+// moneySpan) without touching labels, ages, or percentages. Persisted per-browser in
+// localStorage, same as any other per-viewer display preference -- never sent to the server,
+// since it's not something to share across devices or people looking at the same instance.
+function applyPrivacyMode(active) {
+  document.body.classList.toggle("privacy", active)
+  const btn = document.getElementById("privacyToggle")
+  if (btn) btn.setAttribute("aria-pressed", String(active))
+}
+document.getElementById("privacyToggle").addEventListener("click", () => {
+  const active = !document.body.classList.contains("privacy")
+  applyPrivacyMode(active)
+  try {
+    localStorage.setItem("privacyMode", active ? "1" : "0")
+  } catch {
+    // Private browsing / storage disabled -- the toggle still works for this page view, it just
+    // won't be remembered next time.
+  }
+})
+try {
+  applyPrivacyMode(localStorage.getItem("privacyMode") === "1")
+} catch {
+  applyPrivacyMode(false)
+}
 
 loadState()

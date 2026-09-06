@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { startAppServer } from "./app-server.ts"
 import type { RunningServer, StateResponse } from "./app-server.ts"
 import type { ActualConfig } from "./actual-helpers.ts"
+import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
 import type { CheckResult, GenerateResult } from "./fire-generate.ts"
 
 interface ErrorBody {
@@ -99,7 +100,7 @@ describe("GET /api/retirement/state", () => {
     const res = await fetch(`${url}api/retirement/state`)
     expect(res.status).toBe(200)
     const body = await readJson<StateResponse>(res)
-    expect(body.dashboard).toEqual({ birthDate: null, retirementAges: [], planToAge: 100 })
+    expect(body.dashboard).toEqual(DEFAULT_DASHBOARD_CONFIG)
     expect(body.currentAge).toBeNull()
     expect(body.accounts).toHaveLength(1)
     expect(body.accounts[0]).toMatchObject({ id: "a1", type: "traditional-401k", isPortfolio: true })

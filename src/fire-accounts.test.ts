@@ -13,6 +13,7 @@ import {
   combinedAnnualAdditionsLimit,
   computeEmployerContribution,
   contributionLimitLines,
+  DEFAULT_DASHBOARD_CONFIG,
   DEFAULT_PLAN_TO_AGE,
   employerContributionSummary,
   findOverride,
@@ -47,7 +48,7 @@ function fireConfig(accounts: FireConfig["accounts"]): FireConfig {
   return {
     version: 1,
     accounts,
-    dashboard: { birthDate: null, retirementAges: [], planToAge: DEFAULT_PLAN_TO_AGE },
+    dashboard: { ...DEFAULT_DASHBOARD_CONFIG, planToAge: DEFAULT_PLAN_TO_AGE },
   }
 }
 
@@ -367,7 +368,7 @@ describe("loadFireConfig", () => {
     const oldFlatShape = { version: 1 as const, accounts: [], birthDate: "1976-07-31", retirementAges: [55, 60], planToAge: 95 }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(oldFlatShape))
     const { config } = loadFireConfig("/fake/path")
-    expect(config.dashboard).toEqual({ birthDate: "1976-07-31", retirementAges: [55, 60], planToAge: 95 })
+    expect(config.dashboard).toEqual({ ...DEFAULT_DASHBOARD_CONFIG, birthDate: "1976-07-31", retirementAges: [55, 60], planToAge: 95 })
   })
 
   it("prefers the new dashboard section over stale flat top-level fields when both are present", () => {

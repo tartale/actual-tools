@@ -2,7 +2,7 @@ import { addMonthsToDate, formatUsd } from "./actual-helpers.ts"
 import { isPortfolioCategory } from "./fire-accounts.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import { ALLOCATION_PRESET_RETURNS, WITHDRAWAL_TAX_RATES, effectiveAccessAge } from "./fire-dashboard.ts"
-import type { CrossoverCardMeta, MonteCarloCardMeta } from "./fire-dashboard.ts"
+import type { CrossoverCardMeta, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 
 export type FindingLevel = "fail" | "warn" | "info" | "ok"
 
@@ -102,6 +102,7 @@ export function simulateBridge(
   planToAge: number,
   annualSpend: number,
   inflationMean: number,
+  incomeStreams: readonly RetirementIncomeStream[] = [],
 ): BridgeResult {
   const balances = accounts.map((account) => account.balance)
   const isAccessible = (account: BridgeAccount, age: number): boolean => account.accessAge == null || age >= account.accessAge
@@ -140,7 +141,13 @@ export function simulateBridge(
         balances[index] = (balances[index] as number) + account.annualContribution
       })
     } else {
-      const spend = annualSpend * Math.pow(1 + inflationMean, age - currentAge)
+      // Pension/Social Security are entered as today's-dollars figures, same as annualSpend, so
+      // the offset is netted out before inflating the result rather than after -- keeps guaranteed
+      // income growing in step with spend under this same inflation assumption, rather than fixed
+      // in nominal terms and shrinking in real value every year.
+      const incomeAtAge = incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount, 0)
+      const netAnnualSpend = Math.max(0, annualSpend - incomeAtAge)
+      const spend = netAnnualSpend * Math.pow(1 + inflationMean, age - currentAge)
       const reachable = accounts.map((account, index) => index).filter((index) => isAccessible(accounts[index] as BridgeAccount, age))
       const reachableTotal = reachable.reduce((total, index) => total + (balances[index] as number), 0)
       if (reachableTotal <= FUNDING_TOLERANCE_CENTS) {
