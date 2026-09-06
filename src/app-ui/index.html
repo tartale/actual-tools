@@ -81,7 +81,7 @@
           </div>
           <div class="card-body live-settings-body">
             <div class="card-head" style="padding:0;border:none;">
-              <h3>Owned by the Actual dashboard</h3>
+              <h3>Configured in the Actual Dashboard</h3>
               <button type="button" class="btn secondary" id="refreshLiveSettingsBtn">Refresh</button>
             </div>
             <div id="liveSettings"><div class="empty-note">Loading…</div></div>
@@ -94,11 +94,12 @@
             <span class="hint">Pinned values apply to every retirement-age comparison<span class="saved-flag" id="savedSimSettings">saved</span></span>
           </div>
           <div class="card-body">
+            <div class="derived" style="margin-top:0;margin-bottom:10px;">Leave a field empty to let Actual manage it per widget as usual. To pin one, copy the value currently shown under "Configured in the Actual Dashboard" above, or set your own — every retirement-age comparison will then use exactly that value.</div>
             <div class="income-grid">
               <div class="field">
                 <label for="mcWithdrawalStrategy">Withdrawal strategy</label>
                 <select id="mcWithdrawalStrategy">
-                  <option value="">Not pinned</option>
+                  <option value="">not entered</option>
                   <option value="proportional">Proportional</option>
                   <option value="sequential">Sequential</option>
                   <option value="best-performer">Best performer</option>
@@ -108,7 +109,7 @@
               <div class="field">
                 <label for="mcReturnModel">Return model</label>
                 <select id="mcReturnModel">
-                  <option value="">Not pinned</option>
+                  <option value="">not entered</option>
                   <option value="normal">Normal</option>
                   <option value="historical-bootstrap">Historical bootstrap</option>
                   <option value="historical-sequence">Historical sequence</option>
@@ -116,19 +117,19 @@
               </div>
               <div class="field">
                 <label for="mcInflationMean">Inflation (mean)</label>
-                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="mcInflationMean" placeholder="not pinned"></div>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="mcInflationMean" placeholder="not entered"></div>
               </div>
               <div class="field">
                 <label for="mcInflationStdDev">Inflation (std dev)</label>
-                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="mcInflationStdDev" placeholder="not pinned"></div>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="mcInflationStdDev" placeholder="not entered"></div>
               </div>
               <div class="field">
                 <label for="mcMinimumWithdrawal">Minimum withdrawal</label>
-                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="mcMinimumWithdrawal" placeholder="not pinned"></div>
+                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="mcMinimumWithdrawal" placeholder="not entered"></div>
               </div>
               <div class="field">
                 <label for="mcSimulationCount">Simulation count</label>
-                <input type="number" min="1" step="1" id="mcSimulationCount" placeholder="not pinned">
+                <input type="number" min="1" step="1" id="mcSimulationCount" placeholder="not entered">
               </div>
             </div>
             <div class="derived" style="margin-top:10px;">Withdrawal rule and tax bands stay Actual-UI-only for now — see the values above.</div>

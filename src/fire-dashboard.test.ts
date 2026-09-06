@@ -253,7 +253,7 @@ describe("buildSpendingPhases", () => {
 
   it("splits into a $0 accumulation phase and a real drawdown phase for a future retirement age", () => {
     expect(buildSpendingPhases(45, 60, 500000)).toEqual([
-      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
       { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
     ])
   })
@@ -261,7 +261,7 @@ describe("buildSpendingPhases", () => {
   it("folds an income stream already active at retirement straight into the base spending figure", () => {
     const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 60, annualAmount: 120000 }
     expect(buildSpendingPhases(45, 60, 500000, [pension])).toEqual([
-      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
       { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 380000 },
     ])
   })
@@ -269,7 +269,7 @@ describe("buildSpendingPhases", () => {
   it("adds a stepped-down phase for an income stream starting after retirement", () => {
     const socialSecurity: RetirementIncomeStream = { id: "social-security", name: "Social Security", startAge: 67, annualAmount: 240000 }
     expect(buildSpendingPhases(45, 60, 500000, [socialSecurity])).toEqual([
-      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
       { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
       { id: "income-social-security", name: "After Social Security", fromAge: 67, annualWithdrawal: 260000 },
     ])
@@ -279,7 +279,7 @@ describe("buildSpendingPhases", () => {
     const socialSecurity: RetirementIncomeStream = { id: "social-security", name: "Social Security", startAge: 67, annualAmount: 240000 }
     const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 63, annualAmount: 100000 }
     expect(buildSpendingPhases(45, 60, 500000, [socialSecurity, pension])).toEqual([
-      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
       { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
       { id: "income-pension", name: "After Pension", fromAge: 63, annualWithdrawal: 400000 },
       { id: "income-social-security", name: "After Social Security", fromAge: 67, annualWithdrawal: 160000 },
@@ -289,7 +289,7 @@ describe("buildSpendingPhases", () => {
   it("floors the withdrawal at 0 rather than going negative when income exceeds spend", () => {
     const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 60, annualAmount: 900000 }
     expect(buildSpendingPhases(45, 60, 500000, [pension])).toEqual([
-      { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 },
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
       { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 0 },
     ])
   })
@@ -462,8 +462,10 @@ describe("mergeGeneratedDashboard", () => {
     expect(merged.widgets[0]?.meta).toEqual({ name: "My Net Worth", mode: "stacked" })
   })
 
-  it("always refreshes crossover's account/category ids but preserves a customized assumption", () => {
-    const generated = buildFireDashboard(["new-cat"], ["new-acct"], CROSSOVER_ASSUMPTIONS, null)
+  it("preserves a hand-narrowed category/account selection, not just other assumptions", () => {
+    // Actual's own crossover widget lets a person uncheck individual categories/accounts --
+    // narrowing that selection is exactly the edit a regenerate must not silently discard.
+    const generated = buildFireDashboard(["new-cat", "another-cat"], ["new-acct", "another-acct"], CROSSOVER_ASSUMPTIONS, null)
     const existing: ExistingDashboard = {
       version: 1,
       widgets: [
@@ -475,8 +477,8 @@ describe("mergeGeneratedDashboard", () => {
           height: 4,
           meta: {
             name: "FIRE Crossover",
-            expenseCategoryIds: ["stale-cat"],
-            incomeAccountIds: ["stale-acct"],
+            expenseCategoryIds: ["new-cat"], // hand-narrowed: dropped "another-cat"
+            incomeAccountIds: ["new-acct"], // hand-narrowed: dropped "another-acct"
             safeWithdrawalRate: 0.035,
             estimatedReturn: null,
             expectedContribution: null,
@@ -493,6 +495,29 @@ describe("mergeGeneratedDashboard", () => {
       incomeAccountIds: ["new-acct"],
       safeWithdrawalRate: 0.035,
     })
+  })
+
+  it("falls back to the freshly generated category/account list when the existing selection is empty", () => {
+    // Actual's crossover projection zeroes out historical expense data entirely when
+    // expenseCategoryIds is empty (silently claiming "already FI"), so an empty existing
+    // selection is never worth preserving verbatim.
+    const generated = buildFireDashboard(["new-cat"], ["new-acct"], CROSSOVER_ASSUMPTIONS, null)
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: { name: "FIRE Crossover", expenseCategoryIds: [], incomeAccountIds: [], safeWithdrawalRate: 0.04 },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing)
+    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
+    expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["new-cat"], incomeAccountIds: ["new-acct"] })
   })
 
   it("refreshes a pot's account-derived fields but preserves an extra fee field", () => {

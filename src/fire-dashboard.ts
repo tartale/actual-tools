@@ -387,7 +387,14 @@ export function buildSpendingPhases(
   const effectiveStart = Math.max(retirementAge, currentAge)
   const phases: MonteCarloSpendingPhaseMeta[] = []
   if (!alreadyRetired) {
-    phases.push({ id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 0 })
+    // Named to say WHY it's $0, not just that it is -- Actual's own widget literally labels this
+    // field "Yearly spending," which reads as an obvious data error at a glance if the phase is
+    // just called "Pre-retirement." $0 here means $0 WITHDRAWN FROM THE PORTFOLIO -- verified
+    // against Actual's own monteCarloSimulation.ts: withdrawal and contributions are separate,
+    // additive line items applied to the same pot balances the same year, so a nonzero "spending"
+    // figure here would double-count real living expenses that were actually paid out of wages,
+    // never touching the portfolio at all.
+    phases.push({ id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 })
   }
 
   const alreadyActive = incomeStreams.filter((stream) => stream.startAge <= effectiveStart)
@@ -718,9 +725,25 @@ function mergeWidget(
   if (generated.type === "monte-carlo-card") {
     meta = mergeMonteCarloMeta(generatedMeta, existingMeta, pinnedMonteCarloFields)
   } else if (generated.type === "crossover-card") {
-    // expenseCategoryIds/incomeAccountIds are real data (see buildCrossoverWidget); every other
-    // field (safeWithdrawalRate, estimatedReturn, projectionType, ...) is a preservable assumption.
-    meta = { ...generatedMeta, ...existingMeta, expenseCategoryIds: generatedMeta.expenseCategoryIds, incomeAccountIds: generatedMeta.incomeAccountIds }
+    // Every crossover field is a preservable assumption, including which categories/accounts are
+    // selected -- expenseCategoryIds/incomeAccountIds are Actual's own hand-picked checklists
+    // (its crossover widget UI lets you uncheck individual categories/accounts, plus a "show
+    // hidden categories" toggle), not something this tool should silently reset on every
+    // regenerate. Only falls back to the freshly generated list (every non-income/non-hidden
+    // category, every currently-classified portfolio account) when there's nothing to preserve
+    // yet (first generation) or the existing selection is empty -- Actual's crossover projection
+    // zeroes out historical expense data entirely when expenseCategoryIds is empty, silently
+    // claiming "already FI." A newly added category/account not yet reflected in an existing
+    // hand-tuned selection is exactly what detectCrossoverMismatch (fire-analysis.ts) exists to
+    // flag on Check, not something to auto-correct here.
+    const existingExpenseIds = existingMeta.expenseCategoryIds
+    const existingIncomeIds = existingMeta.incomeAccountIds
+    meta = {
+      ...generatedMeta,
+      ...existingMeta,
+      expenseCategoryIds: Array.isArray(existingExpenseIds) && existingExpenseIds.length > 0 ? existingExpenseIds : generatedMeta.expenseCategoryIds,
+      incomeAccountIds: Array.isArray(existingIncomeIds) && existingIncomeIds.length > 0 ? existingIncomeIds : generatedMeta.incomeAccountIds,
+    }
   } else {
     // net-worth-card has no real-data fields at all -- an existing customization wins outright.
     meta = { ...generatedMeta, ...existingMeta }

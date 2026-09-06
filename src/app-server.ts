@@ -113,6 +113,10 @@ interface AccountState {
   mortgageBalanceAsOfDate: string | null
   mortgageBalanceAsOf: number | null
   mortgagePayoff: MortgagePayoff | { error: string } | null
+  // Whole-year age at payoff, same rounding as fire-generate.ts's debtPayoffIncomeStreams (which
+  // this mirrors) -- null whenever mortgagePayoff itself is null/an error, or currentAge isn't
+  // known yet (no birth date entered).
+  mortgagePayoffAge: number | null
 }
 
 // A balance never changes as a side effect of a config edit -- only Actual's own ledger changes
@@ -175,6 +179,7 @@ async function buildState(
             balanceAsOf: account.mortgageBalanceAsOf,
           })
         : null
+    const mortgagePayoffAge = mortgagePayoff && !("error" in mortgagePayoff) && currentAge !== null ? currentAge + Math.round(mortgagePayoff.monthsRemaining / 12) : null
     return {
       id: account.id,
       name: account.name,
@@ -198,6 +203,7 @@ async function buildState(
       mortgageBalanceAsOfDate: account.mortgageBalanceAsOfDate,
       mortgageBalanceAsOf: account.mortgageBalanceAsOf,
       mortgagePayoff,
+      mortgagePayoffAge,
     }
   })
 

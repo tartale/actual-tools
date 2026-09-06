@@ -176,7 +176,7 @@ function renderIncome() {
 
 // Renders the "Simulation settings" fields a person can pin (see fire-dashboard.ts's
 // monteCarloAssumptionsWithOverrides) so every retirement-age comparison widget uses the same
-// value -- an empty field means "not pinned," not zero.
+// value -- an empty field means "not entered," not zero.
 function renderSimSettings() {
   const d = STATE.dashboard
   const setIfIdle = (id, value) => {
@@ -191,7 +191,7 @@ function renderSimSettings() {
   setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
 }
 
-// Renders the read-only "Owned by the Actual dashboard" panel from GET /api/retirement/live-settings
+// Renders the read-only "Configured in the Actual Dashboard" panel from GET /api/retirement/live-settings
 // -- fetched separately from the main state (see loadLiveSettings) since it's its own live ActualQL
 // read and isn't needed on every keystroke the way account balances are.
 function renderLiveSettings(settings) {
@@ -201,9 +201,10 @@ function renderLiveSettings(settings) {
     return
   }
   const pinned = STATE ? STATE.dashboard : {}
-  const row = (label, value, pinnedField) => {
+  const row = (label, value, pinnedField, isMoney) => {
     const isPinned = pinnedField && pinned[pinnedField] != null
-    return `<div class="kv"><span class="k">${escapeHtml(label)}${isPinned ? " (pinned by you)" : ""}</span><span class="v${isPinned ? " pinned" : ""}">${escapeHtml(String(value))}</span></div>`
+    const valueHtml = isMoney ? moneySpan(value) : escapeHtml(String(value))
+    return `<div class="kv"><span class="k">${escapeHtml(label)}${isPinned ? " (pinned by you)" : ""}</span><span class="v${isPinned ? " pinned" : ""}">${valueHtml}</span></div>`
   }
   const rows = []
   if (settings.crossover) {
@@ -221,7 +222,7 @@ function renderLiveSettings(settings) {
     rows.push(row("Tax model", m.taxModel))
     rows.push(row("Inflation (mean)", `${Math.round((m.inflationMean ?? 0) * 1000) / 10}%`, "monteCarloInflationMean"))
     rows.push(row("Inflation (std dev)", `${Math.round(m.inflationStdDev * 1000) / 10}%`, "monteCarloInflationStdDev"))
-    rows.push(row("Minimum withdrawal", usd(m.minimumWithdrawal), "monteCarloMinimumWithdrawal"))
+    rows.push(row("Minimum withdrawal", m.minimumWithdrawal, "monteCarloMinimumWithdrawal", true))
     rows.push(row("Simulation count", m.simulationCount.toLocaleString(), "monteCarloSimulationCount"))
   }
   container.innerHTML = `<div class="kv-grid">${rows.join("")}</div>`
@@ -292,7 +293,7 @@ function renderAccounts() {
     const payoffNote = payoff
       ? payoff.error
         ? `<div class="derived warn-text">${escapeHtml(payoff.error)}</div>`
-        : `<div class="derived">Payoff in ~${payoff.monthsRemaining} mo, around ${payoff.payoffDate}</div>`
+        : `<div class="derived">Payoff in ~${payoff.monthsRemaining} mo, around ${payoff.payoffDate}${account.mortgagePayoffAge != null ? ` (age ~${account.mortgagePayoffAge})` : ""}</div>`
       : ""
 
     row.innerHTML = `
@@ -382,7 +383,7 @@ function renderAccounts() {
         </div>
         ${payoffNote}` : ""}
         ${!typeInfo.isPortfolio ? `<div class="no-fields-note">Not part of the investable portfolio — no allocation or contribution to set.</div>` : ""}
-        ${!typeInfo.isPortfolio ? "" : account.limitLines.length ? `<div class="limit-lines money">${account.limitLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>` : (showContribution ? `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>` : "")}
+        ${!typeInfo.isPortfolio ? "" : account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div>${moneyify(line)}</div>`).join("")}</div>` : (showContribution ? `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>` : "")}
       </div>
     `
 
@@ -491,13 +492,21 @@ function escapeHtml(text) {
   return div.innerHTML
 }
 
+// Server-built sentences (findings, boost/payoff lines) embed dollar amounts as plain text
+// (formatUsd's own "$1,234.56"/"-$1,234.56" shape) alongside ages/percentages that privacy mode
+// should leave readable -- this wraps just the dollar substrings in a .money span after escaping,
+// so the eye toggle can blur them without needing the server to mark them up itself.
+function moneyify(text) {
+  return escapeHtml(text).replace(/-?\$[\d,]+\.\d{2}/g, (match) => `<span class="money">${match}</span>`)
+}
+
 function renderFinding(finding) {
   const div = document.createElement("div")
   div.className = "finding"
   div.innerHTML = `<span class="chip ${finding.level}">${finding.level}</span>
     <div>
-      <div class="title">${escapeHtml(finding.title)}</div>
-      ${finding.detail.map((line) => `<div class="detail">${escapeHtml(line)}</div>`).join("")}
+      <div class="title">${moneyify(finding.title)}</div>
+      ${finding.detail.map((line) => `<div class="detail">${moneyify(line)}</div>`).join("")}
     </div>`
   return div
 }

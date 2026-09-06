@@ -351,11 +351,15 @@ dashboard-export format, which you import yourself, once:
 import onto a page you're fine wiping, never your main dashboard.
 Regenerating and re-importing onto that same page is the normal way to
 refresh it. **Regenerating preserves customizations you've already made**:
-real-data fields always refresh (account/category ids, pot values and
-contributions, your current age, retirement-age-driven spending), but
-anything else you tweaked afterward — an assumption, an extra pot field, a
-hand-added contribution or spending phase, or a widget of a type this tool
-never generated — survives. The merge basis is, in order: whatever is
+real-data fields always refresh (pot values and contributions, your
+current age, retirement-age-driven spending), but anything else you
+tweaked afterward survives — an assumption, an extra pot field, a
+hand-added contribution or spending phase, the crossover widget's own
+category/account checklist (unchecking a category or account in Actual's
+crossover config is preserved, not reset back to "everything" on the next
+regenerate — falls back to the fresh full list only the first time, or if
+the existing selection was left empty), or a widget of a type this tool
+never generated. The merge basis is, in order: whatever is
 **live in Actual right now** on a dashboard page literally named "FIRE"
 (read the same way `Check` does, via ActualQL), so settings you tuned
 inside Actual itself are never silently reverted; if no such page exists
