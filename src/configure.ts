@@ -345,18 +345,27 @@ async function askBirthDate(tty: TtyInterface, draft: FireConfig, save: Save): P
   }
 }
 
-// Function to ask for one or more retirement ages, defaulting to the existing config's list --
-// including defaulting "add another?" to yes when the existing config already had more ages than
-// asked so far, so re-running configure against a multi-age config doesn't silently drop any.
-// Mutates draft.dashboard.retirementAges and saves after each age (including the first).
+// Function to ask for one or more retirement ages in a single line, space- or comma-separated
+// (e.g. "52, 55 59"), defaulting to the existing config's list. Mutates draft.dashboard.retirementAges
+// and saves once answered.
 async function askRetirementAges(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
   const existingAges = draft.dashboard.retirementAges
-  draft.dashboard.retirementAges = [await promptNumber(tty, "\nAge you plan to retire at", existingAges[0] ?? null)]
-  save()
-  while (await confirmOnTty(tty, "Compare another retirement age too?", draft.dashboard.retirementAges.length < existingAges.length)) {
-    const nextAge = await promptNumber(tty, "Another retirement age", existingAges[draft.dashboard.retirementAges.length] ?? null)
-    draft.dashboard.retirementAges = [...draft.dashboard.retirementAges, nextAge]
-    save()
+  const defaultLabel = existingAges.length > 0 ? ` [${existingAges.join(", ")}]` : ""
+  while (true) {
+    const answer = (await tty.question(`\nSimulate retirement at ages${defaultLabel}: `)).trim()
+    if (answer === "" && existingAges.length > 0) {
+      draft.dashboard.retirementAges = existingAges
+      save()
+      return
+    }
+    const tokens = answer.split(/[,\s]+/).filter((token) => token !== "")
+    const ages = tokens.map((token) => Number(token))
+    if (tokens.length > 0 && ages.every((age) => Number.isFinite(age) && age > 0)) {
+      draft.dashboard.retirementAges = ages
+      save()
+      return
+    }
+    process.stderr.write("Please enter one or more positive numbers, separated by spaces or commas.\n")
   }
 }
 
@@ -364,11 +373,7 @@ async function askRetirementAges(tty: TtyInterface, draft: FireConfig, save: Sav
 // DEFAULT_PLAN_TO_AGE), not a lifespan estimate. Mutates draft.dashboard.planToAge and saves once
 // answered.
 async function askPlanToAge(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
-  draft.dashboard.planToAge = await promptNumber(
-    tty,
-    "\nAssume the plan needs to last to this age (a conservative default, not a lifespan estimate)",
-    draft.dashboard.planToAge,
-  )
+  draft.dashboard.planToAge = await promptNumber(tty, "\nSimulate plan to age", draft.dashboard.planToAge)
   save()
 }
 
@@ -621,9 +626,6 @@ async function main(): Promise<void> {
   if (!configFound && !sections.includes("accounts")) {
     console.log(`No existing ${options.configPath} found -- account classification is required at least once; including it despite -s.`)
     sections = [...sections, "accounts"]
-  }
-  if (sections.length < CONFIGURE_SECTIONS.length) {
-    console.log(`Only asking: ${sections.join(", ")}. Everything else keeps its current value in ${options.configPath}.`)
   }
 
   const tty = openTtyInterface()

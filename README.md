@@ -240,6 +240,14 @@ are the dashboard-level inputs `reports fire` itself needs — as opposed to
 the crossover/Monte Carlo widget assumptions below — stored together under
 `config.json`'s own `dashboard` section.
 
+Retirement ages are entered on one line, space- or comma-separated, to
+compare more than one:
+
+```
+Simulate retirement at ages [52, 55, 59]:
+Simulate plan to age [100]:
+```
+
 ### Crossover and Monte Carlo assumptions
 
 Every remaining question covers a field the crossover or Monte Carlo widget
