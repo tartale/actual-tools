@@ -13,7 +13,6 @@ All tools read the same environment variables:
 | `AB_BUDGET_ID`   | Budget (sync) ID                                                |
 | `AB_API_KEY`     | API key, sent as the `x-api-key` header                        |
 | `DRY_RUN`        | `true` to report changes without writing them                  |
-| `AB_BIRTH_DATE`  | Your birth date (`YYYY-MM-DD`); overrides `config.json`'s, used only by `reports fire` |
 
 ## `./actual`
 
@@ -168,7 +167,9 @@ longer flow, not the whole thing).
   Missing is fine; that context is just skipped.
 - `-s`, `--section NAME` — only ask this section's questions, leaving
   everything else as it already is in `config.json`. Repeatable; one of
-  `accounts`, `personal` (birth date, retirement ages, plan-to-age),
+  `accounts`, `plan` (birth date, retirement ages, plan-to-age — the
+  `dashboard` section of `config.json`; named "plan" here rather than
+  "dashboard" so it isn't confused with `-d`/`--dashboard` above),
   `crossover`, `monte-carlo`. Default: all four. Useful for a quick re-run
   — e.g. `./actual configure -s crossover` to update just the safe
   withdrawal rate without re-answering everything else. Account
@@ -230,11 +231,14 @@ the existing file is carried over as the default rather than being reset —
 only changing an account's category resets those to the new category's
 plain defaults.
 
-### Personal and plan-wide questions
+### Plan questions (`-s plan`)
 
 After every account: your birth date, one or more retirement ages to
 compare (see `reports fire` below), and the age to assume the plan needs to
-last to (a conservative default, not a lifespan estimate to guess).
+last to (a conservative default, not a lifespan estimate to guess). These
+are the dashboard-level inputs `reports fire` itself needs — as opposed to
+the crossover/Monte Carlo widget assumptions below — stored together under
+`config.json`'s own `dashboard` section.
 
 ### Crossover and Monte Carlo assumptions
 
@@ -272,12 +276,14 @@ A gitignored JSON file (it names your real accounts) holding everything
 ```json
 {
   "version": 1,
-  "birthDate": "1985-03-22",
-  "retirementAges": [60],
-  "planToAge": 100,
   "accounts": [
     { "match": "691a0cae-4eed-4cfb-a42d-5878c7bdba88", "category": "investment-taxable", "taxTreatment": "taxable", "accessAge": null, "allocationPreset": "equity-80", "monthlyContribution": 50000 }
   ],
+  "dashboard": {
+    "birthDate": "1985-03-22",
+    "retirementAges": [60],
+    "planToAge": 100
+  },
   "crossover": {
     "safeWithdrawalRate": 0.04,
     "estimatedReturn": null,
@@ -305,10 +311,14 @@ values: `equity-100`, `equity-80`, `equity-60`, `equity-40`, `cash`, or
 `null` for non-portfolio categories. `monthlyContribution` is in cents, like
 every other dollar amount in this file. An old `accounts.json`-shaped file
 (from before this schema grew everything but `accounts`) still loads fine —
-the missing sections are just treated as unconfigured and backfilled with
-the defaults shown above. This is structured, personal data, so it's a
-separate file rather than more `AB_*` environment variables. You won't
-normally hand-edit it — `./actual configure` both reads and writes it.
+missing sections are treated as unconfigured and backfilled with the
+defaults shown above, and `birthDate`/`retirementAges`/`planToAge` are
+migrated in from their original flat top-level placement (before the
+`dashboard` section existed) if found there instead. Either way, the next
+write always produces the current nested shape. This is structured,
+personal data, so it's a separate file rather than more `AB_*` environment
+variables. You won't normally hand-edit it — `./actual configure` both
+reads and writes it.
 
 ### IRS contribution limits
 
@@ -355,7 +365,7 @@ required input:
   `config.json`'s. Can be passed multiple times; **replaces** the whole
   configured list for this run rather than adding to it (see below).
 - `-b`, `--birth-date YYYY-MM-DD` — use this birth date instead of
-  `config.json`'s. Also overridable via `AB_BIRTH_DATE`.
+  `config.json`'s.
 - `-p`, `--plan-to-age N` — use this planning horizon instead of
   `config.json`'s.
 - `-o`, `--output PATH` — where to write the dashboard JSON (default:
@@ -424,8 +434,8 @@ generated ones rather than being overwritten wholesale:
   hand) is left completely untouched.
 
 ```sh
-./actual reports fire -r 60                # AB_BIRTH_DATE set in the environment
-./actual reports fire -r 55 -r 60 -r 65    # compare three retirement ages
+./actual reports fire                      # birth date/retirement age(s) already in config.json
+./actual reports fire -r 55 -r 60 -r 65    # compare three retirement ages for this run only
 ./actual reports fire -r 60 -n             # preview without writing
 ```
 

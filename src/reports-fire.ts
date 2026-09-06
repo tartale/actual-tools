@@ -54,7 +54,7 @@ const HELP_PAGE: HelpPage = {
             "Compare this retirement age instead of the config file's. Can be used multiple times; replaces the " +
             "whole configured list for this run (doesn't add to it) -- each age gets its own Monte Carlo widget.",
         },
-        { name: "-b, --birth-date YYYY-MM-DD", description: "Use this birth date instead of the config file's (or AB_BIRTH_DATE)." },
+        { name: "-b, --birth-date YYYY-MM-DD", description: "Use this birth date instead of the config file's." },
         { name: "-p, --plan-to-age N", description: "Use this planning horizon instead of the config file's." },
         { name: "-o, --output PATH", description: `Where to write the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
         { name: "-f, --config PATH", description: `Path to the config file (default: ${DEFAULT_CONFIG_PATH}).` },
@@ -189,19 +189,19 @@ async function main(): Promise<void> {
     throw new Error(`No ${options.configPath} found. Run './actual configure' first.`)
   }
 
-  const birthDate = options.birthDate ?? fireConfig.birthDate ?? process.env.AB_BIRTH_DATE
+  const birthDate = options.birthDate ?? fireConfig.dashboard.birthDate
   if (!birthDate) {
-    usage(`Missing birth date: set it via './actual configure', pass --birth-date, or set AB_BIRTH_DATE`)
+    usage(`Missing birth date: set it via './actual configure' or pass --birth-date`)
   }
   validateDateFormat(birthDate)
   const currentAge = ageFromBirthDate(birthDate)
 
-  const retirementAges = options.retirementAges.length > 0 ? options.retirementAges : fireConfig.retirementAges
+  const retirementAges = options.retirementAges.length > 0 ? options.retirementAges : fireConfig.dashboard.retirementAges
   if (retirementAges.length === 0) {
     usage("No retirement age configured: set one via './actual configure' or pass --retirement-age.")
   }
 
-  const planToAge = options.planToAge ?? fireConfig.planToAge
+  const planToAge = options.planToAge ?? fireConfig.dashboard.planToAge
   if (planToAge <= currentAge) {
     usage(`planToAge (${planToAge}) must be greater than your current age (${currentAge})`)
   }

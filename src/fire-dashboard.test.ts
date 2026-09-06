@@ -469,9 +469,7 @@ describe("mergeGeneratedDashboard", () => {
 describe("extractConfigFromDashboard", () => {
   const baseConfig: FireConfig = {
     version: 1,
-    birthDate: "1985-01-01",
-    retirementAges: [45],
-    planToAge: 100,
+    dashboard: { birthDate: "1985-01-01", retirementAges: [45], planToAge: 100 },
     accounts: [{ match: "a1", category: "investment-taxable", allocationPreset: "equity-80" }],
     crossover: CROSSOVER_ASSUMPTIONS,
     monteCarlo: MONTE_CARLO_ASSUMPTIONS,
@@ -488,8 +486,8 @@ describe("extractConfigFromDashboard", () => {
       widgets: [{ type: "crossover-card", x: 0, y: 2, width: 12, height: 4, meta: { safeWithdrawalRate: 0.05 } }],
     }
     const extracted = extractConfigFromDashboard(existing, baseConfig)
-    expect(extracted.birthDate).toBe(baseConfig.birthDate)
-    expect(extracted.planToAge).toBe(baseConfig.planToAge)
+    expect(extracted.dashboard.birthDate).toBe(baseConfig.dashboard.birthDate)
+    expect(extracted.dashboard.planToAge).toBe(baseConfig.dashboard.planToAge)
     expect(extracted.accounts[0]).toMatchObject({ category: "investment-taxable", allocationPreset: "equity-80" })
   })
 
@@ -549,7 +547,7 @@ describe("extractConfigFromDashboard", () => {
     }
     const extracted = extractConfigFromDashboard(existing, baseConfig)
     // the first widget has no fromAge (already retired), so its age is its own currentAge (45)
-    expect(extracted.retirementAges).toEqual([45, 60])
+    expect(extracted.dashboard.retirementAges).toEqual([45, 60])
   })
 
   it("reconstructs an account's monthlyContribution from a matching pot's contribution", () => {
@@ -597,13 +595,13 @@ describe("extractConfigFromDashboard", () => {
       accounts: [{ match: "a1", category: "investment-taxable", allocationPreset: "equity-80" }],
       crossover: CROSSOVER_ASSUMPTIONS,
       monteCarlo: MONTE_CARLO_ASSUMPTIONS,
-      retirementAges: [],
+      dashboard: { ...baseConfig.dashboard, retirementAges: [] },
     }
     const extracted = extractConfigFromDashboard(dashboard as unknown as ExistingDashboard, blankConfig)
 
     expect(extracted.crossover).toEqual(customAssumptions)
     expect(extracted.monteCarlo).toEqual(customMonteCarlo)
-    expect(extracted.retirementAges).toEqual([60])
+    expect(extracted.dashboard.retirementAges).toEqual([60])
     expect(extracted.accounts[0]).toMatchObject({ match: "a1", monthlyContribution: 25000 })
   })
 })

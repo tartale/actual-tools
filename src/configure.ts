@@ -54,8 +54,10 @@ const DEFAULT_DASHBOARD_PATH = "fire-dashboard.json"
 
 // The four question groups configure asks about, in the order asked. -s/--section narrows a run
 // down to just the ones named, so re-running to tweak one thing (e.g. this year's contributions)
-// doesn't require re-answering everything else too.
-const CONFIGURE_SECTIONS = ["accounts", "personal", "crossover", "monte-carlo"] as const
+// doesn't require re-answering everything else too. "plan" covers config.json's own `dashboard`
+// section (birth date, retirement age(s), plan-to-age) -- named "plan" rather than "dashboard" to
+// avoid colliding with the unrelated -d/--dashboard PATH flag below (the generated widget JSON).
+const CONFIGURE_SECTIONS = ["accounts", "plan", "crossover", "monte-carlo"] as const
 type ConfigureSection = (typeof CONFIGURE_SECTIONS)[number]
 
 interface Options {
@@ -325,16 +327,16 @@ async function classifyOneAccount(
 }
 
 // Function to ask for a birth date, defaulting to (and validating the same way as) the existing
-// config's, if present. Mutates draft.birthDate and saves once answered.
+// config's, if present. Mutates draft.dashboard.birthDate and saves once answered.
 async function askBirthDate(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
-  const existingBirthDate = draft.birthDate
+  const existingBirthDate = draft.dashboard.birthDate
   const defaultLabel = existingBirthDate ? ` [${existingBirthDate}]` : ""
   while (true) {
     const answer = (await tty.question(`\nYour birth date (YYYY-MM-DD)${defaultLabel}: `)).trim()
     const value = answer === "" && existingBirthDate ? existingBirthDate : answer
     try {
       validateDateFormat(value)
-      draft.birthDate = value
+      draft.dashboard.birthDate = value
       save()
       return
     } catch {
@@ -346,22 +348,27 @@ async function askBirthDate(tty: TtyInterface, draft: FireConfig, save: Save): P
 // Function to ask for one or more retirement ages, defaulting to the existing config's list --
 // including defaulting "add another?" to yes when the existing config already had more ages than
 // asked so far, so re-running configure against a multi-age config doesn't silently drop any.
-// Mutates draft.retirementAges and saves after each age (including the first).
+// Mutates draft.dashboard.retirementAges and saves after each age (including the first).
 async function askRetirementAges(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
-  const existingAges = draft.retirementAges
-  draft.retirementAges = [await promptNumber(tty, "\nAge you plan to retire at", existingAges[0] ?? null)]
+  const existingAges = draft.dashboard.retirementAges
+  draft.dashboard.retirementAges = [await promptNumber(tty, "\nAge you plan to retire at", existingAges[0] ?? null)]
   save()
-  while (await confirmOnTty(tty, "Compare another retirement age too?", draft.retirementAges.length < existingAges.length)) {
-    const nextAge = await promptNumber(tty, "Another retirement age", existingAges[draft.retirementAges.length] ?? null)
-    draft.retirementAges = [...draft.retirementAges, nextAge]
+  while (await confirmOnTty(tty, "Compare another retirement age too?", draft.dashboard.retirementAges.length < existingAges.length)) {
+    const nextAge = await promptNumber(tty, "Another retirement age", existingAges[draft.dashboard.retirementAges.length] ?? null)
+    draft.dashboard.retirementAges = [...draft.dashboard.retirementAges, nextAge]
     save()
   }
 }
 
 // Function to ask how long the plan should be assumed to last -- a conservative default (see
-// DEFAULT_PLAN_TO_AGE), not a lifespan estimate. Mutates draft.planToAge and saves once answered.
+// DEFAULT_PLAN_TO_AGE), not a lifespan estimate. Mutates draft.dashboard.planToAge and saves once
+// answered.
 async function askPlanToAge(tty: TtyInterface, draft: FireConfig, save: Save): Promise<void> {
-  draft.planToAge = await promptNumber(tty, "\nAssume the plan needs to last to this age (a conservative default, not a lifespan estimate)", draft.planToAge)
+  draft.dashboard.planToAge = await promptNumber(
+    tty,
+    "\nAssume the plan needs to last to this age (a conservative default, not a lifespan estimate)",
+    draft.dashboard.planToAge,
+  )
   save()
 }
 
@@ -629,6 +636,7 @@ async function main(): Promise<void> {
     // never reaches back into existingConfig.
     const draft: FireConfig = {
       ...existingConfig,
+      dashboard: { ...existingConfig.dashboard, retirementAges: [...existingConfig.dashboard.retirementAges] },
       crossover: { ...existingConfig.crossover },
       monteCarlo: { ...existingConfig.monteCarlo, withdrawalRule: { ...existingConfig.monteCarlo.withdrawalRule }, taxBands: [...existingConfig.monteCarlo.taxBands] },
     }
@@ -643,7 +651,7 @@ async function main(): Promise<void> {
       }
     }
 
-    if (sections.includes("personal")) {
+    if (sections.includes("plan")) {
       await askBirthDate(tty, draft, save)
       await askRetirementAges(tty, draft, save)
       await askPlanToAge(tty, draft, save)

@@ -31,10 +31,8 @@ const config: ActualConfig = { baseUrl: "https://actual.test/v1", budgetId: "bud
 function fireConfig(accounts: FireConfig["accounts"]): FireConfig {
   return {
     version: 1,
-    birthDate: null,
-    retirementAges: [],
-    planToAge: DEFAULT_PLAN_TO_AGE,
     accounts,
+    dashboard: { birthDate: null, retirementAges: [], planToAge: DEFAULT_PLAN_TO_AGE },
     crossover: DEFAULT_CROSSOVER_CONFIG,
     monteCarlo: DEFAULT_MONTE_CARLO_CONFIG,
   }
@@ -204,6 +202,22 @@ describe("loadFireConfig", () => {
     const oldShapeConfig = { version: 1 as const, accounts: [{ match: "x", category: "debt" as const }] }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(oldShapeConfig))
     expect(loadFireConfig("/fake/path")).toEqual({ config: fireConfig(oldShapeConfig.accounts), found: true })
+  })
+
+  it("migrates birthDate/retirementAges/planToAge from their old flat top-level placement into dashboard", () => {
+    // e.g. this repo's own real config.json before the dashboard section existed -- must not
+    // silently lose a real birth date/retirement ages/plan-to-age already on disk.
+    const oldFlatShape = { version: 1 as const, accounts: [], birthDate: "1976-07-31", retirementAges: [55, 60], planToAge: 95 }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(oldFlatShape))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard).toEqual({ birthDate: "1976-07-31", retirementAges: [55, 60], planToAge: 95 })
+  })
+
+  it("prefers the new dashboard section over stale flat top-level fields when both are present", () => {
+    const mixedShape = { version: 1 as const, accounts: [], birthDate: "1900-01-01", dashboard: { birthDate: "1976-07-31", retirementAges: [], planToAge: DEFAULT_PLAN_TO_AGE } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mixedShape))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.birthDate).toBe("1976-07-31")
   })
 
   it("returns the parsed config, found: true, when every section is already present", () => {

@@ -715,7 +715,7 @@ export function extractConfigFromDashboard(existing: ExistingDashboard, config: 
     ...config,
     crossover,
     monteCarlo,
-    retirementAges: retirementAges.length > 0 ? retirementAges : config.retirementAges,
+    dashboard: { ...config.dashboard, retirementAges: retirementAges.length > 0 ? retirementAges : config.dashboard.retirementAges },
     accounts,
   }
 }

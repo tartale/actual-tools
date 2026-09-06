@@ -98,13 +98,21 @@ export interface FireAccountOverride {
   monthlyContribution?: number
 }
 
-export interface FireConfig {
-  version: 1
-  // Personal/plan-wide answers -- see ./actual configure.
+// The plan-wide inputs ./actual reports fire needs that aren't a crossover/Monte Carlo widget
+// assumption and aren't derived from account data -- your birth date, the retirement age(s) to
+// compare, and how long the plan should last. Its own top-level config.json section (like
+// crossover/monteCarlo below) since these are the "dashboard configurable items" `reports fire`
+// itself asks for, distinct from the per-widget assumptions.
+export interface DashboardConfig {
   birthDate: string | null
   retirementAges: number[]
   planToAge: number
+}
+
+export interface FireConfig {
+  version: 1
   accounts: FireAccountOverride[]
+  dashboard: DashboardConfig
   crossover: CrossoverAssumptions
   monteCarlo: MonteCarloAssumptions
 }
@@ -186,12 +194,16 @@ export const DEFAULT_MONTE_CARLO_CONFIG: MonteCarloAssumptions = {
   simulationCount: 5000,
 }
 
-export const EMPTY_FIRE_CONFIG: FireConfig = {
-  version: 1,
+export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   birthDate: null,
   retirementAges: [],
   planToAge: DEFAULT_PLAN_TO_AGE,
+}
+
+export const EMPTY_FIRE_CONFIG: FireConfig = {
+  version: 1,
   accounts: [],
+  dashboard: DEFAULT_DASHBOARD_CONFIG,
   crossover: DEFAULT_CROSSOVER_CONFIG,
   monteCarlo: DEFAULT_MONTE_CARLO_CONFIG,
 }
@@ -320,9 +332,11 @@ export interface LoadedFireConfig {
 // lets a caller decide whether to warn about that, keeping this function itself free of console
 // side effects and easy to test. Present-but-malformed is always an error: silently ignoring a
 // typo in the user's own config would be worse than failing loudly. An old-shape file (from before
-// this schema grew birthDate/retirementAges/planToAge/crossover/monteCarlo) is NOT an error --
-// missing top-level sections are treated as "not yet configured" and backfilled with defaults, so
-// ./actual configure can pick up where an old accounts.json-shaped file left off.
+// this schema grew these sections) is NOT an error -- missing sections are treated as "not yet
+// configured" and backfilled with defaults, so ./actual configure can pick up where an old file
+// left off. This also migrates birthDate/retirementAges/planToAge from their original flat
+// top-level placement (pre-dating the `dashboard` section below) if there's no `dashboard` object
+// yet -- read-compatible with the old shape; the next write always produces the new nested one.
 export function loadFireConfig(path: string): LoadedFireConfig {
   let raw: string
   try {
@@ -347,7 +361,11 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     throw new Error(`Invalid config in ${path}: expected { "version": 1, "accounts": [...] }`)
   }
 
-  const partial = parsed as Partial<FireConfig> & { version: 1; accounts: FireAccountOverride[] }
+  // The pre-`dashboard`-section shape (still what this repo's own config.json used before this
+  // change) had these three fields directly at the top level -- read them from there as a fallback
+  // when `dashboard` itself isn't present, so upgrading this schema doesn't silently discard a real
+  // birth date/retirement ages/plan-to-age already on disk.
+  const partial = parsed as Partial<FireConfig> & { version: 1; accounts: FireAccountOverride[] } & Partial<DashboardConfig>
 
   for (const override of partial.accounts) {
     // Catches a config left over from before a category/tax-treatment value was renamed, not just
@@ -374,13 +392,22 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     }
   }
 
-  if (partial.retirementAges !== undefined) {
-    if (!Array.isArray(partial.retirementAges) || partial.retirementAges.some((age) => typeof age !== "number" || age <= 0)) {
-      throw new Error(`Invalid config in ${path}: retirementAges must be an array of positive numbers.`)
+  // `dashboard` if the file already has the new nested section; otherwise fall back to the old
+  // flat top-level fields (see the comment on `partial` above) -- either way, `dashboardSource` is
+  // just the un-validated candidate values, validated and defaulted below like every other section.
+  const dashboardSource: Partial<DashboardConfig> = partial.dashboard ?? {
+    birthDate: partial.birthDate,
+    retirementAges: partial.retirementAges,
+    planToAge: partial.planToAge,
+  }
+
+  if (dashboardSource.retirementAges !== undefined) {
+    if (!Array.isArray(dashboardSource.retirementAges) || dashboardSource.retirementAges.some((age) => typeof age !== "number" || age <= 0)) {
+      throw new Error(`Invalid config in ${path}: dashboard.retirementAges must be an array of positive numbers.`)
     }
   }
-  if (partial.planToAge !== undefined && (typeof partial.planToAge !== "number" || partial.planToAge <= 0)) {
-    throw new Error(`Invalid config in ${path}: planToAge must be a positive number.`)
+  if (dashboardSource.planToAge !== undefined && (typeof dashboardSource.planToAge !== "number" || dashboardSource.planToAge <= 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.planToAge must be a positive number.`)
   }
   if (partial.crossover?.projectionType !== undefined && !CROSSOVER_PROJECTION_TYPES.includes(partial.crossover.projectionType)) {
     throw new Error(
@@ -422,9 +449,11 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   const config: FireConfig = {
     version: 1,
     accounts: partial.accounts,
-    birthDate: partial.birthDate ?? null,
-    retirementAges: partial.retirementAges ?? [],
-    planToAge: partial.planToAge ?? DEFAULT_PLAN_TO_AGE,
+    dashboard: {
+      birthDate: dashboardSource.birthDate ?? DEFAULT_DASHBOARD_CONFIG.birthDate,
+      retirementAges: dashboardSource.retirementAges ?? DEFAULT_DASHBOARD_CONFIG.retirementAges,
+      planToAge: dashboardSource.planToAge ?? DEFAULT_DASHBOARD_CONFIG.planToAge,
+    },
     crossover: { ...DEFAULT_CROSSOVER_CONFIG, ...partial.crossover },
     monteCarlo: {
       ...DEFAULT_MONTE_CARLO_CONFIG,
