@@ -6,18 +6,20 @@ import { readFileSync, writeFileSync } from "node:fs"
 
 import {
   CATEGORY_TRAITS,
+  classifyAccounts,
+  classifyByHeuristic,
   DEFAULT_CROSSOVER_CONFIG,
   DEFAULT_MONTE_CARLO_CONFIG,
   DEFAULT_PLAN_TO_AGE,
-  FIRE_ACCOUNT_CATEGORIES,
-  MONTE_CARLO_ALLOCATION_PRESETS,
-  classifyAccounts,
-  classifyByHeuristic,
   findOverride,
+  FIRE_ACCOUNT_CATEGORIES,
   isPortfolioCategory,
   loadClassifiedAccounts,
   loadFireConfig,
+  MONTE_CARLO_ALLOCATION_PRESETS,
+  overrideIndexFor,
   portfolioAccounts,
+  pruneStaleOverrides,
   traitsForCategory,
   writeFireConfig,
 } from "./fire-accounts.ts"
@@ -426,5 +428,51 @@ describe("MONTE_CARLO_ALLOCATION_PRESETS", () => {
         expect(MONTE_CARLO_ALLOCATION_PRESETS).toContain(preset)
       }
     }
+  })
+})
+
+describe("overrideIndexFor", () => {
+  const overrides = [
+    { match: "id-1", category: "cash" as const },
+    { match: "Fidelity 401k", category: "retirement-tax-deferred" as const },
+  ]
+
+  it("finds an override keyed by account id", () => {
+    expect(overrideIndexFor(overrides, { id: "id-1", name: "Ally Checking" })).toBe(0)
+  })
+
+  it("finds an override keyed by exact account name", () => {
+    expect(overrideIndexFor(overrides, { id: "id-2", name: "Fidelity 401k" })).toBe(1)
+  })
+
+  it("returns -1 for an account with no override", () => {
+    expect(overrideIndexFor(overrides, { id: "id-3", name: "Nothing" })).toBe(-1)
+  })
+
+  // Regression guard: rewriting a name-keyed entry by id alone would append a duplicate that
+  // findOverride never reaches, since it takes the first match.
+  it("agrees with findOverride about which entry wins", () => {
+    const account = { id: "id-2", name: "Fidelity 401k" }
+    const index = overrideIndexFor(overrides, account)
+    expect(overrides[index]).toBe(findOverride(account, { accounts: overrides }))
+  })
+})
+
+describe("pruneStaleOverrides", () => {
+  const overrides = [
+    { match: "open-1", category: "cash" as const },
+    { match: "closed-1", category: "debt" as const },
+  ]
+
+  it("drops overrides whose account is no longer open", () => {
+    expect(pruneStaleOverrides(overrides, ["open-1"])).toEqual([{ match: "open-1", category: "cash" }])
+  })
+
+  it("keeps everything when every account is still open", () => {
+    expect(pruneStaleOverrides(overrides, ["open-1", "closed-1"])).toEqual(overrides)
+  })
+
+  it("removes everything when no account is open, rather than silently keeping stale entries", () => {
+    expect(pruneStaleOverrides(overrides, [])).toEqual([])
   })
 })

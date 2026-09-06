@@ -294,9 +294,29 @@ export function classifyByHeuristic(name: string): FireAccountTraits | null {
   return rule ? traitsForCategory(rule.category) : null
 }
 
+// Function to locate an account's override by id or exact name, returning -1 when it has none.
+// Callers that rewrite an entry must go through this rather than matching on id alone: an override
+// keyed by name would be missed, and appending an id-keyed duplicate beside it would be silently
+// dead, since findOverride takes the FIRST match.
+export function overrideIndexFor(overrides: readonly FireAccountOverride[], account: Pick<Account, "id" | "name">): number {
+  return overrides.findIndex((override) => override.match === account.id || override.match === account.name)
+}
+
 // Function to find a config override matching an account by id or exact name
 export function findOverride(account: Pick<Account, "id" | "name">, config: Pick<FireConfig, "accounts">): FireAccountOverride | null {
-  return config.accounts.find((override) => override.match === account.id || override.match === account.name) ?? null
+  const index = overrideIndexFor(config.accounts, account)
+  return index === -1 ? null : (config.accounts[index] as FireAccountOverride)
+}
+
+// Function to drop overrides for accounts that are no longer open. Only safe to apply after every
+// open account has actually been visited -- run against a partial pass it would delete the entries
+// the pass had not reached yet.
+export function pruneStaleOverrides(
+  overrides: readonly FireAccountOverride[],
+  openAccountIds: readonly string[],
+): FireAccountOverride[] {
+  const open = new Set(openAccountIds)
+  return overrides.filter((override) => open.has(override.match))
 }
 
 // Function to classify every account: override > heuristic > safe default ("other", tax

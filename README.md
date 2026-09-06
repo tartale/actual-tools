@@ -252,9 +252,12 @@ schedule, not an age threshold — there's no honest way to represent it as
 an early `accessAge` without being misleading, so it's intentionally left
 out rather than approximated.
 
-Every run rewrites the account list from scratch, covering every
-currently-open account — running it again is the normal way to fix a wrong
-answer or pick up a newly-added account, not something to avoid. As long as
+Every run covers every currently-open account — running it again is the
+normal way to fix a wrong answer or pick up a newly-added account, not
+something to avoid. Each account's entry is updated in place, and entries for
+accounts that are no longer open are dropped only once the whole pass has
+finished, so **quitting partway through leaves the accounts you hadn't
+reached yet untouched** rather than truncating the list. As long as
 an account keeps the same category between runs, any hand-customized
 `taxTreatment`, `accessAge`, `allocationPreset`, `monthlyContribution`, or
 `ruleOf55SeparationAge` in the existing file is carried over as the default

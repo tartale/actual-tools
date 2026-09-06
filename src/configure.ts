@@ -32,6 +32,8 @@ import {
   MONTE_CARLO_WITHDRAWAL_STRATEGY_LABELS,
   classifyByHeuristic,
   findOverride,
+  overrideIndexFor,
+  pruneStaleOverrides,
   isPortfolioCategory,
   loadFireConfig,
   traitsForCategory,
@@ -268,13 +270,12 @@ type Save = () => void
 // Function to interactively classify one account: shows its name and balance, offers an existing
 // override or an inferred heuristic guess as the default (in that order of preference), and forces
 // an explicit choice when neither is available. Portfolio accounts additionally get an allocation
-// and a monthly contribution question. Mutates `draft.accounts[index]` (already pre-seeded by the
-// caller) and saves after each of this account's questions.
+// and a monthly contribution question. Updates this account's own entry in `draft.accounts` --
+// reusing its existing slot, or appending when it has none -- and saves after each question.
 async function classifyOneAccount(
   tty: TtyInterface,
   account: Account,
   balanceCents: number,
-  index: number,
   draft: FireConfig,
   existingConfig: FireConfig,
   irsLimits: IrsLimits | null,
@@ -299,6 +300,10 @@ async function classifyOneAccount(
   const taxTreatment = carryOver?.taxTreatment ?? traits.taxTreatment
   const accessAge = carryOver?.accessAge ?? traits.accessAge
 
+  // Reuse this account's existing slot when it has one, so a re-run updates in place instead of
+  // appending a duplicate that findOverride would never reach.
+  const existingIndex = overrideIndexFor(draft.accounts, account)
+  const index = existingIndex === -1 ? draft.accounts.length : existingIndex
   draft.accounts[index] = { match: account.id, category, taxTreatment, accessAge, allocationPreset: traits.allocationPreset, monthlyContribution: undefined }
   save()
 
@@ -653,6 +658,7 @@ async function main(): Promise<void> {
     // never reaches back into existingConfig.
     const draft: FireConfig = {
       ...existingConfig,
+      accounts: [...existingConfig.accounts],
       dashboard: { ...existingConfig.dashboard, retirementAges: [...existingConfig.dashboard.retirementAges] },
       crossover: { ...existingConfig.crossover },
       monteCarlo: { ...existingConfig.monteCarlo, withdrawalRule: { ...existingConfig.monteCarlo.withdrawalRule }, taxBands: [...existingConfig.monteCarlo.taxBands] },
@@ -662,10 +668,14 @@ async function main(): Promise<void> {
     if (sections.includes("accounts")) {
       const accounts = await fetchAllOpenAccounts(actualConfig)
       const balances = await Promise.all(accounts.map((account) => fetchAccountBalance(actualConfig, account.id, BALANCE_SINCE_DATE)))
-      draft.accounts = []
       for (const [index, account] of accounts.entries()) {
-        await classifyOneAccount(tty, account, balances[index] as number, index, draft, existingConfig, irsLimits, save)
+        await classifyOneAccount(tty, account, balances[index] as number, draft, existingConfig, irsLimits, save)
       }
+      // Every open account has now been visited, so anything still unmatched is a closed or deleted
+      // account and can go. Doing this here rather than before the loop is what makes an
+      // interrupted run non-destructive: quitting partway leaves unreached entries untouched.
+      draft.accounts = pruneStaleOverrides(draft.accounts, accounts.map((account) => account.id))
+      save()
     }
 
     if (sections.includes("plan")) {
