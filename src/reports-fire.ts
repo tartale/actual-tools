@@ -7,16 +7,21 @@ import {
   averageSpent,
   fetchAccountBalance,
   fetchCategoryGroups,
+  fetchDashboardWidgets,
   fetchHistoricalSpent,
   formatError,
   formatUsd,
   loadConfigFromEnv,
+  monthRange,
   validateDateFormat,
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
+import { bridgeFinding, detectCrossoverMismatch, detectPotDrift, formatFinding, simulateBridge, toBridgeAccounts } from "./fire-analysis.ts"
+import type { Finding } from "./fire-analysis.ts"
 import { buildFireDashboard, buildMonteCarloWidgets, effectiveAccessAge, mergeGeneratedDashboard, portfolioAccountIds, totalMonthlyContribution } from "./fire-dashboard.ts"
-import type { ExistingDashboard } from "./fire-dashboard.ts"
+import type { CrossoverCardMeta, ExistingDashboard, MonteCarloCardMeta } from "./fire-dashboard.ts"
 import { DEFAULT_CONFIG_PATH, loadClassifiedAccounts, loadFireConfig } from "./fire-accounts.ts"
+import type { ClassifiedAccount } from "./fire-accounts.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
 
@@ -31,6 +36,7 @@ interface Options {
   birthDate: string | null
   retirementAges: number[]
   planToAge: number | null
+  check: boolean
 }
 
 const HELP_PAGE: HelpPage = {
@@ -58,6 +64,13 @@ const HELP_PAGE: HelpPage = {
         { name: "-p, --plan-to-age N", description: "Use this planning horizon instead of the config file's." },
         { name: "-o, --output PATH", description: `Where to write the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
         { name: "-f, --config PATH", description: `Path to the config file (default: ${DEFAULT_CONFIG_PATH}).` },
+        {
+          name: "-c, --check",
+          description:
+            "Read the dashboard you already imported, plus live balances, and report what needs attention: " +
+            "config changes not yet re-imported, and whether each retirement age's reachable money bridges " +
+            "the gap to when the rest unlocks. Writes nothing.",
+        },
         {
           name: "-n, --dry-run",
           description: "Print the plan and the JSON that would be written, without writing the file. Also enabled by setting DRY_RUN=true.",
@@ -95,6 +108,7 @@ function parseArguments(argv: readonly string[]): Options {
   let birthDate: string | null = null
   const retirementAges: number[] = []
   let planToAge: number | null = null
+  let check = false
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string
@@ -114,6 +128,8 @@ function parseArguments(argv: readonly string[]): Options {
       i++
     } else if (arg === "-n" || arg === "--dry-run") {
       dryRun = true
+    } else if (arg === "-c" || arg === "--check") {
+      check = true
     } else if (arg === "-b" || arg === "--birth-date") {
       const value = argv[i + 1]
       if (value === undefined || value.startsWith("-")) {
@@ -136,7 +152,7 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  return { outputPath, configPath, dryRun, birthDate, retirementAges, planToAge }
+  return { outputPath, configPath, dryRun, birthDate, retirementAges, planToAge, check }
 }
 
 // Function to read a previously written dashboard file, if any, so mergeGeneratedDashboard can
@@ -178,6 +194,110 @@ async function trailingAnnualSpend(config: ActualConfig, categoryIds: readonly s
     monthlyTotal += averageSpent(history)
   }
   return monthlyTotal * 12
+}
+
+// Function to recompute annual spend from the crossover widget's own live selection: the
+// categories you picked and the window you set in Actual, rather than every category over a fixed
+// twelve months. Narrowing either of those is exactly the edit that used to be lost on every
+// regeneration -- reading it back here is what stops it being lost.
+async function spendFromCrossover(config: ActualConfig, meta: CrossoverCardMeta): Promise<{ annualSpend: number; basis: string }> {
+  const endMonth = meta.timeFrame?.end ?? currentMonth()
+  const months = meta.timeFrame ? monthRange(meta.timeFrame.start, meta.timeFrame.end).length : HISTORY_MONTHS
+  const monthCache = new Map<string, CategoryMonth[]>()
+  let monthlyTotal = 0
+  for (const categoryId of meta.expenseCategoryIds) {
+    monthlyTotal += averageSpent(await fetchHistoricalSpent(config, categoryId, endMonth, months, monthCache))
+  }
+  return {
+    annualSpend: monthlyTotal * 12,
+    basis: `${meta.expenseCategoryIds.length} categories over ${months} months to ${endMonth}`,
+  }
+}
+
+// Function to print one titled group of findings, or nothing at all when the group is empty --
+// a clean section is better left unsaid than announced.
+function printSection(title: string, findings: readonly Finding[]): void {
+  if (findings.length === 0) {
+    return
+  }
+  console.log(`\n${title}`)
+  for (const finding of findings) {
+    console.log(formatFinding(finding))
+  }
+}
+
+interface CheckInput {
+  config: ActualConfig
+  accounts: readonly ClassifiedAccount[]
+  balances: ReadonlyMap<string, number>
+  currentAge: number
+  retirementAges: readonly number[]
+  planToAge: number
+  annualSpend: number
+  configuredInflationMean: number
+}
+
+// Function to report on the dashboard that is actually live in Actual, rather than generating a
+// new one. Reads the imported widgets back through ActualQL, so it sees the state you have been
+// editing in the app -- including changes this tool never made.
+async function runCheck(input: CheckInput): Promise<void> {
+  const { config, accounts, balances, currentAge, retirementAges, planToAge } = input
+  const portfolioIds = portfolioAccountIds(accounts)
+
+  // Contributions come from config, not from account activity: these accounts are brokerage-synced
+  // and their transactions are fund-level churn (exchangeIn/exchangeOut/realizedGainLoss/
+  // reconciliation), which carries no reliable signal for how much new money arrives from outside.
+  const contributions = new Map(
+    accounts.flatMap((account) => (account.monthlyContribution == null ? [] : [[account.id, account.monthlyContribution * 12] as [string, number]])),
+  )
+  const widgets = await fetchDashboardWidgets<unknown>(config, null)
+  const monteCarloMetas = widgets
+    .filter((widget) => widget.type === "monte-carlo-card")
+    .map((widget) => widget.meta as MonteCarloCardMeta | null)
+    .filter((meta): meta is MonteCarloCardMeta => meta !== null)
+  const crossoverMetas = widgets
+    .filter((widget) => widget.type === "crossover-card")
+    .map((widget) => widget.meta as CrossoverCardMeta | null)
+    .filter((meta): meta is CrossoverCardMeta => meta !== null)
+
+  console.log(`Dashboard: ${monteCarloMetas.length} Monte Carlo widget(s), ${crossoverMetas.length} crossover widget(s) live in Actual`)
+
+  // The crossover widget is the only one that carries a live category selection and date range, so
+  // when it has one it -- not this tool's own all-categories default -- defines retirement spending.
+  let annualSpend = input.annualSpend
+  const crossover = crossoverMetas.find((meta) => (meta.expenseCategoryIds ?? []).length > 0)
+  if (crossover) {
+    const derived = await spendFromCrossover(config, crossover)
+    annualSpend = derived.annualSpend
+    console.log(`Spending:  ${formatUsd(annualSpend)}/yr per the live crossover (${derived.basis})`)
+  }
+
+  console.log("\nCONTRIBUTIONS (configured)")
+  for (const account of accounts.filter((candidate) => portfolioIds.includes(candidate.id))) {
+    console.log(`  ${account.name.padEnd(32)} ${formatUsd(contributions.get(account.id) ?? 0)}/yr`)
+  }
+
+  if (monteCarloMetas.length === 0) {
+    printSection("DRIFT", [
+      {
+        level: "warn",
+        title: "No Monte Carlo widgets found in any dashboard page.",
+        detail: ["Generate and import first: './actual reports fire', then Reports -> new page -> \"...\" -> Import."],
+      },
+    ])
+  } else {
+    printSection("DRIFT", [...detectPotDrift(monteCarloMetas, accounts), ...detectCrossoverMismatch(crossoverMetas, accounts)])
+  }
+
+  // Prefer the inflation the live dashboard is actually simulating with; fall back to the config
+  // only when nothing has been imported yet.
+  const inflationMean = monteCarloMetas[0]?.inflationMean ?? input.configuredInflationMean
+
+  const bridgeAccounts = toBridgeAccounts(accounts, balances, contributions)
+  const bridge = retirementAges.map((retirementAge) =>
+    bridgeFinding(simulateBridge(bridgeAccounts, currentAge, retirementAge, planToAge, annualSpend, inflationMean), planToAge),
+  )
+  printSection(`BRIDGE (mean returns, ${Math.round(inflationMean * 1000) / 10}% inflation, withdrawals taxed)`, bridge)
 }
 
 async function main(): Promise<void> {
@@ -236,6 +356,20 @@ async function main(): Promise<void> {
     if (boosted !== account.accessAge) {
       console.log(`Rule of 55 applied: ${account.name} accessible from age ${boosted} (was ${account.accessAge}).`)
     }
+  }
+
+  if (options.check) {
+    await runCheck({
+      config,
+      accounts,
+      balances: new Map(portfolioIds.map((accountId, index) => [accountId, portfolioBalances[index] as number])),
+      currentAge,
+      retirementAges,
+      planToAge,
+      annualSpend,
+      configuredInflationMean: fireConfig.monteCarlo.inflationMean ?? 0,
+    })
+    return
   }
 
   const generated = buildFireDashboard(expenseCategoryIds, portfolioIds, fireConfig.crossover, totalMonthlyContribution(accounts))

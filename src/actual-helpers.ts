@@ -589,3 +589,63 @@ export async function confirmOnTty(tty: TtyInterface, promptText: string, defaul
     process.stderr.write("Please answer y or n.\n")
   }
 }
+
+// One ActualQL query, in the shape the /run-query endpoint accepts. Only the subset this repo
+// uses is modeled here; the endpoint also takes groupBy/calculate/offset and friends.
+export interface ActualQlQuery {
+  table: string
+  select?: readonly string[]
+  filter?: Record<string, unknown>
+  limit?: number
+}
+
+// One row of Actual's `dashboard` table: a single widget on a dashboard page. `meta` holds the
+// widget's whole configuration and comes back already parsed -- Actual's AQL schema declares it
+// as a json field, not the raw TEXT column the underlying table stores.
+export interface DashboardWidgetRow<Meta = unknown> {
+  id: string
+  dashboard_page_id: string | null
+  type: string
+  x: number
+  y: number
+  width: number
+  height: number
+  meta: Meta | null
+}
+
+export interface DashboardPageRow {
+  id: string
+  name: string
+}
+
+// Function to run an ActualQL query, reaching tables the plain REST endpoints don't expose --
+// notably `dashboard`, which is the only way to read a dashboard's live state after import
+// without exporting it by hand. Gated behind actual-http-api's experimental-operations flag,
+// which answers 501 with its own explanatory message when it's off.
+export async function runQuery<T>(config: ActualConfig, query: ActualQlQuery): Promise<T[]> {
+  const body = await actualRequest(config, `/budgets/${config.budgetId}/run-query`, {
+    method: "POST",
+    body: JSON.stringify({ ActualQLquery: query }),
+  })
+  if (!isDataArray(body)) {
+    throw new Error(`Unexpected response querying "${query.table}": ${JSON.stringify(body)}`)
+  }
+  return body.data as T[]
+}
+
+// Function to list the budget's dashboard pages, so a caller can find one by name
+export async function fetchDashboardPages(config: ActualConfig): Promise<DashboardPageRow[]> {
+  return runQuery<DashboardPageRow>(config, { table: "dashboard_pages", select: ["id", "name"] })
+}
+
+// Function to read the widgets on one dashboard page, or across every page when pageId is null
+export async function fetchDashboardWidgets<Meta = unknown>(
+  config: ActualConfig,
+  pageId: string | null,
+): Promise<DashboardWidgetRow<Meta>[]> {
+  return runQuery<DashboardWidgetRow<Meta>>(config, {
+    table: "dashboard",
+    select: ["id", "dashboard_page_id", "type", "x", "y", "width", "height", "meta"],
+    ...(pageId === null ? {} : { filter: { dashboard_page_id: pageId } }),
+  })
+}

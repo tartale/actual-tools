@@ -395,7 +395,7 @@ retirement simulation — using Actual's own built-in dashboard widgets
 rather than reimplementing FIRE math.
 
 ```
-./actual reports fire [-r N] [-b YYYY-MM-DD] [-p N] [-o PATH] [-f PATH] [-n]
+./actual reports fire [-r N] [-b YYYY-MM-DD] [-p N] [-o PATH] [-f PATH] [-n] [-c]
 ```
 
 Reads its assumptions from `config.json` (see `./actual configure` above) --
@@ -414,6 +414,35 @@ required input:
 - `-f`, `--config PATH` — path to `config.json` (default: repo root).
 - `-n`, `--dry-run` — print the plan and the JSON without writing the file.
   Also enabled by setting `DRY_RUN=true`.
+- `-c`, `--check` — report on the dashboard you already imported instead of
+  generating a new one. Writes nothing. See "Checking an imported dashboard"
+  below.
+
+### Checking an imported dashboard
+
+`-c`/`--check` reads the dashboard that is **live in Actual** — not the
+generated `fire-dashboard.json` — and reports what needs attention. It reads
+it through Actual's own ActualQL `run-query` endpoint, so it sees the state
+you have been editing in the app, including changes this tool never made.
+
+Two things get checked:
+
+- **Drift** — a widget's stored access ages against what your current
+  `config.json` would generate. A mismatch means the dashboard predates a
+  config change and hasn't been re-imported. Accounts newly classified into
+  (or out of) the portfolio are flagged the same way.
+- **Bridge** — for each retirement age, whether the accounts you can
+  actually reach at that age fund every year until the locked ones open up.
+  This projects forward at each allocation's mean return with no volatility
+  and grosses withdrawals up for tax, applying the same accessible-only
+  funding rule Actual's Monte Carlo engine uses. That makes it a *best*
+  case: a scenario that runs dry here runs dry in essentially every
+  simulated run, which is what makes it worth reporting without
+  re-implementing the simulation.
+
+This needs the `run-query` endpoint, which is gated behind your Actual HTTP
+API's experimental-operations setting; with it off the call answers 501 with
+its own explanatory message.
 
 The Monte Carlo widget gets one pot per portfolio account (linked to its
 live balance, using the allocation and contribution you set in

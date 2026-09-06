@@ -61,6 +61,9 @@ export interface CrossoverCardMeta {
   projectionType: CrossoverProjectionType
   expenseAdjustmentFactor: number
   showHiddenCategories?: boolean
+  // Written by Actual once a date range is chosen in the widget's own UI; absent on a dashboard
+  // this tool generated and nobody has narrowed yet. Read, never generated -- see reports-fire.ts.
+  timeFrame?: TimeFrame
 }
 
 export type FireWidgetType = "net-worth-card" | "crossover-card" | "monte-carlo-card"
@@ -273,7 +276,7 @@ export const ALLOCATION_PRESET_RETURNS: Record<MonteCarloAllocationPreset, { mea
 // estimates (matching Actual's own docs: "you own the number") -- tax-deferred withdrawals are
 // ordinary income (a common marginal-bracket estimate), taxable-investment withdrawals are mostly
 // long-term capital gains (typically taxed lower), tax-free/none pay nothing.
-const WITHDRAWAL_TAX_RATES: Record<TaxTreatment, number> = {
+export const WITHDRAWAL_TAX_RATES: Record<TaxTreatment, number> = {
   "tax-deferred": 0.22,
   taxable: 0.15,
   "tax-free": 0,
