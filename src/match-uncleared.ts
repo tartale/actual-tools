@@ -6,6 +6,7 @@ import {
   fetchAccountTransactions,
   fetchOnBudgetAccounts,
   findMatchingTransaction,
+  formatError,
   formatUsd,
   loadConfigFromEnv,
   patchTransactionNotes,
@@ -77,7 +78,7 @@ function parseArguments(argv: readonly string[]): Options {
       try {
         validateDateFormat(value)
       } catch (error) {
-        usage(error instanceof Error ? error.message : String(error))
+        usage(formatError(error))
       }
       sinceDate = value
       i++
@@ -149,7 +150,7 @@ async function main(): Promise<void> {
       try {
         await patchTransactionNotes(config, transaction.id, addTagToNotes(transaction.notes, TAG))
       } catch (error) {
-        console.error(`Warning: failed to tag uncleared transaction ${transaction.id}: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`Warning: failed to tag uncleared transaction ${transaction.id}: ${formatError(error)}`)
         continue
       }
     }
@@ -173,6 +174,6 @@ process.stdout.on("error", (error: NodeJS.ErrnoException) => {
 })
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  process.stderr.write(`${formatError(error)}\n`)
   process.exit(1)
 })

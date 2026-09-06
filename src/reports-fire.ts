@@ -2,7 +2,17 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 
-import { ageFromBirthDate, averageSpent, fetchAccountBalance, fetchCategoryGroups, fetchHistoricalSpent, formatUsd, loadConfigFromEnv, validateDateFormat } from "./actual-helpers.ts"
+import {
+  ageFromBirthDate,
+  averageSpent,
+  fetchAccountBalance,
+  fetchCategoryGroups,
+  fetchHistoricalSpent,
+  formatError,
+  formatUsd,
+  loadConfigFromEnv,
+  validateDateFormat,
+} from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
 import { buildFireDashboard, buildMonteCarloWidgets, mergeGeneratedDashboard, portfolioAccountIds, totalMonthlyContribution } from "./fire-dashboard.ts"
 import type { ExistingDashboard } from "./fire-dashboard.ts"
@@ -145,7 +155,7 @@ function loadExistingDashboard(path: string): ExistingDashboard | null {
     return parsed as ExistingDashboard
   } catch (error) {
     console.warn(
-      `Warning: couldn't read existing ${path} to preserve customizations (${error instanceof Error ? error.message : String(error)}); writing fresh.`,
+      `Warning: couldn't read existing ${path} to preserve customizations (${formatError(error)}); writing fresh.`,
     )
     return null
   }
@@ -264,6 +274,6 @@ process.stdout.on("error", (error: NodeJS.ErrnoException) => {
 })
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  process.stderr.write(`${formatError(error)}\n`)
   process.exit(1)
 })

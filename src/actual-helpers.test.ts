@@ -21,6 +21,7 @@ import {
   findMatchingTransaction,
   flattenTransactions,
   formatCategoryLine,
+  formatError,
   formatUsd,
   getCachedMonthCategories,
   groupNameById,
@@ -109,6 +110,34 @@ describe("formatUsd", () => {
     expect(formatUsd(0)).toBe("$0.00")
     expect(formatUsd(5)).toBe("$0.05")
     expect(formatUsd(-5)).toBe("-$0.05")
+  })
+})
+
+describe("formatError", () => {
+  it("returns the message of a plain Error", () => {
+    expect(formatError(new Error("boom"))).toBe("boom")
+  })
+
+  it("stringifies a non-Error thrown value", () => {
+    expect(formatError("just a string")).toBe("just a string")
+    expect(formatError(42)).toBe("42")
+  })
+
+  it("appends the cause's message when the error has one (e.g. Node's fetch failures)", () => {
+    const cause = new Error("connect ECONNREFUSED 127.0.0.1:5007")
+    const error = new Error("fetch failed", { cause })
+    expect(formatError(error)).toBe("fetch failed: connect ECONNREFUSED 127.0.0.1:5007")
+  })
+
+  it("includes the cause's error code when present", () => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5007"), { code: "ECONNREFUSED" })
+    const error = new Error("fetch failed", { cause })
+    expect(formatError(error)).toBe("fetch failed: connect ECONNREFUSED 127.0.0.1:5007 [ECONNREFUSED]")
+  })
+
+  it("ignores a non-Error cause", () => {
+    const error = new Error("fetch failed", { cause: "not an error object" })
+    expect(formatError(error)).toBe("fetch failed")
   })
 })
 

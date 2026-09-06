@@ -9,6 +9,7 @@ import {
   fetchPreviousBudgeted,
   findIncomeFilterMatches,
   formatCategoryLine,
+  formatError,
   formatUsd,
   getCachedMonthCategories,
   groupNameById,
@@ -128,7 +129,7 @@ function parseArguments(argv: readonly string[]): Options {
     validateMonthFormat(startMonth)
     validateMonthFormat(endMonth)
   } catch (error) {
-    usage(error instanceof Error ? error.message : String(error))
+    usage(formatError(error))
   }
 
   return { action, startMonth, endMonth, categories, interactive, dryRun }
@@ -224,6 +225,6 @@ process.stdout.on("error", (error: NodeJS.ErrnoException) => {
 })
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  process.stderr.write(`${formatError(error)}\n`)
   process.exit(1)
 })

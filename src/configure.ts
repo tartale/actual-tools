@@ -6,6 +6,7 @@ import {
   confirmOnTty,
   fetchAccountBalance,
   fetchAllOpenAccounts,
+  formatError,
   formatUsd,
   loadConfigFromEnv,
   openTtyInterface,
@@ -112,12 +113,14 @@ function labeledOptions<Value extends string>(values: readonly Value[], labels: 
   return values.map((value) => `${value} (${labels[value]})`)
 }
 
-// Function to print a line of context before a question -- the CLI equivalent of the "?" tooltip
-// Actual's own configuration UI shows next to each of these fields. Wording below is adapted from
-// that real tooltip text (Crossover.tsx, MonteCarloConfiguration.tsx, and friends), not invented,
-// so the explanation here matches what a person would see clicking the same field in Actual itself.
-function explain(text: string): void {
-  process.stderr.write(`${text}\n`)
+// Function to print a block of context before a question -- the CLI equivalent of the "?" tooltip
+// Actual's own configuration UI shows next to each of these fields. Wording is adapted from that
+// real tooltip text (Crossover.tsx, MonteCarloConfiguration.tsx, and friends), not invented, so the
+// explanation matches what a person would see clicking the same field in Actual itself. Each
+// argument is its own line -- a multi-sentence explanation reads as a wall of text on one line, so
+// callers pass one sentence/clause per argument instead of one long concatenated string.
+function explain(...lines: string[]): void {
+  process.stderr.write(`${lines.join("\n")}\n`)
 }
 
 // Function to report a usage error and exit
@@ -235,11 +238,16 @@ function explainIrsLimits(category: FireAccountCategory, limits: IrsLimits | nul
   const iraLine = `IRA ${formatUsd(limits.ira.standard)}/yr (${formatUsd(limits.ira.standard + limits.ira.catchUp50)} if 50+)`
 
   if (category === "retirement-tax-deferred") {
-    explain(`IRS ${limits.taxYear} annual limit, whichever this account actually is${staleWarning}: ${employerPlanLine}; Traditional ${iraLine}.`)
+    explain(
+      `IRS ${limits.taxYear} annual limit, whichever this account actually is${staleWarning}:`,
+      `- ${employerPlanLine}`,
+      `- Traditional ${iraLine}`,
+    )
   } else if (category === "retirement-roth") {
     explain(
-      `IRS ${limits.taxYear} annual limit${staleWarning}: Roth ${iraLine} (income limits may reduce or eliminate eligibility); ` +
-        `Roth 401(k) shares the employer-plan limit with a traditional 401(k): ${employerPlanLine}.`,
+      `IRS ${limits.taxYear} annual limit${staleWarning}:`,
+      `- Roth ${iraLine} (income limits may reduce or eliminate eligibility)`,
+      `- Roth 401(k) shares the employer-plan limit with a traditional 401(k): ${employerPlanLine}`,
     )
   } else if (category === "hsa") {
     explain(
@@ -364,16 +372,16 @@ async function askCrossoverAssumptions(tty: TtyInterface, draft: FireConfig, sav
   const crossover = draft.crossover
 
   explain(
-    "\nSafe withdrawal rate: the amount you plan to withdraw from your investable portfolio each " +
-      "year to fund your living expenses (see the \"4% rule\").",
+    "\nSafe withdrawal rate: the amount you plan to withdraw from your investable portfolio each",
+    "year to fund your living expenses (see the \"4% rule\").",
   )
   const safeWithdrawalRatePct = await promptNumber(tty, "", crossover.safeWithdrawalRate * 100, "%")
   crossover.safeWithdrawalRate = safeWithdrawalRatePct / 100
   save()
 
   explain(
-    "Estimated return: the expected annual return rate for your investments, used to project " +
-      "portfolio growth. Leave at 0 to let Actual compute its own historical estimate instead.",
+    "Estimated return: the expected annual return rate for your investments, used to project portfolio growth.",
+    "Leave at 0 to let Actual compute its own historical estimate instead.",
   )
   const estimatedReturnPct = await promptNumber(tty, "", crossover.estimatedReturn === null ? 0 : crossover.estimatedReturn * 100, "%")
   crossover.estimatedReturn = estimatedReturnPct > 0 ? estimatedReturnPct / 100 : null
@@ -391,15 +399,16 @@ async function askCrossoverAssumptions(tty: TtyInterface, draft: FireConfig, sav
   save()
 
   explain(
-    "Target income, as a percent of your projected expenses (Actual's own label for this field). " +
-      "100 = plan for retirement income equal to your projected expenses. Above 100 = plan to " +
-      "spend more in retirement (e.g. 110 pads expenses by 10%). Below 100 = plan to spend less " +
-      "(e.g. 90, if you expect no more commuting or a paid-off mortgage).",
+    "Target income, as a percent of your projected expenses (Actual's own label for this field).",
+    "100 = plan for retirement income equal to your projected expenses.",
+    "Above 100 = plan to spend more in retirement (e.g. 110 pads expenses by 10%).",
+    "Below 100 = plan to spend less (e.g. 90, if you expect no more commuting or a paid-off mortgage).",
   )
   const expenseAdjustmentFactorPct = await promptNumber(tty, "", crossover.expenseAdjustmentFactor * 100, "%")
   crossover.expenseAdjustmentFactor = expenseAdjustmentFactorPct / 100
   save()
 
+  explain("Purely cosmetic here -- affects whether hidden categories are selectable in Actual's own category picker, not which categories this tool sends.")
   crossover.showHiddenCategories = await confirmOnTty(tty, "Show hidden categories in the category selector?", crossover.showHiddenCategories)
   save()
 }
@@ -426,10 +435,9 @@ async function askWithdrawalRule(tty: TtyInterface, draft: FireConfig, save: Sav
   }
   if (type === "guardrails") {
     explain(
-      "Guardrails (Guyton-Klinger). Capital preservation rule: if the withdrawal rate rises more " +
-        "than the trigger above the planned rate, cut withdrawals by the cut percent. Prosperity " +
-        "rule: if the rate falls more than the trigger below the planned rate, raise withdrawals " +
-        "by the increase percent.",
+      "Guardrails (Guyton-Klinger):",
+      "- Prosperity rule: if the withdrawal rate falls more than the trigger below the planned rate, raise withdrawals by the increase percent.",
+      "- Capital preservation rule: if the rate rises more than the trigger above the planned rate, cut withdrawals by the cut percent.",
     )
     const prosperityTriggerPct = await promptNumber(tty, "Prosperity trigger, as a percent below the initial rate", (current.prosperityTriggerPct ?? 0.2) * 100, "%")
     draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, prosperityTriggerPct: prosperityTriggerPct / 100 }
@@ -447,8 +455,8 @@ async function askWithdrawalRule(tty: TtyInterface, draft: FireConfig, save: Sav
   }
   if (type === "ratcheting") {
     explain(
-      "Ratcheting (Kitces). If the accessible balance stays above the threshold multiple of its " +
-        "starting level for this many years in a row, raise withdrawals by the increase percent.",
+      "Ratcheting (Kitces):",
+      "If the accessible balance stays above the threshold multiple of its starting level for this many years in a row, raise withdrawals by the increase percent.",
     )
     const balanceThresholdMultiple = await promptNumber(tty, "Balance threshold multiple (e.g. 1.5 = 150% of initial)", current.balanceThresholdMultiple ?? 1.5)
     draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, balanceThresholdMultiple }
@@ -463,9 +471,8 @@ async function askWithdrawalRule(tty: TtyInterface, draft: FireConfig, save: Sav
   }
   if (type === "floor-ceiling") {
     explain(
-      "Floor & ceiling (Bengen). Each year, withdraw the starting rate's share of the current " +
-        "accessible balance, but never more than the ceiling above, or less than the floor below, " +
-        "the inflation-adjusted planned amount.",
+      "Floor & ceiling (Bengen):",
+      "Each year, withdraw the starting rate's share of the current accessible balance, but never less than the floor below, or more than the ceiling above, the inflation-adjusted planned amount.",
     )
     const floorPct = await promptNumber(tty, "Floor, as a percent below the inflation-adjusted initial withdrawal", (current.floorPct ?? 0.15) * 100, "%")
     draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, floorPct: floorPct / 100 }
@@ -477,9 +484,9 @@ async function askWithdrawalRule(tty: TtyInterface, draft: FireConfig, save: Sav
   }
   // boundaries
   explain(
-    "Boundaries. If the withdrawal rate rises above the upper threshold, cut withdrawals by the " +
-      "upper cut percent. If it falls below the lower threshold, raise withdrawals by the lower " +
-      "increase percent.",
+    "Boundaries:",
+    "- If the withdrawal rate rises above the upper threshold, cut withdrawals by the upper cut percent.",
+    "- If it falls below the lower threshold, raise withdrawals by the lower increase percent.",
   )
   const upperRateThreshold = await promptNumber(tty, "Upper withdrawal-rate threshold, as a percent", (current.upperRateThreshold ?? 0.06) * 100, "%")
   draft.monteCarlo.withdrawalRule = { ...draft.monteCarlo.withdrawalRule, upperRateThreshold: upperRateThreshold / 100 }
@@ -525,8 +532,8 @@ async function askMonteCarloAssumptions(tty: TtyInterface, draft: FireConfig, sa
   const monteCarlo = draft.monteCarlo
 
   explain(
-    "\nWithdrawal strategy -- how the annual withdrawal is taken when you have more than one pot. " +
-      "A pot not yet at its access age is always skipped until it unlocks.",
+    "\nWithdrawal strategy -- how the annual withdrawal is taken when you have more than one pot.",
+    "A pot not yet at its access age is always skipped until it unlocks.",
   )
   const strategyIndex = await promptChoice(
     tty,
@@ -553,15 +560,18 @@ async function askMonteCarloAssumptions(tty: TtyInterface, draft: FireConfig, sa
   await askWithdrawalRule(tty, draft, save)
 
   explain(
-    "Minimum withdrawal: the annual withdrawal never drops below this amount, no matter what the " +
-      "rule says. Only applies in years with planned spending (a $0 spending phase still takes " +
-      "nothing). Rises with inflation like your planned spending. 0 = no floor.",
+    "Minimum withdrawal: the annual withdrawal never drops below this amount, no matter what the rule says.",
+    "Only applies in years with planned spending (a $0 spending phase still takes nothing).",
+    "Rises with inflation like your planned spending. 0 = no floor.",
   )
   const minimumWithdrawalDollars = await promptNumber(tty, "", monteCarlo.minimumWithdrawal / 100)
   monteCarlo.minimumWithdrawal = Math.round(minimumWithdrawalDollars * 100)
   save()
 
-  explain("Mean inflation: your planned spending grows with it each year so its buying power is maintained. 0 = flat, uninflated withdrawals.")
+  explain(
+    "Mean inflation: your planned spending grows with it each year so its buying power is maintained.",
+    "0 = flat, uninflated withdrawals.",
+  )
   const inflationMeanPct = await promptNumber(tty, "", monteCarlo.inflationMean === null ? 0 : monteCarlo.inflationMean * 100, "%")
   monteCarlo.inflationMean = inflationMeanPct > 0 ? inflationMeanPct / 100 : null
   save()
@@ -585,7 +595,10 @@ async function askMonteCarloAssumptions(tty: TtyInterface, draft: FireConfig, sa
     await askTaxBands(tty, draft, save)
   }
 
-  explain("Simulation count: how many random scenarios to run. More gives a steadier result but takes slightly longer.")
+  explain(
+    "Simulation count: how many random scenarios to run.",
+    "More gives a steadier result but takes slightly longer.",
+  )
   monteCarlo.simulationCount = await promptNumber(tty, "", monteCarlo.simulationCount)
   save()
 }
@@ -652,6 +665,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  process.stderr.write(`${formatError(error)}\n`)
   process.exit(1)
 })

@@ -93,6 +93,22 @@ export function formatUsd(cents: number): string {
   return `${sign}$${(Math.abs(cents) / 100).toFixed(2)}`
 }
 
+// Function to format an error for display, including its cause when present. Node's own fetch()
+// throws a bare "TypeError: fetch failed" on any network-level problem (connection refused, DNS
+// failure, an expired certificate, ...) -- the actually useful detail is attached as `error.cause`,
+// which `error.message` alone silently drops, leaving a user with nothing to act on.
+export function formatError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error)
+  }
+  const cause = error.cause
+  if (cause instanceof Error) {
+    const code = "code" in cause && typeof cause.code === "string" ? ` [${cause.code}]` : ""
+    return `${error.message}: ${cause.message}${code}`
+  }
+  return error.message
+}
+
 // Function to validate month format
 export function validateMonthFormat(month: string): void {
   if (!/^\d{4}-\d{2}$/.test(month)) {
