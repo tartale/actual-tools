@@ -83,6 +83,7 @@ export type AccountType =
   | "inherited-ira"
   | "hsa"
   | "brokerage"
+  | "savings"
   | "debt"
   | "cash"
   | "other"
@@ -96,6 +97,7 @@ export const ACCOUNT_TYPES: readonly AccountType[] = [
   "inherited-ira",
   "hsa",
   "brokerage",
+  "savings",
   "debt",
   "cash",
   "other",
@@ -188,6 +190,21 @@ export const ACCOUNT_TYPE_TRAITS: Record<AccountType, AccountTypeTraits> = {
     ruleOf55Eligible: false,
     limitGroup: null,
     label: "Taxable brokerage / investment account",
+  },
+  // A high-yield savings account or money market: interest is taxed as it's earned (same rough
+  // "taxable" treatment as a brokerage's withdrawals), but there's no age-based withdrawal
+  // restriction at all, and the balance itself doesn't fluctuate with the market -- hence "cash"
+  // as the default allocation rather than brokerage's equity-80. Still fully portfolio-eligible:
+  // counted in the withdrawal pots and open to a monthly contribution, same as any other taxable
+  // account.
+  savings: {
+    category: "investment-taxable",
+    taxTreatment: "taxable",
+    accessAge: null,
+    allocationPreset: "cash",
+    ruleOf55Eligible: false,
+    limitGroup: null,
+    label: "High-yield savings / money market",
   },
   debt: {
     category: "debt",
@@ -325,6 +342,11 @@ const ROTH_PATTERN = /\broth\b/i
 const EMPLOYER_PLAN_PATTERN = /\b401\s?k\b|\b403\s?b\b|\b457\b|\btsp\b|\bpension\b/i
 const IRA_PATTERN = /\bira\b/i
 const DEBT_PATTERN = /\bmortgage\b|\bloan\b|\bcredit card\b|\bline of credit\b|\bheloc\b/i
+// Checked before the broader BROKERAGE_PATTERN -- "high-yield savings" and "money market" are
+// otherwise generic enough to slip past it. Deliberately does NOT match a bare "savings" (an
+// ordinary low-yield savings account is more often meant as a cash buffer, not part of the
+// investable portfolio), only the specific terms that name an investment-like cash vehicle.
+const SAVINGS_PATTERN = /\bmoney market\b|\bhysa\b|\bhigh.?yield savings\b/i
 const BROKERAGE_PATTERN = /\bbrokerage\b|\binvestment\b|\btaxable\b/i
 
 // Function to classify a single account by name only. Returns null when nothing matches, so the
@@ -355,6 +377,9 @@ export function classifyByHeuristic(name: string): AccountType | null {
   if (DEBT_PATTERN.test(name)) {
     return "debt"
   }
+  if (SAVINGS_PATTERN.test(name)) {
+    return "savings"
+  }
   if (BROKERAGE_PATTERN.test(name)) {
     return "brokerage"
   }
@@ -378,7 +403,7 @@ function guessTypeFromLegacyCategory(category: FireAccountCategory, name: string
     case "hsa":
       return "hsa"
     case "investment-taxable":
-      return "brokerage"
+      return SAVINGS_PATTERN.test(name) ? "savings" : "brokerage"
     case "debt":
       return "debt"
     case "cash":

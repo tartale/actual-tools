@@ -92,6 +92,16 @@ describe("classifyByHeuristic", () => {
     }
   })
 
+  it("recognizes a high-yield savings account or money market as its own type, before the broader brokerage pattern", () => {
+    for (const name of ["Ally Money Market", "Marcus HYSA", "High-Yield Savings"]) {
+      expect(classifyByHeuristic(name)).toBe("savings")
+    }
+  })
+
+  it("does not classify a bare 'savings' account as the investment-like savings type", () => {
+    expect(classifyByHeuristic("Ally Savings")).toBeNull()
+  })
+
   it("is case-insensitive", () => {
     expect(classifyByHeuristic("fidelity hsa")).toBe("hsa")
   })
@@ -240,6 +250,14 @@ describe("classifyAccounts", () => {
         const cfg = { accounts: [{ match: "acct-1", category }] } as unknown as Pick<FireConfig, "accounts">
         expect(classifyAccounts(accounts, cfg)[0]?.type).toBe(expectedType)
       }
+    })
+
+    it("guesses savings instead of brokerage for an investment-taxable override with a money-market-shaped name", () => {
+      const accounts = [{ id: "acct-1", name: "Ally Money Market", offbudget: true }]
+      const cfg = { accounts: [{ match: "acct-1", category: "investment-taxable" }] } as unknown as Pick<FireConfig, "accounts">
+      const [result] = classifyAccounts(accounts, cfg)
+      expect(result?.type).toBe("savings")
+      expect(result?.allocationPreset).toBe("cash")
     })
 
     it("still respects an explicit taxTreatment/accessAge override alongside a guessed type", () => {
@@ -465,6 +483,17 @@ describe("ACCOUNT_TYPE_TRAITS", () => {
   it("gives an inherited IRA a null accessAge and no contribution limit", () => {
     expect(ACCOUNT_TYPE_TRAITS["inherited-ira"].accessAge).toBeNull()
     expect(ACCOUNT_TYPE_TRAITS["inherited-ira"].limitGroup).toBeNull()
+  })
+
+  it("gives savings (HYSA/money market) a taxable, portfolio-eligible, unrestricted, cash-default entry", () => {
+    expect(ACCOUNT_TYPE_TRAITS.savings).toMatchObject({
+      category: "investment-taxable",
+      taxTreatment: "taxable",
+      accessAge: null,
+      allocationPreset: "cash",
+      ruleOf55Eligible: false,
+      limitGroup: null,
+    })
   })
 
   it("marks Rule of 55 eligible only for the two employer-plan types", () => {
