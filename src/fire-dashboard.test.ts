@@ -10,19 +10,19 @@ import {
   buildPot,
   buildSpendingPhases,
   effectiveAccessAge,
-  extractConfigFromDashboard,
   mergeGeneratedDashboard,
   portfolioAccountIds,
   totalMonthlyContribution,
 } from "./fire-dashboard.ts"
 import type { CrossoverAssumptions, ExistingDashboard, MonteCarloAssumptions } from "./fire-dashboard.ts"
-import type { ClassifiedAccount, FireConfig } from "./fire-accounts.ts"
+import type { ClassifiedAccount } from "./fire-accounts.ts"
 
 // Function to build a classified account with sensible defaults for the fields a test ignores
 function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount, "id" | "category">): ClassifiedAccount {
   return {
     name: "Some Account",
     offbudget: true,
+    type: "other",
     taxTreatment: "none",
     accessAge: null,
     allocationPreset: null,
@@ -494,145 +494,5 @@ describe("mergeGeneratedDashboard", () => {
     }
     const merged = mergeGeneratedDashboard(generated, existing)
     expect(merged.widgets).toContainEqual({ type: "custom-note-card", x: 0, y: 20, width: 12, height: 2, meta: { text: "hand-added" } })
-  })
-})
-
-describe("extractConfigFromDashboard", () => {
-  const baseConfig: FireConfig = {
-    version: 1,
-    dashboard: { birthDate: "1985-01-01", retirementAges: [45], planToAge: 100 },
-    accounts: [{ match: "a1", category: "investment-taxable", allocationPreset: "equity-80" }],
-    crossover: CROSSOVER_ASSUMPTIONS,
-    monteCarlo: MONTE_CARLO_ASSUMPTIONS,
-  }
-
-  it("leaves the config unchanged when the dashboard has no crossover/monte-carlo widget", () => {
-    const existing: ExistingDashboard = { version: 1, widgets: [{ type: "net-worth-card", x: 0, y: 0, width: 12, height: 2, meta: {} }] }
-    expect(extractConfigFromDashboard(existing, baseConfig)).toEqual(baseConfig)
-  })
-
-  it("never touches birthDate, planToAge, or account category/tax/access/allocation", () => {
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [{ type: "crossover-card", x: 0, y: 2, width: 12, height: 4, meta: { safeWithdrawalRate: 0.05 } }],
-    }
-    const extracted = extractConfigFromDashboard(existing, baseConfig)
-    expect(extracted.dashboard.birthDate).toBe(baseConfig.dashboard.birthDate)
-    expect(extracted.dashboard.planToAge).toBe(baseConfig.dashboard.planToAge)
-    expect(extracted.accounts[0]).toMatchObject({ category: "investment-taxable", allocationPreset: "equity-80" })
-  })
-
-  it("extracts crossover assumptions, falling back to the existing config for a missing field", () => {
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [{ type: "crossover-card", x: 0, y: 2, width: 12, height: 4, meta: { safeWithdrawalRate: 0.05, projectionType: "median" } }],
-    }
-    const extracted = extractConfigFromDashboard(existing, baseConfig)
-    expect(extracted.crossover).toEqual({ ...CROSSOVER_ASSUMPTIONS, safeWithdrawalRate: 0.05, projectionType: "median" })
-  })
-
-  it("extracts Monte Carlo assumptions from the first monte-carlo-card widget", () => {
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: { returnModel: "historical-bootstrap", simulationCount: 8000, withdrawalRule: { type: "guardrails", prosperityTriggerPct: 0.25 } },
-        },
-      ],
-    }
-    const extracted = extractConfigFromDashboard(existing, baseConfig)
-    expect(extracted.monteCarlo).toEqual({
-      ...MONTE_CARLO_ASSUMPTIONS,
-      returnModel: "historical-bootstrap",
-      simulationCount: 8000,
-      withdrawalRule: { type: "guardrails", prosperityTriggerPct: 0.25 },
-    })
-  })
-
-  it("reconstructs retirementAges from every monte-carlo-card's retirement-spending phase", () => {
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: { currentAge: 45, spendingPhases: [{ id: "retirement-spending", fromAge: null }] },
-        },
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 10,
-          width: 12,
-          height: 4,
-          meta: { currentAge: 45, spendingPhases: [{ id: "pre-retirement", fromAge: null }, { id: "retirement-spending", fromAge: 60 }] },
-        },
-      ],
-    }
-    const extracted = extractConfigFromDashboard(existing, baseConfig)
-    // the first widget has no fromAge (already retired), so its age is its own currentAge (45)
-    expect(extracted.dashboard.retirementAges).toEqual([45, 60])
-  })
-
-  it("reconstructs an account's monthlyContribution from a matching pot's contribution", () => {
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: { contributions: [{ id: "c1", potId: "a1", annualAmount: 120000 }] },
-        },
-      ],
-    }
-    const extracted = extractConfigFromDashboard(existing, baseConfig)
-    expect(extracted.accounts[0]).toMatchObject({ match: "a1", monthlyContribution: 10000 })
-  })
-
-  it("leaves an account with no matching contribution untouched", () => {
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [{ type: "monte-carlo-card", x: 0, y: 6, width: 12, height: 4, meta: { contributions: [{ id: "c1", potId: "other-account", annualAmount: 120000 }] } }],
-    }
-    const extracted = extractConfigFromDashboard(existing, baseConfig)
-    expect(extracted.accounts[0]).toEqual(baseConfig.accounts[0])
-  })
-
-  it("round-trips a fully generated dashboard back into an equivalent config", () => {
-    const portfolioAccountWithContribution = account({
-      id: "a1",
-      category: "investment-taxable",
-      allocationPreset: "equity-80",
-      monthlyContribution: 25000,
-    })
-    const customAssumptions: CrossoverAssumptions = { ...CROSSOVER_ASSUMPTIONS, safeWithdrawalRate: 0.035 }
-    const customMonteCarlo: MonteCarloAssumptions = { ...MONTE_CARLO_ASSUMPTIONS, returnModel: "historical-sequence", simulationCount: 7500 }
-
-    const dashboard = buildFireDashboard(["cat-1"], ["a1"], customAssumptions, totalMonthlyContribution([portfolioAccountWithContribution]))
-    dashboard.widgets.push(...buildMonteCarloWidgets(0, 6, [portfolioAccountWithContribution], 50, [60], 100, 500000, customMonteCarlo))
-
-    const blankConfig: FireConfig = {
-      ...baseConfig,
-      accounts: [{ match: "a1", category: "investment-taxable", allocationPreset: "equity-80" }],
-      crossover: CROSSOVER_ASSUMPTIONS,
-      monteCarlo: MONTE_CARLO_ASSUMPTIONS,
-      dashboard: { ...baseConfig.dashboard, retirementAges: [] },
-    }
-    const extracted = extractConfigFromDashboard(dashboard as unknown as ExistingDashboard, blankConfig)
-
-    expect(extracted.crossover).toEqual(customAssumptions)
-    expect(extracted.monteCarlo).toEqual(customMonteCarlo)
-    expect(extracted.dashboard.retirementAges).toEqual([60])
-    expect(extracted.accounts[0]).toMatchObject({ match: "a1", monthlyContribution: 25000 })
   })
 })

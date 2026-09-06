@@ -1,31 +1,21 @@
 import { readFileSync, writeFileSync } from "node:fs"
 
-import { fetchAllOpenAccounts } from "./actual-helpers.ts"
+import { ageFromBirthDate, fetchAllOpenAccounts, formatUsd } from "./actual-helpers.ts"
 import type { Account, ActualConfig } from "./actual-helpers.ts"
-import type {
-  CrossoverAssumptions,
-  CrossoverProjectionType,
-  MonteCarloAssumptions,
-  MonteCarloReturnModel,
-  MonteCarloTaxModel,
-  MonteCarloWithdrawalRuleType,
-  MonteCarloWithdrawalStrategy,
-} from "./fire-dashboard.ts"
+import { DEFAULT_IRS_LIMITS_PATH, loadIrsLimits } from "./irs-limits.ts"
+import type { IrsLimits } from "./irs-limits.ts"
 
 // Classifies accounts for FIRE reporting: which are retirement/investment/debt/cash, and enough
-// detail about each (tax treatment, access age) to eventually populate a Monte Carlo "pot" in a
-// later phase. Pure -- no API calls. Actual's own account API has no type field, so this combines
-// a heuristic guess at the account's name with an explicit config file the guess can be
-// overridden by. See ./actual configure for the tool that surfaces the result for review.
+// detail about each (tax treatment, access age) to populate a Monte Carlo "pot." Pure -- no API
+// calls (loadClassifiedAccounts at the bottom is the one exception, shared by app-server.ts).
+// Actual's own account API has no type field, so this combines a heuristic guess at the account's
+// name with an explicit config file the guess can be overridden by.
 //
-// This module also owns the FireConfig schema -- the single config.json file ./actual configure
-// reads defaults from and writes, covering both account classification (below) and every
-// crossover/Monte Carlo assumption those charts expose. The assumption-shaped types
-// (CrossoverAssumptions, MonteCarloAssumptions, and the enums they're built from) are defined in
-// fire-dashboard.ts, since that's this project's one home for vendored Actual widget shapes -- only
-// type-only imports flow back here, which Node's --experimental-strip-types erases entirely, so
-// there's no runtime import cycle with fire-dashboard.ts's own (real, value) import of
-// portfolioAccounts from this file.
+// This module also owns the FireConfig schema -- the single config.json file the app reads
+// defaults from and writes. It covers account classification only: the crossover/Monte Carlo
+// widget assumptions Actual itself exposes once a dashboard is imported are no longer stored here
+// at all (see fire-dashboard.ts's DEFAULT_CROSSOVER_ASSUMPTIONS/DEFAULT_MONTE_CARLO_ASSUMPTIONS,
+// used only the first time a dashboard is generated).
 
 export type FireAccountCategory =
   | "retirement-tax-deferred"
@@ -35,6 +25,16 @@ export type FireAccountCategory =
   | "debt"
   | "cash"
   | "other"
+
+export const FIRE_ACCOUNT_CATEGORIES: readonly FireAccountCategory[] = [
+  "retirement-tax-deferred",
+  "retirement-roth",
+  "hsa",
+  "investment-taxable",
+  "debt",
+  "cash",
+  "other",
+]
 
 export type TaxTreatment = "tax-deferred" | "tax-free" | "taxable" | "none"
 
@@ -54,7 +54,7 @@ export const MONTE_CARLO_ALLOCATION_PRESETS: readonly MonteCarloAllocationPreset
 ]
 
 // Plain-language description of each preset's stock/bond mix, for display next to the preset name
-// wherever a person is picking one (e.g. ./actual configure's interactive prompt).
+// in the account editor.
 export const MONTE_CARLO_ALLOCATION_PRESET_LABELS: Record<MonteCarloAllocationPreset, string> = {
   "equity-100": "100% stocks",
   "equity-80": "80% stocks / 20% bonds",
@@ -63,53 +63,209 @@ export const MONTE_CARLO_ALLOCATION_PRESET_LABELS: Record<MonteCarloAllocationPr
   cash: "100% cash",
 }
 
-export interface FireAccountTraits {
+// The IRS contribution-limit pool an account type draws from, if any. Both employer-plan and IRA
+// limits are shared across every account of that kind (not per-account) -- see
+// resolveMonthlyContributions for how a "max" contribution splits a shared pool. HSA's limit is
+// technically shared per tax household too, but self-only vs. family coverage isn't tracked
+// per-account here -- see annualContributionLimit's doc comment for that deliberate simplification.
+export type ContributionLimitGroup = "employer-plan" | "ira" | "hsa"
+
+// A concrete kind of account, one level more specific than FireAccountCategory -- specific enough
+// to know whether Rule of 55 can ever apply (never for an IRA) and which IRS limit, if any,
+// governs its contributions. Every downstream FireAccountCategory-keyed consumer (isPortfolioCategory,
+// the withdrawal-tax-rate table, ...) is unaffected: `category` is just one more trait each type
+// implies, computed once here rather than re-derived at every call site.
+export type AccountType =
+  | "traditional-401k"
+  | "roth-401k"
+  | "traditional-ira"
+  | "roth-ira"
+  | "inherited-ira"
+  | "hsa"
+  | "brokerage"
+  | "debt"
+  | "cash"
+  | "other"
+
+// Order shown in the account-type picker.
+export const ACCOUNT_TYPES: readonly AccountType[] = [
+  "traditional-401k",
+  "roth-401k",
+  "traditional-ira",
+  "roth-ira",
+  "inherited-ira",
+  "hsa",
+  "brokerage",
+  "debt",
+  "cash",
+  "other",
+]
+
+export interface AccountTypeTraits {
   category: FireAccountCategory
   taxTreatment: TaxTreatment
-  // Age at which withdrawals become unrestricted/penalty-free; null when not applicable or not
-  // yet known. Unused until a later phase's Monte Carlo pots -- computed now so the schema doesn't
-  // need to change later.
+  // Age at which withdrawals become unrestricted/penalty-free; null when not applicable. An
+  // inherited/beneficiary IRA is null here deliberately, not a gap -- IRC Sec. 72(t)(2)(A)(iv)
+  // exempts inherited IRAs from the 10% early-withdrawal penalty at any age, a real, well-
+  // established rule this tool asserted incorrectly (a blanket 59) before AccountType existed.
   accessAge: number | null
-  // Equity/bond mix for a Monte Carlo "pot"; null for non-portfolio categories (debt/cash/other),
-  // which are never pots at all.
+  // Equity/bond mix for a Monte Carlo "pot"; null for non-portfolio types (debt/cash/other).
   allocationPreset: MonteCarloAllocationPreset | null
+  // Whether IRC Sec. 72(t)(2)(A)(v) (separating from an employer at 55+ unlocks that employer's
+  // OWN plan penalty-free) can ever apply -- true only for the two employer-plan types. An IRA
+  // (traditional, Roth, or inherited) never qualifies, no matter the age.
+  ruleOf55Eligible: boolean
+  // Which IRS annual limit, if any, this type's contributions draw from.
+  limitGroup: ContributionLimitGroup | null
+  // Display label -- used both in the type picker and in contributionLimitLines' output.
+  label: string
+}
+
+// Age at which most US tax-advantaged retirement accounts can be withdrawn from without an early
+// withdrawal penalty. Per-type default -- overridable per-account for precision.
+const DEFAULT_ACCESS_AGE = 59
+
+export const ACCOUNT_TYPE_TRAITS: Record<AccountType, AccountTypeTraits> = {
+  "traditional-401k": {
+    category: "retirement-tax-deferred",
+    taxTreatment: "tax-deferred",
+    accessAge: DEFAULT_ACCESS_AGE,
+    allocationPreset: "equity-80",
+    ruleOf55Eligible: true,
+    limitGroup: "employer-plan",
+    label: "Traditional 401(k)/403(b)/457/TSP",
+  },
+  "roth-401k": {
+    category: "retirement-roth",
+    taxTreatment: "tax-free",
+    accessAge: DEFAULT_ACCESS_AGE,
+    allocationPreset: "equity-80",
+    ruleOf55Eligible: true,
+    limitGroup: "employer-plan",
+    label: "Roth 401(k)/403(b)",
+  },
+  "traditional-ira": {
+    category: "retirement-tax-deferred",
+    taxTreatment: "tax-deferred",
+    accessAge: DEFAULT_ACCESS_AGE,
+    allocationPreset: "equity-80",
+    ruleOf55Eligible: false,
+    limitGroup: "ira",
+    label: "Traditional IRA",
+  },
+  "roth-ira": {
+    category: "retirement-roth",
+    taxTreatment: "tax-free",
+    accessAge: DEFAULT_ACCESS_AGE,
+    allocationPreset: "equity-80",
+    ruleOf55Eligible: false,
+    limitGroup: "ira",
+    label: "Roth IRA",
+  },
+  "inherited-ira": {
+    category: "retirement-tax-deferred",
+    taxTreatment: "tax-deferred",
+    accessAge: null,
+    allocationPreset: "equity-80",
+    ruleOf55Eligible: false,
+    limitGroup: null,
+    label: "Inherited/Beneficiary IRA",
+  },
+  hsa: {
+    category: "hsa",
+    taxTreatment: "tax-free",
+    accessAge: null,
+    allocationPreset: "equity-60",
+    ruleOf55Eligible: false,
+    limitGroup: "hsa",
+    label: "HSA",
+  },
+  brokerage: {
+    category: "investment-taxable",
+    taxTreatment: "taxable",
+    accessAge: null,
+    allocationPreset: "equity-80",
+    ruleOf55Eligible: false,
+    limitGroup: null,
+    label: "Taxable brokerage / investment account",
+  },
+  debt: {
+    category: "debt",
+    taxTreatment: "none",
+    accessAge: null,
+    allocationPreset: null,
+    ruleOf55Eligible: false,
+    limitGroup: null,
+    label: "Debt (mortgage/loan/credit card)",
+  },
+  cash: {
+    category: "cash",
+    taxTreatment: "none",
+    accessAge: null,
+    allocationPreset: null,
+    ruleOf55Eligible: false,
+    limitGroup: null,
+    label: "Cash (checking/savings)",
+  },
+  other: {
+    category: "other",
+    taxTreatment: "none",
+    accessAge: null,
+    allocationPreset: null,
+    ruleOf55Eligible: false,
+    limitGroup: null,
+    label: "Other / not applicable",
+  },
 }
 
 export type ClassificationSource = "override" | "heuristic" | "default"
 
-export interface ClassifiedAccount extends FireAccountTraits {
+export interface ClassifiedAccount {
   id: string
   name: string
   offbudget: boolean
+  type: AccountType
+  category: FireAccountCategory
+  taxTreatment: TaxTreatment
+  accessAge: number | null
+  allocationPreset: MonteCarloAllocationPreset | null
   source: ClassificationSource
-  // A monthly contribution amount in cents, or null if none is configured. Has no category-based
-  // default (unlike the FireAccountTraits fields above) -- it only ever comes from an override.
+  // A monthly contribution amount in cents, or null if none is configured. Already resolved --
+  // a "max" override (see resolveMonthlyContributions) has been turned into a concrete number by
+  // the time an account reaches this shape, so every reader of this field is unaffected by the
+  // sentinel's existence.
   monthlyContribution: number | null
   // The age this account's owner expects to separate from the employer holding it, or null. Its
-  // mere presence asserts "this is a real, currently-held 401(k)/403(b), not an IRA" -- an IRA (or
-  // a rolled-over former employer plan) never qualifies for Rule of 55 no matter what age is given.
-  // Has no category-based default, same as monthlyContribution -- see fire-dashboard.ts's
-  // effectiveAccessAge for how this turns into an earlier accessAge when it's 55 or older.
+  // mere presence asserts "this is a real, currently-held 401(k)/403(b)" -- only ever meaningful
+  // when the account's type has ruleOf55Eligible: true. See fire-dashboard.ts's effectiveAccessAge.
   ruleOf55SeparationAge: number | null
 }
 
 // One user-supplied override. `match` is an account id OR an exact account name, mirroring how
 // -c/--category filters already match "name or ID" elsewhere in this repo (shouldUpdateCategory).
+//
+// `category` is a LEGACY field, present only on a config.json written before AccountType existed.
+// classifyAccounts guesses a `type` for a legacy override using the real account name (see
+// guessTypeFromLegacyCategory below) -- `match` is often an account id, not a name, so the guess
+// can't happen here in the schema/validation layer, only where a real name is available. The next
+// write of a migrated override always includes `type` and drops `category`.
 export interface FireAccountOverride {
   match: string
-  category: FireAccountCategory
+  type?: AccountType
+  /** @deprecated legacy field from before AccountType existed; see the doc comment above. */
+  category?: FireAccountCategory
   taxTreatment?: TaxTreatment
   accessAge?: number | null
   allocationPreset?: MonteCarloAllocationPreset | null
-  monthlyContribution?: number
+  // A sentinel, not a resolved amount -- see resolveMonthlyContributions. Stored as the literal
+  // string so it re-resolves correctly as IRS limits change yearly and as the account owner
+  // crosses the 50/60-63 age-tier boundaries, rather than going stale the moment it's set.
+  monthlyContribution?: number | "max"
   ruleOf55SeparationAge?: number | null
 }
 
-// The plan-wide inputs ./actual reports fire needs that aren't a crossover/Monte Carlo widget
-// assumption and aren't derived from account data -- your birth date, the retirement age(s) to
-// compare, and how long the plan should last. Its own top-level config.json section (like
-// crossover/monteCarlo below) since these are the "dashboard configurable items" `reports fire`
-// itself asks for, distinct from the per-widget assumptions.
+// The plan-wide inputs the app needs that aren't a per-account fact: your birth date, the
+// retirement age(s) to compare, and how long the plan should last.
 export interface DashboardConfig {
   birthDate: string | null
   retirementAges: number[]
@@ -120,86 +276,11 @@ export interface FireConfig {
   version: 1
   accounts: FireAccountOverride[]
   dashboard: DashboardConfig
-  crossover: CrossoverAssumptions
-  monteCarlo: MonteCarloAssumptions
 }
 
 // Conservative default planning horizon: assume the money needs to last to this age rather than
-// asking the user to estimate their own lifespan. Overridable in ./actual configure.
+// asking the user to estimate their own lifespan.
 export const DEFAULT_PLAN_TO_AGE = 100
-
-export const CROSSOVER_PROJECTION_TYPES: readonly CrossoverProjectionType[] = ["hampel", "median", "mean"]
-export const MONTE_CARLO_WITHDRAWAL_STRATEGIES: readonly MonteCarloWithdrawalStrategy[] = [
-  "proportional",
-  "sequential",
-  "best-performer",
-  "target-mix",
-]
-export const MONTE_CARLO_RETURN_MODELS: readonly MonteCarloReturnModel[] = ["normal", "historical-bootstrap", "historical-sequence"]
-export const MONTE_CARLO_WITHDRAWAL_RULE_TYPES: readonly MonteCarloWithdrawalRuleType[] = [
-  "none",
-  "guardrails",
-  "ratcheting",
-  "floor-ceiling",
-  "boundaries",
-]
-export const MONTE_CARLO_TAX_MODELS: readonly MonteCarloTaxModel[] = ["flat", "bands"]
-
-// Plain-language description of each choice, for display next to it in an interactive prompt --
-// same idea as MONTE_CARLO_ALLOCATION_PRESET_LABELS above. Condensed from Actual's own real
-// config-screen copy (Crossover.tsx/MonteCarloConfiguration.tsx/MonteCarloWithdrawalRuleConfiguration.tsx
-// /MonteCarloTaxConfiguration.tsx), not invented.
-export const CROSSOVER_PROJECTION_TYPE_LABELS: Record<CrossoverProjectionType, string> = {
-  hampel: "filters out outliers, then takes the median",
-  median: "the median, no filtering",
-  mean: "the plain average",
-}
-
-export const MONTE_CARLO_WITHDRAWAL_STRATEGY_LABELS: Record<MonteCarloWithdrawalStrategy, string> = {
-  proportional: "split across pots based on their current balances",
-  sequential: "drain the first pot before touching the next",
-  "best-performer": "each year, drain last year's highest-returning pot",
-  "target-mix": "withdraw from whichever pots grew above their starting share",
-}
-
-export const MONTE_CARLO_RETURN_MODEL_LABELS: Record<MonteCarloReturnModel, string> = {
-  normal: "drawn from a normal distribution around each pot's return/volatility",
-  "historical-bootstrap": "drawn from actual US market years (1928+) in random order",
-  "historical-sequence": "replays real market history, one scenario per starting year",
-}
-
-export const MONTE_CARLO_WITHDRAWAL_RULE_TYPE_LABELS: Record<MonteCarloWithdrawalRuleType, string> = {
-  none: "fixed, inflation-adjusted withdrawals",
-  guardrails: "Guyton-Klinger capital-preservation/prosperity triggers",
-  ratcheting: "Kitces: raise withdrawals after sustained gains",
-  "floor-ceiling": "Bengen: a bounded share of the current balance",
-  boundaries: "cut/raise when the withdrawal rate crosses a threshold",
-}
-
-export const MONTE_CARLO_TAX_MODEL_LABELS: Record<MonteCarloTaxModel, string> = {
-  flat: "one effective tax rate per pot",
-  bands: "your own progressive bands, by taxable share per pot",
-}
-
-export const DEFAULT_CROSSOVER_CONFIG: CrossoverAssumptions = {
-  safeWithdrawalRate: 0.04,
-  estimatedReturn: null,
-  projectionType: "hampel",
-  expenseAdjustmentFactor: 1.0,
-  showHiddenCategories: false,
-}
-
-export const DEFAULT_MONTE_CARLO_CONFIG: MonteCarloAssumptions = {
-  withdrawalStrategy: "proportional",
-  returnModel: "normal",
-  withdrawalRule: { type: "none" },
-  minimumWithdrawal: 0,
-  inflationMean: 0.03,
-  inflationStdDev: 0.02,
-  taxModel: "flat",
-  taxBands: [],
-  simulationCount: 5000,
-}
 
 export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   birthDate: null,
@@ -211,44 +292,9 @@ export const EMPTY_FIRE_CONFIG: FireConfig = {
   version: 1,
   accounts: [],
   dashboard: DEFAULT_DASHBOARD_CONFIG,
-  crossover: DEFAULT_CROSSOVER_CONFIG,
-  monteCarlo: DEFAULT_MONTE_CARLO_CONFIG,
 }
 
 export const DEFAULT_CONFIG_PATH = "config.json"
-
-// Age at which most US tax-advantaged retirement accounts can be withdrawn from without an early
-// withdrawal penalty. A rough default -- override per-account for precision (e.g. Roth
-// contribution basis, or plan-specific rules like the age-55 separation-from-service exception).
-const DEFAULT_ACCESS_AGE = 59
-
-// Every category, in the order shown to the user when picking one interactively, with the default
-// tax treatment/access age that category implies -- the single source of truth both the heuristic
-// rules below and the interactive classifier (./actual configure) derive traits from.
-export const FIRE_ACCOUNT_CATEGORIES: readonly FireAccountCategory[] = [
-  "retirement-tax-deferred",
-  "retirement-roth",
-  "hsa",
-  "investment-taxable",
-  "debt",
-  "cash",
-  "other",
-]
-
-export const CATEGORY_TRAITS: Record<FireAccountCategory, Omit<FireAccountTraits, "category">> = {
-  "retirement-tax-deferred": { taxTreatment: "tax-deferred", accessAge: DEFAULT_ACCESS_AGE, allocationPreset: "equity-80" },
-  "retirement-roth": { taxTreatment: "tax-free", accessAge: DEFAULT_ACCESS_AGE, allocationPreset: "equity-80" },
-  hsa: { taxTreatment: "tax-free", accessAge: null, allocationPreset: "equity-60" },
-  "investment-taxable": { taxTreatment: "taxable", accessAge: null, allocationPreset: "equity-80" },
-  debt: { taxTreatment: "none", accessAge: null, allocationPreset: null },
-  cash: { taxTreatment: "none", accessAge: null, allocationPreset: null },
-  other: { taxTreatment: "none", accessAge: null, allocationPreset: null },
-}
-
-// Function to build the full traits for a category, using CATEGORY_TRAITS' defaults
-export function traitsForCategory(category: FireAccountCategory): FireAccountTraits {
-  return { category, ...CATEGORY_TRAITS[category] }
-}
 
 // Categories that count as part of an investable portfolio -- eligible for a Monte Carlo "pot"
 // and for the crossover-card's safe-withdrawal-rate calculation. Debt isn't investable; cash/other
@@ -270,28 +316,76 @@ export function portfolioAccounts(accounts: readonly ClassifiedAccount[]): Class
   return accounts.filter((account) => isPortfolioCategory(account.category))
 }
 
-// Ordered, case-insensitive name-pattern rules. Order matters: more specific patterns (roth, hsa)
-// are checked before broader ones (ira, investment) so e.g. "Roth 401k" classifies as
-// retirement-roth, not retirement-tax-deferred.
-interface HeuristicRule {
-  pattern: RegExp
-  category: FireAccountCategory
+// Shared name patterns -- used both by the fresh-account heuristic (classifyByHeuristic) and by
+// the legacy category->type migration (guessTypeFromLegacyCategory), which both need to tell a
+// 401(k)-family plan apart from an IRA, and an inherited IRA apart from either.
+const HSA_PATTERN = /\bhsa\b|\bhealth savings\b/i
+const INHERITED_IRA_PATTERN = /\bbda\b|\bbeneficiary\b|\binherited\b/i
+const ROTH_PATTERN = /\broth\b/i
+const EMPLOYER_PLAN_PATTERN = /\b401\s?k\b|\b403\s?b\b|\b457\b|\btsp\b|\bpension\b/i
+const IRA_PATTERN = /\bira\b/i
+const DEBT_PATTERN = /\bmortgage\b|\bloan\b|\bcredit card\b|\bline of credit\b|\bheloc\b/i
+const BROKERAGE_PATTERN = /\bbrokerage\b|\binvestment\b|\btaxable\b/i
+
+// Function to classify a single account by name only. Returns null when nothing matches, so the
+// caller can fall back to a documented default rather than a silent guess. Checked in an order
+// that resolves overlaps correctly: HSA and "inherited/BDA" are checked before the generic IRA
+// pattern (an inherited IRA's name usually also contains "IRA"), and Roth is combined with the
+// employer-plan/IRA checks rather than a plain ordered list, since "Roth 401k" and "Roth IRA" need
+// to land on two different AccountTypes, not one shared "roth" category.
+export function classifyByHeuristic(name: string): AccountType | null {
+  if (HSA_PATTERN.test(name)) {
+    return "hsa"
+  }
+  if (INHERITED_IRA_PATTERN.test(name)) {
+    return "inherited-ira"
+  }
+  const isRoth = ROTH_PATTERN.test(name)
+  const isEmployerPlan = EMPLOYER_PLAN_PATTERN.test(name)
+  const isIra = IRA_PATTERN.test(name)
+  if (isRoth) {
+    return isIra && !isEmployerPlan ? "roth-ira" : "roth-401k"
+  }
+  if (isEmployerPlan) {
+    return "traditional-401k"
+  }
+  if (isIra) {
+    return "traditional-ira"
+  }
+  if (DEBT_PATTERN.test(name)) {
+    return "debt"
+  }
+  if (BROKERAGE_PATTERN.test(name)) {
+    return "brokerage"
+  }
+  return null
 }
 
-const HEURISTIC_RULES: readonly HeuristicRule[] = [
-  { pattern: /\bhsa\b|\bhealth savings\b/i, category: "hsa" },
-  { pattern: /\broth\b/i, category: "retirement-roth" },
-  { pattern: /\b401\s?k\b|\b403\s?b\b|\b457\b|\bira\b|\bpension\b|\btsp\b/i, category: "retirement-tax-deferred" },
-  { pattern: /\bmortgage\b|\bloan\b|\bcredit card\b|\bline of credit\b|\bheloc\b/i, category: "debt" },
-  { pattern: /\bbrokerage\b|\binvestment\b|\btaxable\b/i, category: "investment-taxable" },
-]
-
-// Function to classify a single account by name only, using ordered heuristic rules. Returns null
-// when nothing matches, so the caller can fall back to a documented default rather than a silent
-// guess.
-export function classifyByHeuristic(name: string): FireAccountTraits | null {
-  const rule = HEURISTIC_RULES.find((candidate) => candidate.pattern.test(name))
-  return rule ? traitsForCategory(rule.category) : null
+// Function to guess an AccountType for a legacy override (category only, no type) using the real
+// account name -- unlike classifyByHeuristic, this always returns something (never null), since a
+// legacy override already has a definite category to fall back to; the name only sharpens which
+// type within that category. Called from classifyAccounts, not loadFireConfig, since only
+// classifyAccounts has the account's actual name -- `match` is frequently an id instead.
+function guessTypeFromLegacyCategory(category: FireAccountCategory, name: string): AccountType {
+  switch (category) {
+    case "retirement-tax-deferred":
+      if (INHERITED_IRA_PATTERN.test(name)) {
+        return "inherited-ira"
+      }
+      return IRA_PATTERN.test(name) && !EMPLOYER_PLAN_PATTERN.test(name) ? "traditional-ira" : "traditional-401k"
+    case "retirement-roth":
+      return IRA_PATTERN.test(name) && !EMPLOYER_PLAN_PATTERN.test(name) ? "roth-ira" : "roth-401k"
+    case "hsa":
+      return "hsa"
+    case "investment-taxable":
+      return "brokerage"
+    case "debt":
+      return "debt"
+    case "cash":
+      return "cash"
+    case "other":
+      return "other"
+  }
 }
 
 // Function to locate an account's override by id or exact name, returning -1 when it has none.
@@ -319,35 +413,186 @@ export function pruneStaleOverrides(
   return overrides.filter((override) => open.has(override.match))
 }
 
-// Function to classify every account: override > heuristic > safe default ("other", tax
-// treatment "none"). "other" -- not "cash" -- is the fallback, since a name the heuristic can't
-// recognize might not be cash at all; "cash" itself is only ever chosen explicitly (an override,
-// or an interactive answer). The "default" source is meant to be visibly flagged by callers (e.g.
-// configure.ts) as needing review -- it is a safe fallback, not a confident classification.
+// Function to get one type's core classification fields, for spreading into a ClassifiedAccount --
+// deliberately narrower than AccountTypeTraits (drops label/ruleOf55Eligible/limitGroup, which
+// aren't ClassifiedAccount fields).
+function classifiedFieldsForType(type: AccountType): Pick<AccountTypeTraits, "category" | "taxTreatment" | "accessAge" | "allocationPreset"> {
+  const { category, taxTreatment, accessAge, allocationPreset } = ACCOUNT_TYPE_TRAITS[type]
+  return { category, taxTreatment, accessAge, allocationPreset }
+}
+
+// Function to resolve an override's effective type: its own `type` if set, else a guess from its
+// legacy `category` plus the real account name (see guessTypeFromLegacyCategory).
+function resolveOverrideType(override: FireAccountOverride, accountName: string): AccountType {
+  if (override.type) {
+    return override.type
+  }
+  if (override.category) {
+    return guessTypeFromLegacyCategory(override.category, accountName)
+  }
+  return "other"
+}
+
+// Function to compute one limit group's age-tiered annual contribution limit, in cents. Employer-
+// plan and IRA both follow the real IRS tiers (employer-plan: standard, +catchUp50 at 50-59 or
+// 64+, +catchUp60to63 at exactly 60-63; IRA: standard, +catchUp50 at 50+). HSA is deliberately
+// simplified to the self-only limit -- family-vs-self-only coverage isn't tracked per account here
+// (nothing asked for it), so a family-coverage HSA should use an explicit monthly number rather
+// than "max", which will undercount it.
+export function annualContributionLimit(limitGroup: ContributionLimitGroup, age: number, irsLimits: IrsLimits): number {
+  if (limitGroup === "employer-plan") {
+    if (age >= 60 && age <= 63) {
+      return irsLimits.employerPlan.standard + irsLimits.employerPlan.catchUp60to63
+    }
+    return age >= 50 ? irsLimits.employerPlan.standard + irsLimits.employerPlan.catchUp50 : irsLimits.employerPlan.standard
+  }
+  if (limitGroup === "ira") {
+    return age >= 50 ? irsLimits.ira.standard + irsLimits.ira.catchUp50 : irsLimits.ira.standard
+  }
+  return age >= 55 ? irsLimits.hsa.selfOnly + irsLimits.hsa.catchUp55 : irsLimits.hsa.selfOnly
+}
+
+// Function to resolve every account's monthlyContribution, turning the "max" sentinel into a
+// concrete cents/month figure. Within each limit group, every EXPLICIT (non-"max") contribution is
+// summed and subtracted from that group's annual limit first; the one account (if any) left as
+// "max" gets whatever remains, divided by 12. If more than one account in the same group is left
+// as "max" -- the UI is meant to prevent this (at most one "max" per group) -- each independently
+// gets the full remainder, which double-counts; this is a deliberately unhandled edge case rather
+// than added complexity for a state the UI already disallows.
+// Missing birthDate/irsLimits resolves every "max" to nothing (absent from the returned map) rather
+// than throwing -- IRS limits are advisory context everywhere else in this repo, never required.
+export function resolveMonthlyContributions(
+  overrides: readonly FireAccountOverride[],
+  birthDate: string | null,
+  irsLimits: IrsLimits | null,
+): Map<string, number> {
+  const resolved = new Map<string, number>()
+  const claimedAnnualByGroup = new Map<ContributionLimitGroup, number>()
+
+  for (const override of overrides) {
+    if (typeof override.monthlyContribution === "number") {
+      resolved.set(override.match, override.monthlyContribution)
+      const limitGroup = ACCOUNT_TYPE_TRAITS[resolveOverrideType(override, override.match)].limitGroup
+      if (limitGroup) {
+        claimedAnnualByGroup.set(limitGroup, (claimedAnnualByGroup.get(limitGroup) ?? 0) + override.monthlyContribution * 12)
+      }
+    }
+  }
+
+  if (birthDate === null || irsLimits === null) {
+    return resolved
+  }
+
+  const age = ageFromBirthDate(birthDate)
+  for (const override of overrides) {
+    if (override.monthlyContribution !== "max") {
+      continue
+    }
+    const limitGroup = ACCOUNT_TYPE_TRAITS[resolveOverrideType(override, override.match)].limitGroup
+    if (!limitGroup) {
+      continue
+    }
+    const annualLimit = annualContributionLimit(limitGroup, age, irsLimits)
+    const alreadyClaimed = claimedAnnualByGroup.get(limitGroup) ?? 0
+    resolved.set(override.match, Math.round(Math.max(0, annualLimit - alreadyClaimed) / 12))
+  }
+
+  return resolved
+}
+
+// Function to describe an account type's IRS contribution limit(s) as ready-to-display lines, one
+// per age tier, e.g. ["Roth IRA: $7500.00/yr [$625.00/mo]", "Roth IRA age 50+: $8600.00/yr
+// [$716.67/mo]"]. Empty for a type with no limitGroup (debt/cash/other/inherited-ira -- an
+// inherited IRA can't be contributed to at all) or when irsLimits isn't available.
+export function contributionLimitLines(type: AccountType, irsLimits: IrsLimits | null): string[] {
+  const { limitGroup, label } = ACCOUNT_TYPE_TRAITS[type]
+  if (limitGroup === null || irsLimits === null) {
+    return []
+  }
+  const line = (tierLabel: string, annualCents: number): string =>
+    `${tierLabel}: ${formatUsd(annualCents)}/yr [${formatUsd(Math.round(annualCents / 12))}/mo]`
+
+  if (limitGroup === "employer-plan") {
+    const { standard, catchUp50, catchUp60to63 } = irsLimits.employerPlan
+    return [
+      line(label, standard),
+      line(`${label} age 50-59, 64+`, standard + catchUp50),
+      line(`${label} age 60-63`, standard + catchUp60to63),
+    ]
+  }
+  if (limitGroup === "ira") {
+    const { standard, catchUp50 } = irsLimits.ira
+    return [line(label, standard), line(`${label} age 50+`, standard + catchUp50)]
+  }
+  // hsa
+  const { selfOnly, catchUp55 } = irsLimits.hsa
+  return [line(`${label} (self-only)`, selfOnly), line(`${label} (self-only) age 55+`, selfOnly + catchUp55)]
+}
+
+// Function to classify every account: override > heuristic > safe default ("other"). "other" --
+// not "cash" -- is the fallback, since a name the heuristic can't recognize might not be cash at
+// all; "cash" itself is only ever chosen explicitly. The "default" source is meant to be visibly
+// flagged by callers as needing review -- it is a safe fallback, not a confident classification.
+// birthDate/irsLimits are only used to resolve a "max" monthlyContribution (see
+// resolveMonthlyContributions) -- both default to null, so a caller that doesn't care about "max"
+// (most tests) can omit them.
 export function classifyAccounts(
   accounts: readonly Pick<Account, "id" | "name" | "offbudget">[],
   config: Pick<FireConfig, "accounts">,
+  birthDate: string | null = null,
+  irsLimits: IrsLimits | null = null,
 ): ClassifiedAccount[] {
+  const resolvedContributions = resolveMonthlyContributions(config.accounts, birthDate, irsLimits)
+
   return accounts.map((account) => {
     const identity = { id: account.id, name: account.name, offbudget: account.offbudget }
     const override = findOverride(account, config)
     if (override) {
+      const type = resolveOverrideType(override, account.name)
+      const defaults = classifiedFieldsForType(type)
+      // A legacy (category-only) override always had taxTreatment/accessAge written out
+      // explicitly by the old category-based configure -- every account got these two fields
+      // regardless of whether the person customized anything, so they're the OLD category's
+      // defaults pinned to disk, not a deliberate per-account override. Trusting them here would
+      // silently defeat the whole point of a more specific type for exactly the accounts that need
+      // it most (e.g. an inherited IRA guessed from a legacy "retirement-tax-deferred" override
+      // would otherwise stay stuck at the old category's accessAge: 59 forever, instead of the
+      // correct null). allocationPreset/monthlyContribution/ruleOf55SeparationAge were always real,
+      // individually-asked answers, so those are still honored from a legacy override.
+      // Once an override carries `type` (this migration's own next write, or a fresh account),
+      // taxTreatment/accessAge become legitimate per-account overrides again.
+      const isLegacy = override.type === undefined
       return {
         ...identity,
-        category: override.category,
-        taxTreatment: override.taxTreatment ?? "none",
-        accessAge: override.accessAge ?? null,
-        allocationPreset: override.allocationPreset ?? null,
-        monthlyContribution: override.monthlyContribution ?? null,
+        type,
+        category: defaults.category,
+        taxTreatment: isLegacy ? defaults.taxTreatment : (override.taxTreatment ?? defaults.taxTreatment),
+        accessAge: isLegacy ? defaults.accessAge : (override.accessAge ?? defaults.accessAge),
+        allocationPreset: override.allocationPreset ?? defaults.allocationPreset,
+        monthlyContribution: resolvedContributions.get(override.match) ?? null,
         ruleOf55SeparationAge: override.ruleOf55SeparationAge ?? null,
         source: "override" as const,
       }
     }
-    const heuristic = classifyByHeuristic(account.name)
-    if (heuristic) {
-      return { ...identity, ...heuristic, monthlyContribution: null, ruleOf55SeparationAge: null, source: "heuristic" as const }
+    const heuristicType = classifyByHeuristic(account.name)
+    if (heuristicType) {
+      return {
+        ...identity,
+        type: heuristicType,
+        ...classifiedFieldsForType(heuristicType),
+        monthlyContribution: null,
+        ruleOf55SeparationAge: null,
+        source: "heuristic" as const,
+      }
     }
-    return { ...identity, ...traitsForCategory("other"), monthlyContribution: null, ruleOf55SeparationAge: null, source: "default" as const }
+    return {
+      ...identity,
+      type: "other" as const,
+      ...classifiedFieldsForType("other"),
+      monthlyContribution: null,
+      ruleOf55SeparationAge: null,
+      source: "default" as const,
+    }
   })
 }
 
@@ -360,11 +605,9 @@ export interface LoadedFireConfig {
 // lets a caller decide whether to warn about that, keeping this function itself free of console
 // side effects and easy to test. Present-but-malformed is always an error: silently ignoring a
 // typo in the user's own config would be worse than failing loudly. An old-shape file (from before
-// this schema grew these sections) is NOT an error -- missing sections are treated as "not yet
-// configured" and backfilled with defaults, so ./actual configure can pick up where an old file
-// left off. This also migrates birthDate/retirementAges/planToAge from their original flat
-// top-level placement (pre-dating the `dashboard` section below) if there's no `dashboard` object
-// yet -- read-compatible with the old shape; the next write always produces the new nested one.
+// this schema grew a `dashboard` section, or before AccountType existed) is NOT an error -- see the
+// migration notes on FireAccountOverride/DashboardConfig above; read-compatible with both older
+// shapes, the next write always produces the current one.
 export function loadFireConfig(path: string): LoadedFireConfig {
   let raw: string
   try {
@@ -389,22 +632,26 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     throw new Error(`Invalid config in ${path}: expected { "version": 1, "accounts": [...] }`)
   }
 
-  // The pre-`dashboard`-section shape (still what this repo's own config.json used before this
-  // change) had these three fields directly at the top level -- read them from there as a fallback
-  // when `dashboard` itself isn't present, so upgrading this schema doesn't silently discard a real
-  // birth date/retirement ages/plan-to-age already on disk.
+  // The pre-`dashboard`-section shape had birthDate/retirementAges/planToAge directly at the top
+  // level -- read them from there as a fallback when `dashboard` itself isn't present.
   const partial = parsed as Partial<FireConfig> & { version: 1; accounts: FireAccountOverride[] } & Partial<DashboardConfig>
 
   for (const override of partial.accounts) {
-    // Catches a config left over from before a category/tax-treatment value was renamed, not just
-    // a hand-typo -- letting either through would silently misbehave downstream (e.g. an unknown
-    // category can't be found in FIRE_ACCOUNT_CATEGORIES, breaking the interactive default index)
-    // rather than failing loudly here where the problem is obvious.
-    if (!FIRE_ACCOUNT_CATEGORIES.includes(override.category)) {
-      throw new Error(
-        `Invalid config in ${path}: unknown category "${override.category}" for "${override.match}". ` +
-          `Valid categories: ${FIRE_ACCOUNT_CATEGORIES.join(", ")}.`,
-      )
+    if (override.type !== undefined) {
+      if (!ACCOUNT_TYPES.includes(override.type)) {
+        throw new Error(
+          `Invalid config in ${path}: unknown type "${override.type}" for "${override.match}". Valid types: ${ACCOUNT_TYPES.join(", ")}.`,
+        )
+      }
+    } else if (override.category !== undefined) {
+      if (!FIRE_ACCOUNT_CATEGORIES.includes(override.category)) {
+        throw new Error(
+          `Invalid config in ${path}: unknown category "${override.category}" for "${override.match}". ` +
+            `Valid categories: ${FIRE_ACCOUNT_CATEGORIES.join(", ")}.`,
+        )
+      }
+    } else {
+      throw new Error(`Invalid config in ${path}: "${override.match}" has neither type nor category.`)
     }
     if (override.taxTreatment !== undefined && !TAX_TREATMENTS.includes(override.taxTreatment)) {
       throw new Error(
@@ -418,14 +665,18 @@ export function loadFireConfig(path: string): LoadedFireConfig {
           `Valid values: ${MONTE_CARLO_ALLOCATION_PRESETS.join(", ")}.`,
       )
     }
+    if (
+      override.monthlyContribution !== undefined &&
+      override.monthlyContribution !== "max" &&
+      (typeof override.monthlyContribution !== "number" || override.monthlyContribution <= 0)
+    ) {
+      throw new Error(`Invalid config in ${path}: monthlyContribution for "${override.match}" must be a positive number or "max".`)
+    }
     if (override.ruleOf55SeparationAge != null && (typeof override.ruleOf55SeparationAge !== "number" || override.ruleOf55SeparationAge <= 0)) {
       throw new Error(`Invalid config in ${path}: ruleOf55SeparationAge for "${override.match}" must be a positive number.`)
     }
   }
 
-  // `dashboard` if the file already has the new nested section; otherwise fall back to the old
-  // flat top-level fields (see the comment on `partial` above) -- either way, `dashboardSource` is
-  // just the un-validated candidate values, validated and defaulted below like every other section.
   const dashboardSource: Partial<DashboardConfig> = partial.dashboard ?? {
     birthDate: partial.birthDate,
     retirementAges: partial.retirementAges,
@@ -440,42 +691,6 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.planToAge !== undefined && (typeof dashboardSource.planToAge !== "number" || dashboardSource.planToAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.planToAge must be a positive number.`)
   }
-  if (partial.crossover?.projectionType !== undefined && !CROSSOVER_PROJECTION_TYPES.includes(partial.crossover.projectionType)) {
-    throw new Error(
-      `Invalid config in ${path}: unknown crossover.projectionType "${partial.crossover.projectionType}". ` +
-        `Valid values: ${CROSSOVER_PROJECTION_TYPES.join(", ")}.`,
-    )
-  }
-  if (
-    partial.monteCarlo?.withdrawalStrategy !== undefined &&
-    !MONTE_CARLO_WITHDRAWAL_STRATEGIES.includes(partial.monteCarlo.withdrawalStrategy)
-  ) {
-    throw new Error(
-      `Invalid config in ${path}: unknown monteCarlo.withdrawalStrategy "${partial.monteCarlo.withdrawalStrategy}". ` +
-        `Valid values: ${MONTE_CARLO_WITHDRAWAL_STRATEGIES.join(", ")}.`,
-    )
-  }
-  if (partial.monteCarlo?.returnModel !== undefined && !MONTE_CARLO_RETURN_MODELS.includes(partial.monteCarlo.returnModel)) {
-    throw new Error(
-      `Invalid config in ${path}: unknown monteCarlo.returnModel "${partial.monteCarlo.returnModel}". ` +
-        `Valid values: ${MONTE_CARLO_RETURN_MODELS.join(", ")}.`,
-    )
-  }
-  if (
-    partial.monteCarlo?.withdrawalRule?.type !== undefined &&
-    !MONTE_CARLO_WITHDRAWAL_RULE_TYPES.includes(partial.monteCarlo.withdrawalRule.type)
-  ) {
-    throw new Error(
-      `Invalid config in ${path}: unknown monteCarlo.withdrawalRule.type "${partial.monteCarlo.withdrawalRule.type}". ` +
-        `Valid values: ${MONTE_CARLO_WITHDRAWAL_RULE_TYPES.join(", ")}.`,
-    )
-  }
-  if (partial.monteCarlo?.taxModel !== undefined && !MONTE_CARLO_TAX_MODELS.includes(partial.monteCarlo.taxModel)) {
-    throw new Error(
-      `Invalid config in ${path}: unknown monteCarlo.taxModel "${partial.monteCarlo.taxModel}". ` +
-        `Valid values: ${MONTE_CARLO_TAX_MODELS.join(", ")}.`,
-    )
-  }
 
   const config: FireConfig = {
     version: 1,
@@ -485,19 +700,12 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       retirementAges: dashboardSource.retirementAges ?? DEFAULT_DASHBOARD_CONFIG.retirementAges,
       planToAge: dashboardSource.planToAge ?? DEFAULT_DASHBOARD_CONFIG.planToAge,
     },
-    crossover: { ...DEFAULT_CROSSOVER_CONFIG, ...partial.crossover },
-    monteCarlo: {
-      ...DEFAULT_MONTE_CARLO_CONFIG,
-      ...partial.monteCarlo,
-      withdrawalRule: { ...DEFAULT_MONTE_CARLO_CONFIG.withdrawalRule, ...partial.monteCarlo?.withdrawalRule },
-    },
   }
 
   return { config, found: true }
 }
 
-// Function to write config.json, e.g. after an interactive configuration session (./actual
-// configure) has collected a fresh answer for every question.
+// Function to write config.json, e.g. after an account edit in the app's web UI
 export function writeFireConfig(path: string, config: FireConfig): void {
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`)
 }
@@ -507,11 +715,16 @@ export interface ClassifiedAccountsResult {
   configFound: boolean
 }
 
-// Function to load config.json, fetch every open account, and classify them -- the one non-pure
-// export in this module (it makes an API call), shared by configure.ts and reports-fire.ts so the
-// "load, fetch, classify" sequence isn't duplicated between them.
-export async function loadClassifiedAccounts(config: ActualConfig, configPath: string): Promise<ClassifiedAccountsResult> {
+// Function to load config.json (plus the IRS limits reference file, for resolving a "max"
+// contribution), fetch every open account, and classify them -- the one non-pure export in this
+// module (it makes API calls), shared by app-server.ts's routes.
+export async function loadClassifiedAccounts(
+  config: ActualConfig,
+  configPath: string,
+  irsLimitsPath: string = DEFAULT_IRS_LIMITS_PATH,
+): Promise<ClassifiedAccountsResult> {
   const { config: fireConfig, found: configFound } = loadFireConfig(configPath)
+  const irsLimits = loadIrsLimits(irsLimitsPath)
   const accounts = await fetchAllOpenAccounts(config)
-  return { accounts: classifyAccounts(accounts, fireConfig), configFound }
+  return { accounts: classifyAccounts(accounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits), configFound }
 }

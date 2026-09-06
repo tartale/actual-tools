@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runway — Actual Companion</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div>
+        <div class="wordmark">Runway <span class="tag">Beta</span></div>
+        <div class="subline">Companion for Actual Budget</div>
+      </div>
+      <nav class="sections">
+        <div class="section-item active">Retirement</div>
+        <div class="section-item disabled">Budget <span class="soon">Planned</span></div>
+        <div class="section-item disabled">Transactions <span class="soon">Planned</span></div>
+      </nav>
+      <div class="rail-foot">
+        Reads and writes your local <code id="configPathLabel">config.json</code>. Generates dashboards Actual imports directly — nothing is pushed to Actual automatically.
+      </div>
+    </aside>
+
+    <main>
+      <div class="page-head">
+        <div>
+          <h1>Retirement</h1>
+          <p>Account facts feed the FIRE dashboard's Monte Carlo simulation; everything else — withdrawal rate, tax model, inflation — stays owned by Actual itself.</p>
+        </div>
+      </div>
+
+      <div class="top-error" id="topError" hidden></div>
+
+      <div class="summary">
+        <div class="tile"><div class="label">Portfolio</div><div class="value num" id="sumPortfolio">—</div></div>
+        <div class="tile"><div class="label">Current age</div><div class="value num" id="sumAge">—</div></div>
+        <div class="tile"><div class="label">Retirement ages</div><div class="value num" id="sumAges">—</div></div>
+        <div class="tile"><div class="label">Plan to age</div><div class="value num" id="sumPlanToAge">—</div></div>
+      </div>
+
+      <div class="tabs">
+        <button type="button" class="tab active" data-tab="configure">Configure</button>
+        <button type="button" class="tab" data-tab="analyze">Analyze</button>
+      </div>
+
+      <!-- CONFIGURE -->
+      <div class="panel active" id="panel-configure">
+        <div class="card">
+          <div class="card-head">
+            <h2>Plan</h2>
+            <span class="hint">Autosaves on change</span>
+          </div>
+          <div class="card-body">
+            <div class="plan-grid">
+              <div class="field">
+                <label for="birthDate">Birth date</label>
+                <input type="date" id="birthDate">
+                <div class="derived">Current age: <span class="num" id="ageDerived">—</span> — used for IRS catch-up tiers<span class="saved-flag" id="savedBirth">saved</span></div>
+              </div>
+              <div class="field">
+                <label for="retireAges">Retirement ages to compare</label>
+                <input type="text" id="retireAges">
+                <div class="derived">Space- or comma-separated<span class="saved-flag" id="savedRetire">saved</span></div>
+              </div>
+              <div class="field">
+                <label for="planToAge">Plan to age</label>
+                <input type="number" id="planToAge">
+                <div class="derived">Conservative horizon, not a lifespan estimate<span class="saved-flag" id="savedPlan">saved</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Accounts</h2>
+            <span class="hint" id="accountCountHint">—</span>
+          </div>
+          <div class="accounts" id="accountsList"></div>
+        </div>
+      </div>
+
+      <!-- ANALYZE -->
+      <div class="panel" id="panel-analyze">
+        <div class="card">
+          <div class="card-head">
+            <h2>Generate dashboard</h2>
+            <span class="hint">Writes fire-dashboard.json</span>
+          </div>
+          <div class="card-body generate-row">
+            <div style="font-size:12px;color:var(--ink-soft);max-width:48ch;">Builds net-worth, crossover, and Monte Carlo widgets from live balances and the accounts on the left. Import once into a new Actual dashboard page — regenerating never overwrites your hand edits there.</div>
+            <button type="button" class="btn" id="generateBtn">Generate dashboard</button>
+          </div>
+          <div class="gen-result" id="genResult" hidden></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Check</h2>
+            <span class="hint">Reads the live dashboard via ActualQL</span>
+          </div>
+          <div id="checkResult">
+            <div class="empty-note">Open this tab to run a check.</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

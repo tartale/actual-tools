@@ -1,5 +1,5 @@
 import { portfolioAccounts } from "./fire-accounts.ts"
-import type { ClassifiedAccount, FireConfig, MonteCarloAllocationPreset, TaxTreatment } from "./fire-accounts.ts"
+import type { ClassifiedAccount, MonteCarloAllocationPreset, TaxTreatment } from "./fire-accounts.ts"
 
 // Builds an Actual-native dashboard JSON (net worth, spending, and a FIRE crossover projection)
 // from classified accounts and expense categories. Pure -- no API calls, no file I/O.
@@ -98,6 +98,20 @@ export interface CrossoverAssumptions {
   projectionType: CrossoverProjectionType
   expenseAdjustmentFactor: number
   showHiddenCategories: boolean
+}
+
+// Used only the first time a dashboard is generated for a page with no existing file to merge
+// against -- config.json no longer stores these at all, since mergeGeneratedDashboard already
+// preserves whatever the person tunes afterward (in Actual's own crossover/Monte Carlo config UI,
+// or by hand) by reading the previously generated dashboard file, not config.json. These are
+// Actual's own real UI defaults (matched against Crossover.tsx/MonteCarloConfiguration.tsx), not
+// invented.
+export const DEFAULT_CROSSOVER_ASSUMPTIONS: CrossoverAssumptions = {
+  safeWithdrawalRate: 0.04,
+  estimatedReturn: null,
+  projectionType: "hampel",
+  expenseAdjustmentFactor: 1.0,
+  showHiddenCategories: false,
 }
 
 // Function to build the crossover-card widget -- the FIRE date/nest-egg projection.
@@ -299,7 +313,7 @@ export function effectiveAccessAge(account: Pick<ClassifiedAccount, "accessAge" 
 
 // Function to build one Monte Carlo pot from a portfolio account. Requires a non-null
 // allocationPreset -- every portfolio-category account gets one by default (see
-// fire-accounts.ts's CATEGORY_TRAITS), so a null here means an incomplete override; callers should
+// fire-accounts.ts's ACCOUNT_TYPE_TRAITS), so a null here means an incomplete override; callers should
 // catch that before reaching this function (see buildMonteCarloWidget).
 export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteCarloAllocationPreset }): MonteCarloPotMeta {
   const { mean, stdDev } = ALLOCATION_PRESET_RETURNS[account.allocationPreset]
@@ -347,6 +361,19 @@ export interface MonteCarloAssumptions {
   taxModel: MonteCarloTaxModel
   taxBands: MonteCarloTaxBandMeta[]
   simulationCount: number
+}
+
+// See DEFAULT_CROSSOVER_ASSUMPTIONS above -- same "first generation only" role.
+export const DEFAULT_MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
+  withdrawalStrategy: "proportional",
+  returnModel: "normal",
+  withdrawalRule: { type: "none" },
+  minimumWithdrawal: 0,
+  inflationMean: 0.03,
+  inflationStdDev: 0.02,
+  taxModel: "flat",
+  taxBands: [],
+  simulationCount: 5000,
 }
 
 // Function to build one recurring-contribution entry per portfolio account with a nonzero monthly
@@ -586,153 +613,4 @@ export function mergeGeneratedDashboard(generated: ExportImportDashboard, existi
   const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget))))
   const foreignWidgets = existing.widgets.filter((widget) => !OWNED_WIDGET_TYPES.includes(widget.type as FireWidgetType))
   return { version: generated.version, widgets: [...widgets, ...(foreignWidgets as ExportImportDashboardWidget[])] }
-}
-
-// --- Extracting configurable assumptions back out of an existing dashboard file (the mirror
-// direction of mergeGeneratedDashboard, config -> dashboard) ---
-//
-// A person may tweak an assumption post-import in Actual's own Monte Carlo/crossover configuration
-// UI and copy the resulting file back; ./actual configure uses this to pick that change up into
-// config.json rather than silently discarding it the next time it asks its own questions.
-
-function isNumber(value: unknown): value is number {
-  return typeof value === "number"
-}
-
-function isNumberOrNull(value: unknown): value is number | null {
-  return value === null || typeof value === "number"
-}
-
-function isString(value: unknown): value is string {
-  return typeof value === "string"
-}
-
-function isBoolean(value: unknown): value is boolean {
-  return typeof value === "boolean"
-}
-
-// Function to read one field off an untrusted meta object, falling back when it's missing or the
-// wrong JS type -- exact enum-membership validation happens later, when config.json is next read
-// back via loadFireConfig, matching this file's existing merge functions' level of defensiveness.
-function readField<T>(meta: Record<string, unknown>, key: string, isValid: (value: unknown) => value is T, fallback: T): T {
-  const value = meta[key]
-  return isValid(value) ? value : fallback
-}
-
-function extractCrossoverAssumptions(meta: Record<string, unknown>, fallback: CrossoverAssumptions): CrossoverAssumptions {
-  return {
-    safeWithdrawalRate: readField(meta, "safeWithdrawalRate", isNumber, fallback.safeWithdrawalRate),
-    estimatedReturn: readField(meta, "estimatedReturn", isNumberOrNull, fallback.estimatedReturn),
-    projectionType: readField(meta, "projectionType", isString, fallback.projectionType) as CrossoverProjectionType,
-    expenseAdjustmentFactor: readField(meta, "expenseAdjustmentFactor", isNumber, fallback.expenseAdjustmentFactor),
-    showHiddenCategories: readField(meta, "showHiddenCategories", isBoolean, fallback.showHiddenCategories),
-  }
-}
-
-function extractMonteCarloAssumptions(meta: Record<string, unknown>, fallback: MonteCarloAssumptions): MonteCarloAssumptions {
-  const withdrawalRuleRaw = meta.withdrawalRule
-  const withdrawalRule =
-    withdrawalRuleRaw && typeof withdrawalRuleRaw === "object" && isString((withdrawalRuleRaw as Record<string, unknown>).type)
-      ? (withdrawalRuleRaw as MonteCarloWithdrawalRuleMeta)
-      : fallback.withdrawalRule
-  const taxBandsRaw = meta.taxBands
-  const taxBands = Array.isArray(taxBandsRaw) ? (taxBandsRaw as MonteCarloTaxBandMeta[]) : fallback.taxBands
-
-  return {
-    withdrawalStrategy: readField(meta, "withdrawalStrategy", isString, fallback.withdrawalStrategy) as MonteCarloWithdrawalStrategy,
-    returnModel: readField(meta, "returnModel", isString, fallback.returnModel) as MonteCarloReturnModel,
-    withdrawalRule,
-    minimumWithdrawal: readField(meta, "minimumWithdrawal", isNumber, fallback.minimumWithdrawal),
-    inflationMean: readField(meta, "inflationMean", isNumberOrNull, fallback.inflationMean),
-    inflationStdDev: readField(meta, "inflationStdDev", isNumber, fallback.inflationStdDev),
-    taxModel: readField(meta, "taxModel", isString, fallback.taxModel) as MonteCarloTaxModel,
-    taxBands,
-    simulationCount: readField(meta, "simulationCount", isNumber, fallback.simulationCount),
-  }
-}
-
-// Function to reconstruct the retirement age a single monte-carlo-card widget represents, from its
-// own "retirement-spending" spending phase (see buildSpendingPhases) -- a null fromAge means
-// already-retired, i.e. the widget's own currentAge.
-function retirementAgeFromWidget(meta: Record<string, unknown>): number | null {
-  const phases = meta.spendingPhases
-  if (!Array.isArray(phases)) {
-    return null
-  }
-  const phase = (phases as MonteCarloSpendingPhaseMeta[]).find((candidate) => candidate?.id === "retirement-spending")
-  if (!phase) {
-    return null
-  }
-  if (phase.fromAge != null) {
-    return phase.fromAge
-  }
-  return isNumber(meta.currentAge) ? meta.currentAge : null
-}
-
-// Function to read one monte-carlo-card widget's contributions back into the matching account
-// overrides' monthlyContribution (cents/month, the inverse of buildContributions' x12). Only
-// touches overrides that already exist in `accounts` -- an account with no override yet is left
-// alone, since extraction never invents new account classifications.
-function applyContributions(meta: Record<string, unknown>, accounts: FireConfig["accounts"]): FireConfig["accounts"] {
-  const contributionsRaw = meta.contributions
-  if (!Array.isArray(contributionsRaw)) {
-    return accounts
-  }
-  const monthlyByPotId = new Map<string, number>()
-  for (const contribution of contributionsRaw as MonteCarloContributionMeta[]) {
-    if (typeof contribution?.potId === "string" && isNumber(contribution.annualAmount)) {
-      monthlyByPotId.set(contribution.potId, Math.round(contribution.annualAmount / 12))
-    }
-  }
-  if (monthlyByPotId.size === 0) {
-    return accounts
-  }
-  return accounts.map((override) => {
-    const monthlyContribution = monthlyByPotId.get(override.match)
-    return monthlyContribution === undefined ? override : { ...override, monthlyContribution }
-  })
-}
-
-// Function to extract configurable assumptions back out of an existing dashboard file into a
-// config -- the mirror of mergeGeneratedDashboard's direction (config -> dashboard). Used by
-// ./actual configure to pick up a change made post-import in Actual's own configuration UI (copied
-// back into the file), rather than silently overwriting it the next time it asks its own
-// questions. Never touches birthDate, planToAge, or any account's category/taxTreatment/
-// accessAge/allocationPreset -- those are sourced from real account/user input, never the
-// dashboard. A dashboard with no crossover-card/monte-carlo-card widget leaves the corresponding
-// config section untouched.
-export function extractConfigFromDashboard(existing: ExistingDashboard, config: FireConfig): FireConfig {
-  const crossoverWidget = existing.widgets.find((widget) => widget.type === "crossover-card")
-  const monteCarloWidgets = existing.widgets.filter((widget) => widget.type === "monte-carlo-card")
-
-  const crossover = crossoverWidget?.meta ? extractCrossoverAssumptions(crossoverWidget.meta, config.crossover) : config.crossover
-
-  // All Monte Carlo widgets share one set of assumptions in this tool's own generated files (see
-  // buildMonteCarloWidgets); if only one was hand-edited, there's no way to reconcile a
-  // disagreement, so the first one found wins, same as any other "pick one" ambiguity here.
-  const firstMonteCarloMeta = monteCarloWidgets[0]?.meta
-  const monteCarlo = firstMonteCarloMeta ? extractMonteCarloAssumptions(firstMonteCarloMeta, config.monteCarlo) : config.monteCarlo
-
-  const retirementAges = [
-    ...new Set(
-      monteCarloWidgets
-        .map((widget) => (widget.meta ? retirementAgeFromWidget(widget.meta) : null))
-        .filter((age): age is number => age !== null),
-    ),
-  ]
-
-  let accounts = config.accounts
-  for (const widget of monteCarloWidgets) {
-    if (widget.meta) {
-      accounts = applyContributions(widget.meta, accounts)
-    }
-  }
-
-  return {
-    ...config,
-    crossover,
-    monteCarlo,
-    dashboard: { ...config.dashboard, retirementAges: retirementAges.length > 0 ? retirementAges : config.dashboard.retirementAges },
-    accounts,
-  }
 }

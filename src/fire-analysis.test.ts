@@ -22,6 +22,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
   return {
     name: "Some Account",
     offbudget: true,
+    type: "other",
     taxTreatment: "none",
     accessAge: null,
     allocationPreset: null,

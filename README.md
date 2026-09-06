@@ -25,8 +25,7 @@ Every task in this repo runs through one dispatcher, from any directory:
 ./actual budget set-values ARGS            # set category budgets
 ./actual budget anomalies ARGS             # flag categories with unusual spending
 ./actual transactions match-uncleared ARGS # tag matching uncleared transactions
-./actual configure ARGS                    # interactively configure everything reports fire needs
-./actual reports fire ARGS                 # build a FIRE dashboard for import into Actual
+./actual app ARGS                          # launch the local companion app (see below)
 ```
 
 ## `./actual budget set-values`
@@ -146,388 +145,219 @@ early-imported, never-updated row), but it means an occasional false match
 between two otherwise-unrelated transactions is possible; review the printed
 pairs, especially with `-n` first, before trusting a large `--since` window.
 
-## `./actual configure`
+## `./actual app`
 
-Interactively configures everything `./actual reports fire` needs, in one
-session, and writes it to `config.json`. Replaces the old
-`./actual accounts classify` (account classification is now step one of a
-longer flow, not the whole thing).
+The start of a local **companion app** for a self-hosted Actual Budget
+instance — one small web page, run alongside Actual, for the things a
+terminal interview does badly: retirement/FIRE configuration and dashboard
+health today; bulk budget edits and spending analysis (currently
+`./actual budget set-values`/`anomalies`) in later phases. Replaces the old
+`./actual configure` and `./actual reports fire`.
 
 ```
-./actual configure [-f PATH] [-d PATH] [-i PATH] [-s SECTION]...
+./actual app [-f PATH] [-i PATH] [-o PATH] [-p N] [--no-open]
 ```
 
-- `-f`, `--config PATH` — path to the config file to read defaults from and
-  write (default: `config.json` in the repo root).
-- `-d`, `--dashboard PATH` — path to a previously generated dashboard JSON
-  (default: `fire-dashboard.json`) — see "Picking up dashboard changes"
-  below.
+- `-f`, `--config PATH` — path to the config file to read from and write
+  (default: `config.json`).
 - `-i`, `--irs-limits PATH` — path to the IRS contribution limits reference
-  file (default: `irs-limits.json`) — see "IRS contribution limits" below.
-  Missing is fine; that context is just skipped.
-- `-s`, `--section NAME` — only ask this section's questions, leaving
-  everything else as it already is in `config.json`. Repeatable; one of
-  `accounts`, `plan` (birth date, retirement ages, plan-to-age — the
-  `dashboard` section of `config.json`; named "plan" here rather than
-  "dashboard" so it isn't confused with `-d`/`--dashboard` above),
-  `crossover`, `monte-carlo`. Default: all four. Useful for a quick re-run
-  — e.g. `./actual configure -s crossover` to update just the safe
-  withdrawal rate without re-answering everything else. Account
-  classification is always included on a first run (with no existing
-  config file yet) even if you didn't ask for it, since an empty account
-  list would leave `reports fire` with no portfolio to work with.
+  file (default: `irs-limits.json`). Missing is fine, just skips that
+  context.
+- `-o`, `--output PATH` — where the "Generate dashboard" action writes the
+  dashboard JSON (default: `fire-dashboard.json`).
+- `-p`, `--port N` — run on this fixed port instead of an OS-assigned one.
+- `--no-open` — don't try to open the page in a browser automatically, just
+  print the URL. Useful over SSH or in a container with no browser to open.
 
-### Account classification
-
-Actual's account API has no account-type field, so this repo can't know on
-its own which accounts are retirement, taxable investment, HSA, or debt.
-For each open account you get a numbered choice:
+Running it starts a local server (plain `node:http`, no new dependency)
+and prints its URL:
 
 ```
-Fidelity F5 401k -- current balance $543147.48
-  1) retirement-tax-deferred
-  2) retirement-roth
-  3) hsa
-  4) investment-taxable
-  5) debt
-  6) cash
-  7) other
-What kind of account is this? [1: retirement-tax-deferred]:
+Runway is running at http://127.0.0.1:54321/
+Press Ctrl+C to stop.
 ```
 
-The bracketed default is whichever answer wins: an existing entry in
-`config.json` first, otherwise a guess from the account's name (`401k`,
-`Roth`, `HSA`, `Mortgage`, `Brokerage`, and similar patterns). Press Enter to
-accept it. **Accounts with no existing entry and no name-based guess show no
-default** — you have to type a number; there's no way to skip one.
+Everything the page does reads and writes `config.json` directly and
+autosaves on every change — there's no separate "save" step, and no
+question order to work through; edit whatever you want, whenever you want.
+Press Ctrl+C in the terminal when you're done; it's a plain foreground
+process, not a background daemon.
 
-For accounts classified as retirement, HSA, or taxable investment, there are
-two more questions — a stock/bond allocation and a monthly contribution,
-both used by the Monte Carlo widget:
+### Retirement — Configure tab
 
-```
-  1) equity-100 (100% stocks)
-  2) equity-80 (80% stocks / 20% bonds)
-  3) equity-60 (60% stocks / 40% bonds)
-  4) equity-40 (40% stocks / 60% bonds)
-  5) cash (100% cash)
-What's an estimate of the stock/bond mix for this account? [2: equity-80]:
-Monthly contribution to this account, in dollars (0 for none) [0]:
-```
+**Plan**: birth date, one or more retirement ages to compare (space- or
+comma-separated), and the age to assume the plan needs to last to (a
+conservative default, not a lifespan estimate).
 
-For a retirement or HSA account, the contribution question is preceded by
-the current IRS annual contribution limit(s) for reference (see "IRS
-contribution limits" below) — e.g. for a `retirement-tax-deferred` account,
-since that category covers both a 401(k)-type plan and a traditional IRA
-and this tool can't tell which one a given account actually is, both limits
-are shown so you can pick the one that applies.
+**Accounts**: every open account, each with an **account type** — not just
+a coarse category, but a concrete kind (Traditional 401(k)/403(b)/457/TSP,
+Roth 401(k)/403(b), Traditional IRA, Roth IRA, Inherited/Beneficiary IRA,
+HSA, taxable brokerage, debt, cash, other). The type drives everything else
+about the account, and which fields even show up:
 
-For `retirement-tax-deferred` and `retirement-roth` accounts specifically
-(the two categories that default to `accessAge: 59`), there's one more
-question covering the Rule of 55 (IRS Code §72(t)(2)(A)(v)):
+- **Allocation** and **monthly contribution** — shown for every portfolio
+  type (retirement/HSA/taxable). A contribution can be a plain number, or
+  toggled to **Max**, which resolves live to the remainder of that type's
+  shared IRS limit after every other account's explicit contribution in
+  the same limit group (401(k)/403(b) share one limit; Traditional and
+  Roth IRA share another) — recomputed from your current age and
+  `irs-limits.json` on every read, so it never goes stale as limits update
+  each tax year or as you cross the 50 and 60–63 catch-up tiers. At most
+  one account per limit group can be **Max** at a time.
+- **IRS contribution limit(s)** — shown inline once the type is known, with
+  every age tier as its own line, e.g.:
+  ```
+  Roth IRA: $7500.00/yr [$625.00/mo]
+  Roth IRA age 50+: $8600.00/yr [$716.67/mo]
+  ```
+  An inherited/beneficiary IRA has no contribution limit at all — you
+  can't add new money to one, so neither the contribution field nor an
+  allocation-adjacent limit line appears for that type.
+- **Rule of 55** (IRC §72(t)(2)(A)(v)) — shown only for the two
+  401(k)-family types, never for an IRA, since the exception can never
+  apply to one. If you'll separate from that employer at 55 or older, give
+  the age; the account's effective access age in the Monte Carlo widget
+  drops to that age (or stays at the normal one if that's earlier).
 
-```
-Age you'll separate from this employer (0 if not applicable) [0]:
-```
+An **inherited/beneficiary IRA** also gets a real correctness fix: it has
+no early-withdrawal-penalty age restriction at all (IRC §72(t)(2)(A)(iv)),
+unlike every other IRA/401(k) type here — so its access age is always
+unrestricted, not the usual 59.
 
-If you separate from an employer during or after the calendar year you
-turn 55, you can withdraw penalty-free (ordinary income tax still applies —
-only the 10% early-withdrawal penalty is waived) from **that employer's
-own** 401(k)/403(b), starting immediately. This only applies to a
-currently-held employer plan, never an IRA, and is lost entirely the moment
-the balance is rolled into one — leave this blank for an IRA, a past
-employer's plan, or if it doesn't apply. Answering with an age of 55 or
-older lowers that account's effective access age in the Monte Carlo widget
-to the age you give (or leaves it unchanged if that's later than the
-account's normal access age); `reports fire` prints a line for every
-account this affects, e.g. `Rule of 55 applied: Fidelity 401k accessible
-from age 55 (was 59).`
+Two real strategies exist but aren't modeled: a **Roth conversion ladder**
+(staggered Traditional→Roth conversions, each with its own 5-year clock)
+isn't expressible with Actual's single access age per pot without a much
+bigger approximation, and **SEPP/72(t)** (substantially equal periodic
+payments) is a fixed IRS-formula payment schedule, not an age threshold —
+there's no honest way to represent it here, so it's left out rather than
+approximated.
 
-Two other real early-access strategies exist but aren't modeled here: a
-**Roth conversion ladder** (staggered Traditional→Roth conversions, each
-with its own 5-year clock) isn't expressible with Actual's single
-`accessAge` per pot without a much bigger approximation, and **SEPP/72(t)**
-(substantially equal periodic payments) is a fixed IRS-formula payment
-schedule, not an age threshold — there's no honest way to represent it as
-an early `accessAge` without being misleading, so it's intentionally left
-out rather than approximated.
+**Migrating an older `config.json`**: an account with no type yet (from
+before this existed) gets one guessed from its old category and real name
+— reviewable, not authoritative. The two cases most likely worth a second
+look are a Traditional/Roth IRA vs. its 401(k)-family counterpart, and an
+inherited IRA (matched by "BDA"/"beneficiary"/"inherited" in the name).
+Editing any field on a migrated account writes the current shape, dropping
+the old category field for that account.
 
-Every run covers every currently-open account — running it again is the
-normal way to fix a wrong answer or pick up a newly-added account, not
-something to avoid. Each account's entry is updated in place, and entries for
-accounts that are no longer open are dropped only once the whole pass has
-finished, so **quitting partway through leaves the accounts you hadn't
-reached yet untouched** rather than truncating the list. As long as
-an account keeps the same category between runs, any hand-customized
-`taxTreatment`, `accessAge`, `allocationPreset`, `monthlyContribution`, or
-`ruleOf55SeparationAge` in the existing file is carried over as the default
-rather than being reset — only changing an account's category resets those
-to the new category's plain defaults.
+### Retirement — Analyze tab
 
-### Plan questions (`-s plan`)
+**Generate dashboard** builds the same widgets `./actual reports fire`
+used to (a full-width net-worth widget, a safe-withdrawal-rate "crossover"
+projection, and a Monte Carlo retirement simulation, using Actual's own
+built-in dashboard widgets rather than reimplementing FIRE math) from your
+real account and spending data, and writes them to the output file. It
+refuses to run without a birth date, at least one retirement age, and at
+least one account classified into the portfolio.
 
-After every account: your birth date, one or more retirement ages to
-compare (see `reports fire` below), and the age to assume the plan needs to
-last to (a conservative default, not a lifespan estimate to guess). These
-are the dashboard-level inputs `reports fire` itself needs — as opposed to
-the crossover/Monte Carlo widget assumptions below — stored together under
-`config.json`'s own `dashboard` section.
+**This does not talk to Actual's dashboard feature directly for writing**
+— there's no API for that (confirmed against both `@actual-app/api` and
+this repo's REST wrapper). Instead it writes a JSON file in Actual's own
+dashboard-export format, which you import yourself, once:
 
-Retirement ages are entered on one line, space- or comma-separated, to
-compare more than one:
+1. Open your budget in Actual and go to the Reports/Dashboard tab.
+2. Create a **new, empty** dashboard page (e.g. name it "FIRE").
+3. On that page, open the **"..."** menu → **Import**, and pick the file.
 
-```
-Simulate retirement at ages [52, 55, 59]:
-Simulate plan to age [100]:
-```
+**Import replaces every widget already on the target page** — always
+import onto a page you're fine wiping, never your main dashboard.
+Regenerating and re-importing onto that same page is the normal way to
+refresh it. **Regenerating preserves customizations to an existing output
+file**: real-data fields always refresh (account/category ids, pot values
+and contributions, your current age, retirement-age-driven spending), but
+anything else you tweaked afterward — an assumption, an extra pot field, a
+hand-added contribution or spending phase, or a widget of a type this tool
+never generated — survives.
 
-### Crossover and Monte Carlo assumptions
+**Monte Carlo Analysis is an experimental Actual feature** — enable it
+under Settings → Advanced → Experimental features → Monte Carlo Analysis
+Report first, or the imported widget won't render.
 
-Every remaining question covers a field the crossover or Monte Carlo widget
-exposes: safe withdrawal rate, estimated return, expense projection method
-and adjustment factor, whether to show hidden categories; withdrawal
-strategy, return model, a dynamic withdrawal rule (guardrails/ratcheting/
-floor-ceiling/boundaries — picking a type only then asks that type's own
-sub-questions, skipped entirely for the default, "none"), minimum
-withdrawal, inflation mean/volatility, tax model (progressive tax bands only
-asked if you pick "bands" over the default "flat"), and simulation count.
-Each account's monthly contribution (above) is summed into the crossover
-widget's single contribution figure and threaded individually into the
-Monte Carlo widget's per-account contributions — asked once, per account,
-feeding both.
+**Check** reads the dashboard that is **live in Actual** — not the
+generated file — through Actual's own ActualQL `run-query` endpoint (gated
+behind your Actual HTTP API's experimental-operations setting; a clear
+message appears if it's off), so it sees whatever you've actually been
+editing in the app. Two things get checked:
 
-`config.json` is written after every single question, not just at the end
-of a section, so quitting partway through (ctrl-c or otherwise) never loses
-more than the one answer in flight.
+- **Drift** — a widget's stored access ages against what your current
+  config would generate, and accounts the crossover counts that the
+  simulation doesn't model (or vice versa). Either usually means the
+  dashboard predates a config change and needs re-importing.
+- **Bridge** — for each retirement age, whether the accounts you can
+  actually reach at that age fund every year until the locked ones open
+  up. This projects forward at each allocation's mean return with no
+  volatility and grosses withdrawals up for tax, applying the same
+  accessible-only funding rule Actual's own Monte Carlo engine uses — a
+  *best* case, so a scenario that runs dry here runs dry in essentially
+  every simulated run.
 
-### Picking up dashboard changes
-
-If `fire-dashboard.json` (or the path given via `-d`) exists and looks newer
-than `config.json`, `configure` offers to import its crossover/Monte Carlo
-assumptions, contributions, and retirement ages into `config.json` first —
-so a change made post-import in Actual's own Monte Carlo configuration UI
-(copied back into the file) isn't silently overwritten by the questions that
-follow.
+Retirement spend for both actions comes from the live crossover widget's
+own category selection and date range once one exists (so narrowing either
+in Actual feeds this directly, rather than being overwritten by a fixed
+trailing-12-months-over-every-category default).
 
 ### `config.json`
-
-A gitignored JSON file (it names your real accounts) holding everything
-`configure` asked about:
 
 ```json
 {
   "version": 1,
   "accounts": [
-    { "match": "691a0cae-4eed-4cfb-a42d-5878c7bdba88", "category": "investment-taxable", "taxTreatment": "taxable", "accessAge": null, "allocationPreset": "equity-80", "monthlyContribution": 50000 }
+    { "match": "<account id>", "type": "traditional-401k", "allocationPreset": "equity-80", "monthlyContribution": 150000 }
   ],
-  "dashboard": {
-    "birthDate": "1985-03-22",
-    "retirementAges": [60],
-    "planToAge": 100
-  },
-  "crossover": {
-    "safeWithdrawalRate": 0.04,
-    "estimatedReturn": null,
-    "projectionType": "hampel",
-    "expenseAdjustmentFactor": 1,
-    "showHiddenCategories": false
-  },
-  "monteCarlo": {
-    "withdrawalStrategy": "proportional",
-    "returnModel": "normal",
-    "withdrawalRule": { "type": "none" },
-    "minimumWithdrawal": 0,
-    "inflationMean": 0.03,
-    "inflationStdDev": 0.02,
-    "taxModel": "flat",
-    "taxBands": [],
-    "simulationCount": 5000
-  }
+  "dashboard": { "birthDate": "1976-07-31", "retirementAges": [55, 60], "planToAge": 100 }
 }
 ```
 
-Valid `category` values: `retirement-tax-deferred`, `retirement-roth`, `hsa`,
-`investment-taxable`, `debt`, `cash`, `other`. Valid `allocationPreset`
-values: `equity-100`, `equity-80`, `equity-60`, `equity-40`, `cash`, or
-`null` for non-portfolio categories. `monthlyContribution` is in cents, like
-every other dollar amount in this file. An old `accounts.json`-shaped file
-(from before this schema grew everything but `accounts`) still loads fine —
-missing sections are treated as unconfigured and backfilled with the
-defaults shown above, and `birthDate`/`retirementAges`/`planToAge` are
-migrated in from their original flat top-level placement (before the
-`dashboard` section existed) if found there instead. Either way, the next
-write always produces the current nested shape. This is structured,
-personal data, so it's a separate file rather than more `AB_*` environment
-variables. You won't normally hand-edit it — `./actual configure` both
-reads and writes it.
+`match` is an account id or exact name. Every crossover/Monte Carlo
+assumption Actual itself exposes (safe withdrawal rate, tax model,
+inflation, withdrawal strategy, ...) lives only in the dashboard file
+you've imported — not here — since `Generate dashboard`'s own merge
+behavior already preserves whatever you tune there.
 
 ### IRS contribution limits
 
-`irs-limits.json` (committed — it's generic reference data, not personal)
-holds this tax year's annual contribution limits, shown next to the
-monthly-contribution question for retirement/HSA accounts:
+`irs-limits.json`, git-committed (not personal data, unlike `config.json`)
+and hand-updated:
 
 ```json
 {
   "taxYear": 2026,
-  "source": "https://www.irs.gov/newsroom/401k-limit-increases-to-24500-for-2026-ira-limit-increases-to-7500 (401k/IRA) and IRS Revenue Procedure 2025-19 (HSA)",
+  "source": "https://www.irs.gov/...",
   "employerPlan": { "standard": 2450000, "catchUp50": 800000, "catchUp60to63": 1125000 },
   "ira": { "standard": 750000, "catchUp50": 110000 },
   "hsa": { "selfOnly": 440000, "family": 875000, "catchUp55": 100000 }
 }
 ```
 
-There's no IRS API for this data — only annual news releases and Revenue
-Procedure PDFs — so it's a small, hand-updated file rather than fetched
-live. `configure` warns if the calendar year has moved past `taxYear`
-rather than silently showing outdated figures. Missing or malformed is
-never fatal — this is advisory context for a prompt, not required data —
-it just means that context is skipped. To refresh it for a new tax year,
-ask an assistant to re-verify the figures against irs.gov (a real lookup,
-not a guess) and update the file.
-
-## `./actual reports fire`
-
-Builds an Actual-native FIRE (Financial Independence, Retire Early)
-dashboard from real account and spending data: a full-width net-worth
-widget, a safe-withdrawal-rate "crossover" projection, and a Monte Carlo
-retirement simulation — using Actual's own built-in dashboard widgets
-rather than reimplementing FIRE math.
-
-```
-./actual reports fire [-r N] [-b YYYY-MM-DD] [-p N] [-o PATH] [-f PATH] [-n] [-c]
-```
-
-Reads its assumptions from `config.json` (see `./actual configure` above) --
-every flag below is an optional **override** for a single run, not a
-required input:
-
-- `-r`, `--retirement-age N` — compare this retirement age instead of
-  `config.json`'s. Can be passed multiple times; **replaces** the whole
-  configured list for this run rather than adding to it (see below).
-- `-b`, `--birth-date YYYY-MM-DD` — use this birth date instead of
-  `config.json`'s.
-- `-p`, `--plan-to-age N` — use this planning horizon instead of
-  `config.json`'s.
-- `-o`, `--output PATH` — where to write the dashboard JSON (default:
-  `fire-dashboard.json`).
-- `-f`, `--config PATH` — path to `config.json` (default: repo root).
-- `-n`, `--dry-run` — print the plan and the JSON without writing the file.
-  Also enabled by setting `DRY_RUN=true`.
-- `-c`, `--check` — report on the dashboard you already imported instead of
-  generating a new one. Writes nothing. See "Checking an imported dashboard"
-  below.
-
-### Checking an imported dashboard
-
-`-c`/`--check` reads the dashboard that is **live in Actual** — not the
-generated `fire-dashboard.json` — and reports what needs attention. It reads
-it through Actual's own ActualQL `run-query` endpoint, so it sees the state
-you have been editing in the app, including changes this tool never made.
-
-Two things get checked:
-
-- **Drift** — a widget's stored access ages against what your current
-  `config.json` would generate. A mismatch means the dashboard predates a
-  config change and hasn't been re-imported. Accounts newly classified into
-  (or out of) the portfolio are flagged the same way.
-- **Bridge** — for each retirement age, whether the accounts you can
-  actually reach at that age fund every year until the locked ones open up.
-  This projects forward at each allocation's mean return with no volatility
-  and grosses withdrawals up for tax, applying the same accessible-only
-  funding rule Actual's Monte Carlo engine uses. That makes it a *best*
-  case: a scenario that runs dry here runs dry in essentially every
-  simulated run, which is what makes it worth reporting without
-  re-implementing the simulation.
-
-This needs the `run-query` endpoint, which is gated behind your Actual HTTP
-API's experimental-operations setting; with it off the call answers 501 with
-its own explanatory message.
-
-The Monte Carlo widget gets one pot per portfolio account (linked to its
-live balance, using the allocation and contribution you set in
-`./actual configure`) and every assumption from `config.json`'s
-`monteCarlo` section. Spending is split around your retirement age: $0/yr
-before it (assumes you're living off other income while still working),
-then the real trailing-12-month spend from it onward. If the retirement age
-is today or in the past, that collapses to a single always-on phase at the
-real spend.
-
-**Comparing multiple retirement ages**: pass `-r`/`--retirement-age` more
-than once (e.g. `-r 55 -r 60 -r 65`) to get one Monte Carlo widget per age,
-stacked vertically on the dashboard
-page and each labeled with its age (e.g. "Monte Carlo — Retire at 60"). This
-isn't a single overlaid chart — Actual's dashboard has no way to compare
-multiple Monte Carlo configs on one chart, each widget holds exactly one —
-but stacking them on the same page is the closest real comparison the
-widget model supports.
-
-**Monte Carlo Analysis is an experimental Actual feature** — enable it under
-Settings → Advanced → Experimental features → Monte Carlo Analysis Report,
-or the imported widget won't render. It's also a newer feature than the
-other three widgets, so its shape could still change.
-
-**Refuses to run without a `config.json`** — run `./actual configure`
-first. It also refuses to run if no account classifies as
-retirement/HSA/investment-taxable, since that almost always means the
-classification needs attention, not that the answer is "no portfolio."
-
-**This does not talk to Actual's dashboard feature directly** — there is no
-API for that today (confirmed against both `@actual-app/api` and this
-repo's REST wrapper). Instead it writes a JSON file in Actual's own
-dashboard-export format, which you import yourself:
-
-1. Open your budget in Actual and go to the Reports/Dashboard tab.
-2. Create a **new, empty** dashboard page (e.g. name it "FIRE").
-3. On that page, open the **"..."** menu → **Import**, and pick the file.
-
-**Import replaces every widget already on the target page** — there's no
-merge mode. Always import onto a page you're fine wiping (Actual's own
-undo/ctrl-z covers a bad import), never your main dashboard. Re-running
-`reports fire` and re-importing onto that same page is the normal way to
-refresh it, not a mistake to avoid.
-
-**Regenerating preserves customizations to the existing output file.** If
-`-o`/`--output` already exists, its widgets are merged with the freshly
-generated ones rather than being overwritten wholesale:
-
-- Real-data fields always refresh: account/category ids, each pot's values
-  and contributions from `config.json`, your current age, and the
-  retirement-age-driven spending amounts.
-- Everything else on a still-generated widget is preserved if you changed
-  it — a tweaked assumption (`safeWithdrawalRate`, `returnModel`,
-  `withdrawalRule`, ...), an extra pot field (a fee), an extra hand-added
-  contribution, or an extra hand-added spending phase.
-- A Monte Carlo widget for a retirement age you stop passing is dropped
-  (regeneration reflects exactly what you ask for that run).
-- A widget of a type this tool has never generated (something you added by
-  hand) is left completely untouched.
-
-```sh
-./actual reports fire                      # birth date/retirement age(s) already in config.json
-./actual reports fire -r 55 -r 60 -r 65    # compare three retirement ages for this run only
-./actual reports fire -r 60 -n             # preview without writing
-```
-
+All dollar amounts in cents. There's no IRS API for this (only annual news
+releases and Revenue Procedure PDFs) — ask a future session to re-verify
+it via a real web search once a new tax year's limits are announced,
+usually in the preceding fall. HSA's family-coverage figure is tracked in
+the file but not used to compute a "Max" contribution (self-only vs.
+family coverage isn't tracked per account) — type an explicit monthly
+number for a family-coverage HSA instead.
 ## Layout
 
 ```
 actual                   task dispatcher, the entry point for everything
 lib/cli-format.sh        shared bash help-text formatting, used by actual
 src/                     TypeScript sources and their tests
-  actual-helpers.ts      typed Actual REST client + pure helpers
+  actual-helpers.ts      typed Actual REST client + pure helpers, incl. the ActualQL run-query client
   anomaly-detect.ts      pure MAD-based outlier detection, no API dependency
   cli-format.ts          shared TypeScript help-text formatting
-  fire-accounts.ts       account classification (heuristics + config.json overrides) and the FireConfig schema
-  fire-dashboard.ts      builds Actual-native dashboard widget JSON (vendored widget types) + two-way config/dashboard merge
+  fire-accounts.ts       account types/classification (heuristics + config.json overrides) and the FireConfig schema
+  fire-dashboard.ts      builds Actual-native dashboard widget JSON (vendored widget types) + generated/existing-file merge
+  fire-analysis.ts       pure bridge-projection and drift/mismatch-finding logic behind the Analyze tab's Check
+  fire-generate.ts       generateDashboard/checkDashboard -- the non-CLI logic behind the Analyze tab
   irs-limits.ts          loads irs-limits.json, the IRS contribution limits reference file
+  app-server.ts          the companion app's node:http server, routes namespaced under /api/retirement/
+  app-ui/                the companion app's static page (plain HTML/CSS/vanilla JS, no build step)
+  app.ts                 executable CLI: thin bootstrap for app-server.ts
   set-budget.ts          executable CLI
   anomalies.ts           executable CLI
   match-uncleared.ts     executable CLI
-  configure.ts           executable CLI
-  reports-fire.ts        executable CLI
   *.test.ts              vitest unit tests
-eslint.config.js         flat config, type-aware rules via typescript-eslint
+eslint.config.js         flat config, type-aware rules via typescript-eslint (app-ui/*.js excluded -- plain browser JS, not part of the Node project)
 ```
 
 Every `--help` in this repo (`./actual`, `./actual budget`, and each subcommand)

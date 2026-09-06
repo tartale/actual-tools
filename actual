@@ -20,8 +20,7 @@ function usage() {
     "test" "Run the unit test suite." \
     "budget" "Set category budgets or flag unusual spending. See './actual budget --help'." \
     "transactions" "Work with individual transactions. See './actual transactions --help'." \
-    "configure" "Interactively configure account classification and FIRE chart assumptions. See './actual configure --help'." \
-    "reports" "Generate FIRE and other financial reports. See './actual reports --help'."
+    "app" "Launch the local companion app (retirement/FIRE today; more sections planned). See './actual app --help'."
   exit "${exitCode}"
 }
 
@@ -43,16 +42,6 @@ function transactionsUsage() {
   echo >&2
   cliSection "Subcommands" \
     "match-uncleared" "Tag uncleared transactions that match a cleared one."
-  exit "${exitCode}"
-}
-
-# Function to display usage for the reports subcommand group and exit
-function reportsUsage() {
-  local exitCode="${1:-1}"
-  cliUsage "./actual reports SUBCOMMAND [ARGS]"
-  echo >&2
-  cliSection "Subcommands" \
-    "fire" "Build a FIRE dashboard for import into Actual. See './actual reports fire --help'."
   exit "${exitCode}"
 }
 
@@ -143,28 +132,6 @@ function commandTransactions() {
   esac
 }
 
-# Function to dispatch the reports subcommands
-function commandReports() {
-  local subcommand="${1:-}"
-  if [[ -z "${subcommand}" ]]; then
-    reportsUsage 1
-  fi
-  if [[ "${subcommand}" == "-h" || "${subcommand}" == "--help" ]]; then
-    reportsUsage 0
-  fi
-  shift
-
-  case "${subcommand}" in
-    fire)
-      exec ./src/reports-fire.ts "$@"
-      ;;
-    *)
-      echo "Unknown reports subcommand: ${subcommand}" >&2
-      reportsUsage
-      ;;
-  esac
-}
-
 # Main function
 function main() {
   local command="${1:-}"
@@ -179,8 +146,7 @@ function main() {
     test) commandTest "$@" ;;
     budget) commandBudget "$@" ;;
     transactions) commandTransactions "$@" ;;
-    configure) exec ./src/configure.ts "$@" ;;
-    reports) commandReports "$@" ;;
+    app) exec ./src/app.ts "$@" ;;
     -h|--help|help) usage 0 ;;
     *)
       echo "Unknown command: ${command}" >&2

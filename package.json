@@ -9,8 +9,7 @@
     "set-budget": "./src/set-budget.ts",
     "anomalies": "./src/anomalies.ts",
     "match-uncleared": "./src/match-uncleared.ts",
-    "configure": "./src/configure.ts",
-    "reports-fire": "./src/reports-fire.ts"
+    "app": "./src/app.ts"
   },
   "engines": {
     "node": ">=22.18"

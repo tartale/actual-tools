@@ -12,15 +12,6 @@ export interface Finding {
   detail: string[]
 }
 
-const LEVEL_MARKERS: Record<FindingLevel, string> = { fail: "x", warn: "!", info: "-", ok: "+" }
-
-// Function to render one finding as an indented block: a marked title line, then its detail lines
-// aligned under it.
-export function formatFinding(finding: Finding): string {
-  const lines = [`  ${LEVEL_MARKERS[finding.level]} ${finding.title}`]
-  return [...lines, ...finding.detail.map((line) => `      ${line}`)].join("\n")
-}
-
 // One portfolio account reduced to just what the bridge projection needs. accessAge here is
 // already Rule-of-55 adjusted (see effectiveAccessAge) -- this type deliberately has no notion of
 // why an age is what it is.

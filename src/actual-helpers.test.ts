@@ -32,14 +32,12 @@ import {
   parseDollarAmount,
   patchCategoryBudget,
   patchTransactionNotes,
-  promptChoice,
-  promptNumber,
   sumTransactionAmounts,
   shouldUpdateCategory,
   validateDateFormat,
   validateMonthFormat,
 } from "./actual-helpers.ts"
-import type { ActualConfig, CategoryGroup, CategoryMonth, Transaction, TtyInterface } from "./actual-helpers.ts"
+import type { ActualConfig, CategoryGroup, CategoryMonth, Transaction } from "./actual-helpers.ts"
 
 const config: ActualConfig = {
   baseUrl: "https://actual.test/v1",
@@ -793,109 +791,5 @@ describe("addTagToNotes", () => {
 
   it("doesn't confuse a different tag for a duplicate", () => {
     expect(addTagToNotes("#anomaly-low Groceries run", "#anomaly-high")).toBe("#anomaly-high #anomaly-low Groceries run")
-  })
-})
-
-// Function to build a TtyInterface double that answers a queue of canned responses in order,
-// recording every prompt it was asked
-function fakeTty(answers: readonly string[]): TtyInterface & { prompts: string[] } {
-  const queue = [...answers]
-  const prompts: string[] = []
-  return {
-    prompts,
-    question: async (promptText: string) => {
-      prompts.push(promptText)
-      return queue.shift() ?? ""
-    },
-    close: () => {},
-  }
-}
-
-describe("promptChoice", () => {
-  const options = ["retirement-tax-deferred", "retirement-roth", "hsa"]
-
-  it("returns the chosen option, 0-indexed", async () => {
-    const tty = fakeTty(["2"])
-    await expect(promptChoice(tty, "Which one?", options, null)).resolves.toBe(1)
-  })
-
-  it("accepts Enter (empty input) as the default when one is given", async () => {
-    const tty = fakeTty([""])
-    await expect(promptChoice(tty, "Which one?", options, 2)).resolves.toBe(2)
-  })
-
-  it("re-prompts on empty input when there is no default", async () => {
-    const tty = fakeTty(["", "1"])
-    await expect(promptChoice(tty, "Which one?", options, null)).resolves.toBe(0)
-    expect(tty.prompts).toHaveLength(2)
-  })
-
-  it("re-prompts on an out-of-range number", async () => {
-    const tty = fakeTty(["0", "4", "3"])
-    await expect(promptChoice(tty, "Which one?", options, null)).resolves.toBe(2)
-    expect(tty.prompts).toHaveLength(3)
-  })
-
-  it("re-prompts on non-numeric or malformed input", async () => {
-    const tty = fakeTty(["abc", "1.5", "1"])
-    await expect(promptChoice(tty, "Which one?", options, null)).resolves.toBe(0)
-    expect(tty.prompts).toHaveLength(3)
-  })
-
-  it("includes the numbered option list and the default marker in the prompt", async () => {
-    const tty = fakeTty(["1"])
-    await promptChoice(tty, "Which one?", options, 1)
-    expect(tty.prompts[0]).toContain("1) retirement-tax-deferred")
-    expect(tty.prompts[0]).toContain("2) retirement-roth")
-    expect(tty.prompts[0]).toContain("Which one? [2: retirement-roth]:")
-  })
-
-  it("omits a default marker when there is no default", async () => {
-    const tty = fakeTty(["1"])
-    await promptChoice(tty, "Which one?", options, null)
-    expect(tty.prompts[0]).toContain("Which one?: ")
-    expect(tty.prompts[0]).not.toContain("[")
-  })
-})
-
-describe("promptNumber", () => {
-  it("returns the typed number", async () => {
-    const tty = fakeTty(["4.5"])
-    await expect(promptNumber(tty, "Rate?", null)).resolves.toBe(4.5)
-  })
-
-  it("accepts Enter (empty input) as the default when one is given", async () => {
-    const tty = fakeTty([""])
-    await expect(promptNumber(tty, "Rate?", 4)).resolves.toBe(4)
-  })
-
-  it("re-prompts on empty input when there is no default", async () => {
-    const tty = fakeTty(["", "4"])
-    await expect(promptNumber(tty, "Rate?", null)).resolves.toBe(4)
-    expect(tty.prompts).toHaveLength(2)
-  })
-
-  it("re-prompts on non-numeric input", async () => {
-    const tty = fakeTty(["abc", "4"])
-    await expect(promptNumber(tty, "Rate?", null)).resolves.toBe(4)
-    expect(tty.prompts).toHaveLength(2)
-  })
-
-  it("shows the default plainly with no unit given", async () => {
-    const tty = fakeTty(["4"])
-    await promptNumber(tty, "Rate?", 4)
-    expect(tty.prompts[0]).toContain("Rate? [4]:")
-  })
-
-  it("appends the unit to the displayed default only, not to the accepted or returned value", async () => {
-    const tty = fakeTty([""])
-    await expect(promptNumber(tty, "Rate?", 4, "%")).resolves.toBe(4)
-    expect(tty.prompts[0]).toContain("Rate? [4%]:")
-  })
-
-  it("omits a default marker when there is no default, even with a unit given", async () => {
-    const tty = fakeTty(["1"])
-    await promptNumber(tty, "Rate?", null, "%")
-    expect(tty.prompts[0]).toBe("Rate?: ")
   })
 })
