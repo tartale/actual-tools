@@ -324,6 +324,21 @@ async function classifyOneAccount(
     draft.accounts[index] = { ...draft.accounts[index], monthlyContribution: monthlyDollars > 0 ? Math.round(monthlyDollars * 100) : undefined }
     save()
   }
+
+  // Rule of 55 only ever matters for the two categories that default to accessAge 59 -- HSA/taxable
+  // are already unrestricted, so there's nothing for it to improve on.
+  if (category === "retirement-tax-deferred" || category === "retirement-roth") {
+    explain(
+      "Rule of 55: if this is a 401(k)/403(b) you still hold with your employer (not an IRA --",
+      "rolling it over forfeits this), you can withdraw from it penalty-free starting the year you",
+      "separate from that employer, if you're 55 or older that year. Leave blank if this is an IRA,",
+      "a past employer's plan, or doesn't apply.",
+    )
+    const defaultSeparationAge = carryOver?.ruleOf55SeparationAge ?? 0
+    const separationAge = await promptNumber(tty, "Age you'll separate from this employer (0 if not applicable)", defaultSeparationAge)
+    draft.accounts[index] = { ...draft.accounts[index], ruleOf55SeparationAge: separationAge > 0 ? separationAge : undefined }
+    save()
+  }
 }
 
 // Function to ask for a birth date, defaulting to (and validating the same way as) the existing

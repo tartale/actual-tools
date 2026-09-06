@@ -85,6 +85,12 @@ export interface ClassifiedAccount extends FireAccountTraits {
   // A monthly contribution amount in cents, or null if none is configured. Has no category-based
   // default (unlike the FireAccountTraits fields above) -- it only ever comes from an override.
   monthlyContribution: number | null
+  // The age this account's owner expects to separate from the employer holding it, or null. Its
+  // mere presence asserts "this is a real, currently-held 401(k)/403(b), not an IRA" -- an IRA (or
+  // a rolled-over former employer plan) never qualifies for Rule of 55 no matter what age is given.
+  // Has no category-based default, same as monthlyContribution -- see fire-dashboard.ts's
+  // effectiveAccessAge for how this turns into an earlier accessAge when it's 55 or older.
+  ruleOf55SeparationAge: number | null
 }
 
 // One user-supplied override. `match` is an account id OR an exact account name, mirroring how
@@ -96,6 +102,7 @@ export interface FireAccountOverride {
   accessAge?: number | null
   allocationPreset?: MonteCarloAllocationPreset | null
   monthlyContribution?: number
+  ruleOf55SeparationAge?: number | null
 }
 
 // The plan-wide inputs ./actual reports fire needs that aren't a crossover/Monte Carlo widget
@@ -312,14 +319,15 @@ export function classifyAccounts(
         accessAge: override.accessAge ?? null,
         allocationPreset: override.allocationPreset ?? null,
         monthlyContribution: override.monthlyContribution ?? null,
+        ruleOf55SeparationAge: override.ruleOf55SeparationAge ?? null,
         source: "override" as const,
       }
     }
     const heuristic = classifyByHeuristic(account.name)
     if (heuristic) {
-      return { ...identity, ...heuristic, monthlyContribution: null, source: "heuristic" as const }
+      return { ...identity, ...heuristic, monthlyContribution: null, ruleOf55SeparationAge: null, source: "heuristic" as const }
     }
-    return { ...identity, ...traitsForCategory("other"), monthlyContribution: null, source: "default" as const }
+    return { ...identity, ...traitsForCategory("other"), monthlyContribution: null, ruleOf55SeparationAge: null, source: "default" as const }
   })
 }
 
@@ -389,6 +397,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
         `Invalid config in ${path}: unknown allocationPreset "${override.allocationPreset}" for "${override.match}". ` +
           `Valid values: ${MONTE_CARLO_ALLOCATION_PRESETS.join(", ")}.`,
       )
+    }
+    if (override.ruleOf55SeparationAge != null && (typeof override.ruleOf55SeparationAge !== "number" || override.ruleOf55SeparationAge <= 0)) {
+      throw new Error(`Invalid config in ${path}: ruleOf55SeparationAge for "${override.match}" must be a positive number.`)
     }
   }
 

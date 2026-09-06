@@ -14,7 +14,7 @@ import {
   validateDateFormat,
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
-import { buildFireDashboard, buildMonteCarloWidgets, mergeGeneratedDashboard, portfolioAccountIds, totalMonthlyContribution } from "./fire-dashboard.ts"
+import { buildFireDashboard, buildMonteCarloWidgets, effectiveAccessAge, mergeGeneratedDashboard, portfolioAccountIds, totalMonthlyContribution } from "./fire-dashboard.ts"
 import type { ExistingDashboard } from "./fire-dashboard.ts"
 import { DEFAULT_CONFIG_PATH, loadClassifiedAccounts, loadFireConfig } from "./fire-accounts.ts"
 import { renderHelp } from "./cli-format.ts"
@@ -230,6 +230,13 @@ async function main(): Promise<void> {
 
   console.log(`Portfolio accounts (${portfolioIds.length}): current total ${formatUsd(portfolioTotal)}`)
   console.log(`Expense categories (${expenseCategoryIds.length}): trailing 12-month spend ${formatUsd(annualSpend)}/yr`)
+
+  for (const account of accounts) {
+    const boosted = effectiveAccessAge(account)
+    if (boosted !== account.accessAge) {
+      console.log(`Rule of 55 applied: ${account.name} accessible from age ${boosted} (was ${account.accessAge}).`)
+    }
+  }
 
   const generated = buildFireDashboard(expenseCategoryIds, portfolioIds, fireConfig.crossover, totalMonthlyContribution(accounts))
   generated.widgets.push(

@@ -222,14 +222,44 @@ since that category covers both a 401(k)-type plan and a traditional IRA
 and this tool can't tell which one a given account actually is, both limits
 are shown so you can pick the one that applies.
 
+For `retirement-tax-deferred` and `retirement-roth` accounts specifically
+(the two categories that default to `accessAge: 59`), there's one more
+question covering the Rule of 55 (IRS Code §72(t)(2)(A)(v)):
+
+```
+Age you'll separate from this employer (0 if not applicable) [0]:
+```
+
+If you separate from an employer during or after the calendar year you
+turn 55, you can withdraw penalty-free (ordinary income tax still applies —
+only the 10% early-withdrawal penalty is waived) from **that employer's
+own** 401(k)/403(b), starting immediately. This only applies to a
+currently-held employer plan, never an IRA, and is lost entirely the moment
+the balance is rolled into one — leave this blank for an IRA, a past
+employer's plan, or if it doesn't apply. Answering with an age of 55 or
+older lowers that account's effective access age in the Monte Carlo widget
+to the age you give (or leaves it unchanged if that's later than the
+account's normal access age); `reports fire` prints a line for every
+account this affects, e.g. `Rule of 55 applied: Fidelity 401k accessible
+from age 55 (was 59).`
+
+Two other real early-access strategies exist but aren't modeled here: a
+**Roth conversion ladder** (staggered Traditional→Roth conversions, each
+with its own 5-year clock) isn't expressible with Actual's single
+`accessAge` per pot without a much bigger approximation, and **SEPP/72(t)**
+(substantially equal periodic payments) is a fixed IRS-formula payment
+schedule, not an age threshold — there's no honest way to represent it as
+an early `accessAge` without being misleading, so it's intentionally left
+out rather than approximated.
+
 Every run rewrites the account list from scratch, covering every
 currently-open account — running it again is the normal way to fix a wrong
 answer or pick up a newly-added account, not something to avoid. As long as
 an account keeps the same category between runs, any hand-customized
-`taxTreatment`, `accessAge`, `allocationPreset`, or `monthlyContribution` in
-the existing file is carried over as the default rather than being reset —
-only changing an account's category resets those to the new category's
-plain defaults.
+`taxTreatment`, `accessAge`, `allocationPreset`, `monthlyContribution`, or
+`ruleOf55SeparationAge` in the existing file is carried over as the default
+rather than being reset — only changing an account's category resets those
+to the new category's plain defaults.
 
 ### Plan questions (`-s plan`)
 

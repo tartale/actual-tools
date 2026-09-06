@@ -263,6 +263,18 @@ describe("loadFireConfig", () => {
     expect(loadFireConfig("/fake/path")).toEqual({ config: validConfig, found: true })
   })
 
+  it("throws on a non-positive ruleOf55SeparationAge", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", category: "retirement-tax-deferred", ruleOf55SeparationAge: 0 }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow('ruleOf55SeparationAge for "x" must be a positive number')
+  })
+
+  it("accepts a null ruleOf55SeparationAge", () => {
+    const validConfig = fireConfig([{ match: "x", category: "retirement-tax-deferred", ruleOf55SeparationAge: null }])
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
+    expect(loadFireConfig("/fake/path")).toEqual({ config: validConfig, found: true })
+  })
+
   it("throws on a non-positive retirementAges entry", () => {
     const badConfig = { version: 1, accounts: [], retirementAges: [0] }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
@@ -329,6 +341,7 @@ describe("loadClassifiedAccounts", () => {
         accessAge: 59,
         allocationPreset: "equity-80",
         monthlyContribution: null,
+        ruleOf55SeparationAge: null,
         source: "heuristic",
       },
     ])
@@ -388,6 +401,7 @@ describe("portfolioAccounts", () => {
       accessAge: null,
       allocationPreset: null,
       monthlyContribution: null,
+      ruleOf55SeparationAge: null,
       source: "heuristic",
       ...overrides,
     }

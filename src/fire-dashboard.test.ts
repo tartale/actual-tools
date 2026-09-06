@@ -9,6 +9,7 @@ import {
   buildNetWorthWidget,
   buildPot,
   buildSpendingPhases,
+  effectiveAccessAge,
   extractConfigFromDashboard,
   mergeGeneratedDashboard,
   portfolioAccountIds,
@@ -26,6 +27,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     accessAge: null,
     allocationPreset: null,
     monthlyContribution: null,
+    ruleOf55SeparationAge: null,
     source: "heuristic",
     ...overrides,
   }
@@ -183,6 +185,13 @@ describe("buildPot", () => {
     expect(pot.accessAge).toBe(59)
   })
 
+  it("applies a qualifying Rule of 55 separation age to lower the pot's access age", () => {
+    const pot = buildPot(
+      portfolioTestAccount({ id: "a1", category: "retirement-tax-deferred", accessAge: 59, ruleOf55SeparationAge: 55, allocationPreset: "equity-80" }),
+    )
+    expect(pot.accessAge).toBe(55)
+  })
+
   it("derives the withdrawal tax rate from tax treatment", () => {
     const cases: [ClassifiedAccount["taxTreatment"], number][] = [
       ["tax-deferred", 0.22],
@@ -194,6 +203,28 @@ describe("buildPot", () => {
       const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", taxTreatment, allocationPreset: "equity-80" }))
       expect(pot.withdrawalTaxRate).toBe(expectedRate)
     }
+  })
+})
+
+describe("effectiveAccessAge", () => {
+  it("returns the plain accessAge when there's no separation age", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null })).toBe(59)
+  })
+
+  it("overrides to the separation age when it qualifies (55+) and is earlier", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55 })).toBe(55)
+  })
+
+  it("has no effect when the separation age is below 55", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 50 })).toBe(59)
+  })
+
+  it("takes the earlier of the two when the separation age is above the existing accessAge", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 62 })).toBe(59)
+  })
+
+  it("uses the separation age directly when accessAge is null", () => {
+    expect(effectiveAccessAge({ accessAge: null, ruleOf55SeparationAge: 56 })).toBe(56)
   })
 })
 

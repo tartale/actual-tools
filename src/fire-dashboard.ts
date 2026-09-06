@@ -280,6 +280,20 @@ const WITHDRAWAL_TAX_RATES: Record<TaxTreatment, number> = {
   none: 0,
 }
 
+// Function to compute a pot's effective access age, applying Rule of 55 when it's earlier than the
+// category default. IRS Code Sec. 72(t)(2)(A)(v): separating from an employer during or after the
+// calendar year you turn 55 lets you withdraw penalty-free from THAT employer's own 401(k)/403(b)
+// starting immediately -- so this only takes effect at 55+ (the exception's own floor); a
+// separation age below 55 doesn't qualify at all, and the normal accessAge (59, or null) stands.
+// account.ruleOf55SeparationAge itself asserts eligibility (a real, currently-held employer plan,
+// never an IRA) -- see fire-accounts.ts's ClassifiedAccount for why there's no separate flag.
+export function effectiveAccessAge(account: Pick<ClassifiedAccount, "accessAge" | "ruleOf55SeparationAge">): number | null {
+  if (account.ruleOf55SeparationAge != null && account.ruleOf55SeparationAge >= 55) {
+    return account.accessAge == null ? account.ruleOf55SeparationAge : Math.min(account.accessAge, account.ruleOf55SeparationAge)
+  }
+  return account.accessAge
+}
+
 // Function to build one Monte Carlo pot from a portfolio account. Requires a non-null
 // allocationPreset -- every portfolio-category account gets one by default (see
 // fire-accounts.ts's CATEGORY_TRAITS), so a null here means an incomplete override; callers should
@@ -293,7 +307,7 @@ export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteC
     allocationPreset: account.allocationPreset,
     expectedReturnMean: mean,
     returnStdDev: stdDev,
-    accessAge: account.accessAge,
+    accessAge: effectiveAccessAge(account),
     withdrawalTaxRate: WITHDRAWAL_TAX_RATES[account.taxTreatment],
   }
 }
