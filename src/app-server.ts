@@ -11,6 +11,8 @@ import {
   ACCOUNT_TYPE_TRAITS,
   MONTE_CARLO_ALLOCATION_PRESETS,
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
+  MONTE_CARLO_RETURN_MODELS,
+  MONTE_CARLO_WITHDRAWAL_STRATEGIES,
   classifyAccounts,
   contributionLimitLines,
   employerContributionSummary,
@@ -29,12 +31,14 @@ import type {
   FireAccountOverride,
   FireConfig,
   MonteCarloAllocationPreset,
+  MonteCarloReturnModel,
+  MonteCarloWithdrawalStrategy,
 } from "./fire-accounts.ts"
 import { loadIrsLimits } from "./irs-limits.ts"
 import { calculateMortgagePayoff } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
-import { checkDashboard, generateDashboard } from "./fire-generate.ts"
-import { retirementIncomeStreams } from "./fire-dashboard.ts"
+import { checkDashboard, fetchLiveDashboardSettings, generateDashboard } from "./fire-generate.ts"
+import { monteCarloAssumptionsWithOverrides, pinnedMonteCarloFields, retirementIncomeStreams } from "./fire-dashboard.ts"
 
 // A plain node:http server -- no new dependency, matching this repo's zero-runtime-deps
 // convention. Routes are namespaced under /api/retirement/ so a future /api/budget/... or
@@ -252,9 +256,14 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 // Function to require the dashboard config a generate/check run needs, throwing the same clear
 // messages the old CLI's usage() calls gave for a missing birth date/retirement age/planToAge.
-function requirePlan(
-  fireConfig: FireConfig,
-): { currentAge: number; retirementAges: number[]; planToAge: number; incomeStreams: ReturnType<typeof retirementIncomeStreams> } {
+function requirePlan(fireConfig: FireConfig): {
+  currentAge: number
+  retirementAges: number[]
+  planToAge: number
+  incomeStreams: ReturnType<typeof retirementIncomeStreams>
+  monteCarloAssumptions: ReturnType<typeof monteCarloAssumptionsWithOverrides>
+  pinnedMonteCarloFields: ReturnType<typeof pinnedMonteCarloFields>
+} {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
   }
@@ -270,6 +279,8 @@ function requirePlan(
     retirementAges: fireConfig.dashboard.retirementAges,
     planToAge: fireConfig.dashboard.planToAge,
     incomeStreams: retirementIncomeStreams(fireConfig.dashboard),
+    monteCarloAssumptions: monteCarloAssumptionsWithOverrides(fireConfig.dashboard),
+    pinnedMonteCarloFields: pinnedMonteCarloFields(fireConfig.dashboard),
   }
 }
 
@@ -458,6 +469,41 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             dashboard[field] = value
           }
         }
+        if ("monteCarloWithdrawalStrategy" in body) {
+          if (body.monteCarloWithdrawalStrategy !== null && !MONTE_CARLO_WITHDRAWAL_STRATEGIES.includes(body.monteCarloWithdrawalStrategy as MonteCarloWithdrawalStrategy)) {
+            throw new Error(`monteCarloWithdrawalStrategy must be one of ${MONTE_CARLO_WITHDRAWAL_STRATEGIES.join(", ")}, or null.`)
+          }
+          dashboard.monteCarloWithdrawalStrategy = body.monteCarloWithdrawalStrategy as MonteCarloWithdrawalStrategy | null
+        }
+        if ("monteCarloReturnModel" in body) {
+          if (body.monteCarloReturnModel !== null && !MONTE_CARLO_RETURN_MODELS.includes(body.monteCarloReturnModel as MonteCarloReturnModel)) {
+            throw new Error(`monteCarloReturnModel must be one of ${MONTE_CARLO_RETURN_MODELS.join(", ")}, or null.`)
+          }
+          dashboard.monteCarloReturnModel = body.monteCarloReturnModel as MonteCarloReturnModel | null
+        }
+        for (const field of ["monteCarloInflationMean", "monteCarloInflationStdDev"] as const) {
+          if (field in body) {
+            const value = body[field]
+            if (value !== null && (typeof value !== "number" || value < 0)) {
+              throw new Error(`${field} must be a non-negative number or null.`)
+            }
+            dashboard[field] = value
+          }
+        }
+        if ("monteCarloMinimumWithdrawal" in body) {
+          const value = body.monteCarloMinimumWithdrawal
+          if (value !== null && (typeof value !== "number" || value < 0)) {
+            throw new Error("monteCarloMinimumWithdrawal must be a non-negative number or null.")
+          }
+          dashboard.monteCarloMinimumWithdrawal = value
+        }
+        if ("monteCarloSimulationCount" in body) {
+          const value = body.monteCarloSimulationCount
+          if (value !== null && (typeof value !== "number" || value <= 0)) {
+            throw new Error("monteCarloSimulationCount must be a positive number or null.")
+          }
+          dashboard.monteCarloSimulationCount = value
+        }
         writeFireConfig(configPath, { ...fireConfig, dashboard })
         sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))
         return
@@ -510,6 +556,11 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           fallbackInflationMean: 0.03,
         })
         sendJson(res, 200, result)
+        return
+      }
+
+      if (req.method === "GET" && path === "/api/retirement/live-settings") {
+        sendJson(res, 200, await fetchLiveDashboardSettings(actualConfig))
         return
       }
 

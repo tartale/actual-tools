@@ -128,6 +128,7 @@ function render() {
   renderSummary()
   renderPlan()
   renderIncome()
+  renderSimSettings()
   renderAccounts()
 }
 
@@ -171,6 +172,71 @@ function renderIncome() {
   if (document.activeElement !== pensionAmountEl) pensionAmountEl.value = formatMoneyInputValue(d.pensionMonthlyAmount)
   const claimSelect = document.getElementById("ssClaimAge")
   if (document.activeElement !== claimSelect) claimSelect.value = d.socialSecurityClaimingAge == null ? "" : String(d.socialSecurityClaimingAge)
+}
+
+// Renders the "Simulation settings" fields a person can pin (see fire-dashboard.ts's
+// monteCarloAssumptionsWithOverrides) so every retirement-age comparison widget uses the same
+// value -- an empty field means "not pinned," not zero.
+function renderSimSettings() {
+  const d = STATE.dashboard
+  const setIfIdle = (id, value) => {
+    const el = document.getElementById(id)
+    if (document.activeElement !== el) el.value = value
+  }
+  setIfIdle("mcWithdrawalStrategy", d.monteCarloWithdrawalStrategy ?? "")
+  setIfIdle("mcReturnModel", d.monteCarloReturnModel ?? "")
+  setIfIdle("mcInflationMean", d.monteCarloInflationMean == null ? "" : Math.round(d.monteCarloInflationMean * 1000) / 10)
+  setIfIdle("mcInflationStdDev", d.monteCarloInflationStdDev == null ? "" : Math.round(d.monteCarloInflationStdDev * 1000) / 10)
+  setIfIdle("mcMinimumWithdrawal", formatMoneyInputValue(d.monteCarloMinimumWithdrawal))
+  setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
+}
+
+// Renders the read-only "Owned by the Actual dashboard" panel from GET /api/retirement/live-settings
+// -- fetched separately from the main state (see loadLiveSettings) since it's its own live ActualQL
+// read and isn't needed on every keystroke the way account balances are.
+function renderLiveSettings(settings) {
+  const container = document.getElementById("liveSettings")
+  if (!settings || (!settings.crossover && !settings.monteCarlo)) {
+    container.innerHTML = `<div class="empty-note">No live FIRE dashboard found yet — generate and import one first.</div>`
+    return
+  }
+  const pinned = STATE ? STATE.dashboard : {}
+  const row = (label, value, pinnedField) => {
+    const isPinned = pinnedField && pinned[pinnedField] != null
+    return `<div class="kv"><span class="k">${escapeHtml(label)}${isPinned ? " (pinned by you)" : ""}</span><span class="v${isPinned ? " pinned" : ""}">${escapeHtml(String(value))}</span></div>`
+  }
+  const rows = []
+  if (settings.crossover) {
+    const c = settings.crossover
+    rows.push(row("Safe withdrawal rate", `${Math.round(c.safeWithdrawalRate * 1000) / 10}%`))
+    rows.push(row("Estimated return", c.estimatedReturn == null ? "auto" : `${Math.round(c.estimatedReturn * 1000) / 10}%`))
+    rows.push(row("Projection type", c.projectionType))
+    rows.push(row("Expense adjustment", `${Math.round(c.expenseAdjustmentFactor * 100)}%`))
+  }
+  if (settings.monteCarlo) {
+    const m = settings.monteCarlo
+    rows.push(row("Withdrawal strategy", m.withdrawalStrategy ?? "—", "monteCarloWithdrawalStrategy"))
+    rows.push(row("Return model", m.returnModel ?? "—", "monteCarloReturnModel"))
+    rows.push(row("Withdrawal rule", m.withdrawalRuleType))
+    rows.push(row("Tax model", m.taxModel))
+    rows.push(row("Inflation (mean)", `${Math.round((m.inflationMean ?? 0) * 1000) / 10}%`, "monteCarloInflationMean"))
+    rows.push(row("Inflation (std dev)", `${Math.round(m.inflationStdDev * 1000) / 10}%`, "monteCarloInflationStdDev"))
+    rows.push(row("Minimum withdrawal", usd(m.minimumWithdrawal), "monteCarloMinimumWithdrawal"))
+    rows.push(row("Simulation count", m.simulationCount.toLocaleString(), "monteCarloSimulationCount"))
+  }
+  container.innerHTML = `<div class="kv-grid">${rows.join("")}</div>`
+}
+
+async function loadLiveSettings() {
+  const btn = document.getElementById("refreshLiveSettingsBtn")
+  btn.disabled = true
+  try {
+    renderLiveSettings(await api("/api/retirement/live-settings"))
+  } catch (error) {
+    document.getElementById("liveSettings").innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+  } finally {
+    btn.disabled = false
+  }
 }
 
 function parseRetirementAges(text) {
@@ -492,10 +558,14 @@ async function runGenerate() {
     const boostLines = r.ruleOf55Boosts
       .map((b) => `<div class="line boost">Rule of 55 applied: ${escapeHtml(b.accountName)} accessible from age ${b.to} (was ${b.from ?? "none"}).</div>`)
       .join("")
+    const debtPayoffLines = r.debtPayoffs
+      .map((d) => `<div class="line boost">Spending reduced by ${moneySpan(d.monthlyAmount)}/mo once ${escapeHtml(d.accountName)} is paid off at age ${d.payoffAge}.</div>`)
+      .join("")
     result.innerHTML = `
       <div class="line">Portfolio accounts (${r.portfolioAccountCount}): current total ${moneySpan(r.portfolioTotal)}</div>
       <div class="line">Expense categories (${r.expenseCategoryCount}): trailing 12-month spend ${moneySpan(r.annualSpend)}/yr</div>
       ${boostLines}
+      ${debtPayoffLines}
       <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span> (${r.widgetTypes.length} widgets: ${r.widgetTypes.join(", ")}).${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>
       <div class="import-steps">
         Import it into Actual:
@@ -548,6 +618,31 @@ document.getElementById("ssClaimAge").addEventListener("change", (e) => {
   runExclusive(() => patchPlan({ socialSecurityClaimingAge: e.target.value === "" ? null : parseInt(e.target.value, 10) }, "savedIncome"))
 })
 
+document.getElementById("mcWithdrawalStrategy").addEventListener("change", (e) => {
+  runExclusive(() => patchPlan({ monteCarloWithdrawalStrategy: e.target.value === "" ? null : e.target.value }, "savedSimSettings"))
+})
+document.getElementById("mcReturnModel").addEventListener("change", (e) => {
+  runExclusive(() => patchPlan({ monteCarloReturnModel: e.target.value === "" ? null : e.target.value }, "savedSimSettings"))
+})
+document.getElementById("mcInflationMean").addEventListener("change", (e) => {
+  const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+  runExclusive(() => patchPlan({ monteCarloInflationMean: pct === null ? null : pct / 100 }, "savedSimSettings"))
+})
+document.getElementById("mcInflationStdDev").addEventListener("change", (e) => {
+  const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+  runExclusive(() => patchPlan({ monteCarloInflationStdDev: pct === null ? null : pct / 100 }, "savedSimSettings"))
+})
+const mcMinWithdrawalInput = document.getElementById("mcMinimumWithdrawal")
+attachMoneyFormatting(mcMinWithdrawalInput)
+mcMinWithdrawalInput.addEventListener("change", (e) => {
+  runExclusive(() => patchPlan({ monteCarloMinimumWithdrawal: parseMoneyInputCents(e.target.value) }, "savedSimSettings"))
+})
+document.getElementById("mcSimulationCount").addEventListener("change", (e) => {
+  const count = e.target.value === "" ? null : parseInt(e.target.value, 10)
+  runExclusive(() => patchPlan({ monteCarloSimulationCount: count === null || count <= 0 ? null : count }, "savedSimSettings"))
+})
+document.getElementById("refreshLiveSettingsBtn").addEventListener("click", loadLiveSettings)
+
 document.getElementById("generateBtn").addEventListener("click", runGenerate)
 document.getElementById("refreshAnalysisBtn").addEventListener("click", runCheck)
 
@@ -587,3 +682,4 @@ try {
 }
 
 loadState()
+loadLiveSettings()

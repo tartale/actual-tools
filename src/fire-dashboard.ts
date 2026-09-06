@@ -1,5 +1,5 @@
 import { portfolioAccounts } from "./fire-accounts.ts"
-import type { ClassifiedAccount, DashboardConfig, MonteCarloAllocationPreset, TaxTreatment } from "./fire-accounts.ts"
+import type { ClassifiedAccount, DashboardConfig, MonteCarloAllocationPreset, MonteCarloReturnModel, MonteCarloWithdrawalStrategy, TaxTreatment } from "./fire-accounts.ts"
 
 // Builds an Actual-native dashboard JSON (net worth, spending, and a FIRE crossover projection)
 // from classified accounts and expense categories. Pure -- no API calls, no file I/O.
@@ -211,9 +211,10 @@ export interface MonteCarloSpendingPhaseMeta {
   annualWithdrawal?: number
 }
 
-export type MonteCarloWithdrawalStrategy = "proportional" | "sequential" | "best-performer" | "target-mix"
+// MonteCarloWithdrawalStrategy/MonteCarloReturnModel now live in fire-accounts.ts (imported above)
+// -- DashboardConfig there needs them for the once-for-every-age-comparison settings a person can
+// pin in this app (see monteCarloSettingsOverride below), same reasoning as MonteCarloAllocationPreset.
 export type MonteCarloTaxModel = "flat" | "bands"
-export type MonteCarloReturnModel = "normal" | "historical-bootstrap" | "historical-sequence"
 export type MonteCarloWithdrawalRuleType = "none" | "guardrails" | "ratcheting" | "floor-ceiling" | "boundaries"
 
 // Parameters for every rule type are kept side by side (all optional) so switching between rules
@@ -443,11 +444,52 @@ export const DEFAULT_MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
   simulationCount: 5000,
 }
 
+// The MonteCarloAssumptions fields (see above) that map to a "Simulation settings" field in this
+// app's own UI, keyed by the DashboardConfig field that pins it. Only a subset of
+// MonteCarloAssumptions -- withdrawalRule and taxModel/taxBands stay Actual-UI-only (see
+// MonteCarloWithdrawalStrategy's doc comment in fire-accounts.ts for why) and so are never pinned.
+const PINNABLE_MONTE_CARLO_FIELDS: ReadonlyArray<{ dashboardField: keyof DashboardConfig; metaField: keyof MonteCarloCardMeta }> = [
+  { dashboardField: "monteCarloWithdrawalStrategy", metaField: "withdrawalStrategy" },
+  { dashboardField: "monteCarloReturnModel", metaField: "returnModel" },
+  { dashboardField: "monteCarloInflationMean", metaField: "inflationMean" },
+  { dashboardField: "monteCarloInflationStdDev", metaField: "inflationStdDev" },
+  { dashboardField: "monteCarloMinimumWithdrawal", metaField: "minimumWithdrawal" },
+  { dashboardField: "monteCarloSimulationCount", metaField: "simulationCount" },
+]
+
+// Function to layer a person's "Simulation settings" overrides over the plain defaults -- the
+// seed used for a first-time generation (nothing to merge against yet) and, for whichever fields
+// are actually set, the value pinned across every retirement-age comparison widget regardless of
+// what merging would otherwise preserve (see mergeMonteCarloMeta's pinnedFields).
+export function monteCarloAssumptionsWithOverrides(dashboard: DashboardConfig): MonteCarloAssumptions {
+  return {
+    ...DEFAULT_MONTE_CARLO_ASSUMPTIONS,
+    withdrawalStrategy: dashboard.monteCarloWithdrawalStrategy ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.withdrawalStrategy,
+    returnModel: dashboard.monteCarloReturnModel ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.returnModel,
+    inflationMean: dashboard.monteCarloInflationMean ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.inflationMean,
+    inflationStdDev: dashboard.monteCarloInflationStdDev ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.inflationStdDev,
+    minimumWithdrawal: dashboard.monteCarloMinimumWithdrawal ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.minimumWithdrawal,
+    simulationCount: dashboard.monteCarloSimulationCount ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.simulationCount,
+  }
+}
+
+// Function to compute which MonteCarloCardMeta fields a person has actually pinned -- see
+// mergeGeneratedDashboard's pinnedMonteCarloFields.
+export function pinnedMonteCarloFields(dashboard: DashboardConfig): Set<string> {
+  return new Set(PINNABLE_MONTE_CARLO_FIELDS.filter(({ dashboardField }) => dashboard[dashboardField] != null).map(({ metaField }) => metaField))
+}
+
 // Function to build one recurring-contribution entry per portfolio account with a nonzero monthly
 // contribution. annualAmount is the monthly figure (cents) x12 -- see totalMonthlyContribution's
 // doc comment for why the monthly figure itself needs no further conversion for the crossover
-// widget's sibling field.
-function buildContributions(accounts: readonly ClassifiedAccount[]): MonteCarloContributionMeta[] {
+// widget's sibling field. Contributions stop at retirement (toAge: retirementAge, mirroring
+// buildSpendingPhases' retirement-spending phase starting at that same age) -- nobody is still
+// funding an account from a paycheck once they've retired. Already retired at generation time
+// (retirementAge <= currentAge) means there's no ongoing contribution to model at all.
+function buildContributions(accounts: readonly ClassifiedAccount[], currentAge: number, retirementAge: number): MonteCarloContributionMeta[] {
+  if (retirementAge <= currentAge) {
+    return []
+  }
   const contributions: MonteCarloContributionMeta[] = []
   for (const account of accounts) {
     if (!account.monthlyContribution) {
@@ -458,7 +500,7 @@ function buildContributions(accounts: readonly ClassifiedAccount[]): MonteCarloC
       name: account.name,
       potId: account.id,
       fromAge: null,
-      toAge: null,
+      toAge: retirementAge,
       annualAmount: account.monthlyContribution * 12,
       adjustsWithInflation: true,
     })
@@ -507,7 +549,7 @@ export function buildMonteCarloWidget(
       withdrawalRule: assumptions.withdrawalRule,
       minimumWithdrawal: assumptions.minimumWithdrawal,
       spendingPhases: buildSpendingPhases(currentAge, retirementAge, annualSpendCents, incomeStreams),
-      contributions: buildContributions(eligibleAccounts),
+      contributions: buildContributions(eligibleAccounts, currentAge, retirementAge),
       inflationMean: assumptions.inflationMean,
       inflationStdDev: assumptions.inflationStdDev,
       taxModel: assumptions.taxModel,
@@ -637,9 +679,13 @@ function mergeContributions(generatedContributions: MonteCarloContributionMeta[]
 // above, real data from config.json), currentAge (from the birth date), targetAge (from
 // --plan-to-age), and name (encodes the retirement age). Everything else (withdrawalStrategy,
 // inflationMean, taxModel, returnModel, withdrawalRule, minimumWithdrawal, inflationStdDev,
-// simulationCount, taxBands, ...) is preserved from the existing file when present.
-function mergeMonteCarloMeta(generatedMeta: Record<string, unknown>, existingMeta: Record<string, unknown>): Record<string, unknown> {
-  return {
+// simulationCount, taxBands, ...) is preserved from the existing file when present -- UNLESS the
+// person has pinned it in this app's own "Simulation settings" (see monteCarloSettingsOverride),
+// in which case it's promoted into this same always-refreshed bucket, same as the real-data
+// fields: pinning a setting here is exactly so every retirement-age comparison widget uses that
+// one value, not whatever each one independently drifted to inside Actual.
+function mergeMonteCarloMeta(generatedMeta: Record<string, unknown>, existingMeta: Record<string, unknown>, pinnedFields: ReadonlySet<string>): Record<string, unknown> {
+  const merged: Record<string, unknown> = {
     ...generatedMeta,
     ...existingMeta,
     name: generatedMeta.name,
@@ -649,12 +695,20 @@ function mergeMonteCarloMeta(generatedMeta: Record<string, unknown>, existingMet
     spendingPhases: mergeSpendingPhases(generatedMeta.spendingPhases as MonteCarloSpendingPhaseMeta[], existingMeta.spendingPhases),
     contributions: mergeContributions(generatedMeta.contributions as MonteCarloContributionMeta[], existingMeta.contributions),
   }
+  for (const field of pinnedFields) {
+    merged[field] = generatedMeta[field]
+  }
+  return merged
 }
 
 // Function to merge one freshly generated widget with its match (if any) from an existing file.
 // Layout (x/y/width/height) always comes from the fresh generation, since it's a function of how
 // many widgets this run produces, not something meaningful to hand-tune in the file.
-function mergeWidget(generated: ExportImportDashboardWidget, existingWidget: ExistingDashboardWidget | undefined): ExportImportDashboardWidget {
+function mergeWidget(
+  generated: ExportImportDashboardWidget,
+  existingWidget: ExistingDashboardWidget | undefined,
+  pinnedMonteCarloFields: ReadonlySet<string>,
+): ExportImportDashboardWidget {
   if (existingWidget?.meta == null || generated.meta === null) {
     return generated
   }
@@ -662,7 +716,7 @@ function mergeWidget(generated: ExportImportDashboardWidget, existingWidget: Exi
   const existingMeta = existingWidget.meta
   let meta: Record<string, unknown>
   if (generated.type === "monte-carlo-card") {
-    meta = mergeMonteCarloMeta(generatedMeta, existingMeta)
+    meta = mergeMonteCarloMeta(generatedMeta, existingMeta, pinnedMonteCarloFields)
   } else if (generated.type === "crossover-card") {
     // expenseCategoryIds/incomeAccountIds are real data (see buildCrossoverWidget); every other
     // field (safeWithdrawalRate, estimatedReturn, projectionType, ...) is a preservable assumption.
@@ -679,12 +733,19 @@ function mergeWidget(generated: ExportImportDashboardWidget, existingWidget: Exi
 // that's no longer produced this run (e.g. a removed retirement age), and carries through untouched
 // any widget whose type this tool has never generated (hand-added content, never this tool's to
 // manage). Pass `existing: null` for a first run / no file yet -- returns `generated` unchanged.
-export function mergeGeneratedDashboard(generated: ExportImportDashboard, existing: ExistingDashboard | null): ExportImportDashboard {
+// pinnedMonteCarloFields names the MonteCarloCardMeta fields (see monteCarloSettingsOverride) the
+// person has explicitly set in this app's own settings -- always refreshed across every
+// monte-carlo-card widget rather than independently preserved per widget.
+export function mergeGeneratedDashboard(
+  generated: ExportImportDashboard,
+  existing: ExistingDashboard | null,
+  pinnedMonteCarloFields: ReadonlySet<string> = new Set(),
+): ExportImportDashboard {
   if (existing === null) {
     return generated
   }
   const existingByKey = new Map(existing.widgets.map((widget) => [widgetKey(widget), widget]))
-  const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget))))
+  const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget)), pinnedMonteCarloFields))
   const foreignWidgets = existing.widgets.filter((widget) => !OWNED_WIDGET_TYPES.includes(widget.type as FireWidgetType))
   return { version: generated.version, widgets: [...widgets, ...(foreignWidgets as ExportImportDashboardWidget[])] }
 }

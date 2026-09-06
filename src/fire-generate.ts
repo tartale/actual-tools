@@ -14,7 +14,6 @@ import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import {
   DEFAULT_CROSSOVER_ASSUMPTIONS,
-  DEFAULT_MONTE_CARLO_ASSUMPTIONS,
   buildFireDashboard,
   buildMonteCarloWidgets,
   effectiveAccessAge,
@@ -22,8 +21,16 @@ import {
   portfolioAccountIds,
   totalMonthlyContribution,
 } from "./fire-dashboard.ts"
-import type { CrossoverCardMeta, ExistingDashboard, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
-import { bridgeFinding, detectCrossoverMismatch, detectPotDrift, simulateBridge, toBridgeAccounts } from "./fire-analysis.ts"
+import type { CrossoverCardMeta, ExistingDashboard, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import {
+  bridgeFinding,
+  calculateMortgagePayoff,
+  detectCrossoverMismatch,
+  detectMonteCarloSettingsDrift,
+  detectPotDrift,
+  simulateBridge,
+  toBridgeAccounts,
+} from "./fire-analysis.ts"
 import type { Finding } from "./fire-analysis.ts"
 
 // The non-CLI guts of what used to be reports-fire.ts's main(): fetching real data, building or
@@ -104,7 +111,7 @@ function loadExistingDashboard(path: string): ExistingDashboard | null {
 // doesn't get mistaken for this dashboard's own. Returns null -- not an error -- when there's no
 // such page yet, or when the run-query endpoint is unavailable (advisory, same as everywhere else
 // this repo reads live dashboard state); the caller falls back to the local file in that case.
-async function fetchLiveExistingDashboard(actualConfig: ActualConfig): Promise<ExistingDashboard | null> {
+export async function fetchLiveExistingDashboard(actualConfig: ActualConfig): Promise<ExistingDashboard | null> {
   try {
     const pages = await fetchDashboardPages(actualConfig)
     const firePage = pages.find((page) => page.name.trim().toLowerCase() === "fire")
@@ -128,12 +135,114 @@ async function fetchLiveExistingDashboard(actualConfig: ActualConfig): Promise<E
   }
 }
 
+// The crossover/Monte Carlo assumption fields this app never lets the user edit directly (safe
+// withdrawal rate, tax model, inflation, withdrawal strategy, ...) -- Actual's own dashboard UI is
+// the only place to change them, and mergeGeneratedDashboard exists specifically to leave them
+// alone on every regenerate. Surfaced read-only in the Plan section (see PATCH-free
+// GET /api/retirement/live-settings) so a person can see what's actually live without opening
+// Actual, and so it's obvious when a "Simulation settings" field they've pinned here (see
+// fire-dashboard.ts's monteCarloAssumptionsWithOverrides) hasn't propagated to Actual yet.
+export interface LiveDashboardSettings {
+  crossover: {
+    safeWithdrawalRate: number
+    estimatedReturn: number | null
+    projectionType: string
+    expenseAdjustmentFactor: number
+  } | null
+  monteCarlo: {
+    withdrawalStrategy: string | null
+    returnModel: string | null
+    withdrawalRuleType: string
+    minimumWithdrawal: number
+    inflationMean: number | null
+    inflationStdDev: number
+    taxModel: string
+    simulationCount: number
+  } | null
+}
+
+// Function to summarize whatever's actually live on the "FIRE" dashboard page -- reuses
+// fetchLiveExistingDashboard's own fetch (same page, same widgets) rather than a second ActualQL
+// round trip. Returns all-null (not an error) when there's no such page yet, matching this
+// function's own "advisory" convention.
+export async function fetchLiveDashboardSettings(actualConfig: ActualConfig): Promise<LiveDashboardSettings> {
+  const dashboard = await fetchLiveExistingDashboard(actualConfig)
+  if (!dashboard) {
+    return { crossover: null, monteCarlo: null }
+  }
+  const crossoverMeta = dashboard.widgets.find((widget) => widget.type === "crossover-card")?.meta as CrossoverCardMeta | undefined
+  const monteCarloMeta = dashboard.widgets.find((widget) => widget.type === "monte-carlo-card")?.meta as MonteCarloCardMeta | undefined
+  return {
+    crossover: crossoverMeta
+      ? {
+          safeWithdrawalRate: crossoverMeta.safeWithdrawalRate,
+          estimatedReturn: crossoverMeta.estimatedReturn,
+          projectionType: crossoverMeta.projectionType,
+          expenseAdjustmentFactor: crossoverMeta.expenseAdjustmentFactor,
+        }
+      : null,
+    monteCarlo: monteCarloMeta
+      ? {
+          withdrawalStrategy: monteCarloMeta.withdrawalStrategy ?? null,
+          returnModel: monteCarloMeta.returnModel ?? null,
+          withdrawalRuleType: monteCarloMeta.withdrawalRule?.type ?? "none",
+          minimumWithdrawal: monteCarloMeta.minimumWithdrawal ?? 0,
+          inflationMean: monteCarloMeta.inflationMean ?? null,
+          inflationStdDev: monteCarloMeta.inflationStdDev ?? 0,
+          taxModel: monteCarloMeta.taxModel ?? "flat",
+          simulationCount: monteCarloMeta.simulationCount ?? 0,
+        }
+      : null,
+  }
+}
+
+// Function to turn each debt account's own mortgage-payoff projection (see
+// calculateMortgagePayoff) into a guaranteed-income-shaped stream: once the loan is paid off, that
+// monthly payment stops going out, which is economically the same as new income arriving --
+// simulated the same way as a pension/Social Security stream (see fire-dashboard.ts's
+// RetirementIncomeStream) rather than as its own mechanism. currentAge is a whole-year integer
+// (see ageFromBirthDate) while monthsRemaining is precise, so the payoff age is rounded to the
+// nearest year -- the same granularity every other age in this plan (retirementAge, planToAge)
+// already uses.
+//
+// Assumes the mortgage payment is counted in the trailing spend the simulation already draws
+// from (i.e. budgeted as a category, the common Actual setup for a loan payment) -- if a person's
+// budget tracks it purely as an account-to-account transfer instead, it was never part of
+// annualSpend to begin with, and this would overstate the reduction. No way to tell which from
+// account data alone -- documented here and in the README rather than silently assumed correct.
+function debtPayoffIncomeStreams(accounts: readonly ClassifiedAccount[], currentAge: number): RetirementIncomeStream[] {
+  const streams: RetirementIncomeStream[] = []
+  for (const account of accounts) {
+    if (account.mortgageInterestRate == null || account.mortgageMonthlyPayment == null || account.mortgageBalanceAsOfDate == null || account.mortgageBalanceAsOf == null) {
+      continue
+    }
+    const payoff = calculateMortgagePayoff({
+      interestRate: account.mortgageInterestRate,
+      monthlyPayment: account.mortgageMonthlyPayment,
+      balanceAsOfDate: account.mortgageBalanceAsOfDate,
+      balanceAsOf: account.mortgageBalanceAsOf,
+    })
+    if ("error" in payoff || payoff.monthsRemaining <= 0) {
+      continue
+    }
+    streams.push({
+      id: `debt-payoff-${account.id}`,
+      name: `${account.name} paid off`,
+      startAge: currentAge + Math.round(payoff.monthsRemaining / 12),
+      annualAmount: account.mortgageMonthlyPayment * 12,
+    })
+  }
+  return streams
+}
+
 export interface GenerateOptions {
   outputPath: string
   currentAge: number
   retirementAges: readonly number[]
   planToAge: number
   incomeStreams: readonly RetirementIncomeStream[]
+  monteCarloAssumptions: MonteCarloAssumptions
+  pinnedMonteCarloFields: ReadonlySet<string>
 }
 
 export interface RuleOf55Boost {
@@ -142,12 +251,19 @@ export interface RuleOf55Boost {
   to: number
 }
 
+export interface DebtPayoff {
+  accountName: string
+  payoffAge: number
+  monthlyAmount: number
+}
+
 export interface GenerateResult {
   portfolioAccountCount: number
   portfolioTotal: number
   expenseCategoryCount: number
   annualSpend: number
   ruleOf55Boosts: RuleOf55Boost[]
+  debtPayoffs: DebtPayoff[]
   outputPath: string
   widgetTypes: string[]
   // Where hand-tuned settings (withdrawal strategy, tax model, inflation, safe withdrawal rate,
@@ -197,6 +313,14 @@ export async function generateDashboard(
     }
   }
 
+  const debtStreams = debtPayoffIncomeStreams(accounts, options.currentAge)
+  const debtPayoffs: DebtPayoff[] = debtStreams.map((stream) => ({
+    accountName: stream.name.replace(/ paid off$/, ""),
+    payoffAge: stream.startAge,
+    monthlyAmount: Math.round(stream.annualAmount / 12),
+  }))
+  const incomeStreams = [...options.incomeStreams, ...debtStreams]
+
   const generated = buildFireDashboard(expenseCategoryIds, portfolioIds, DEFAULT_CROSSOVER_ASSUMPTIONS, totalMonthlyContribution(accounts))
   generated.widgets.push(
     ...buildMonteCarloWidgets(
@@ -207,8 +331,8 @@ export async function generateDashboard(
       options.retirementAges,
       options.planToAge,
       annualSpend,
-      DEFAULT_MONTE_CARLO_ASSUMPTIONS,
-      options.incomeStreams,
+      options.monteCarloAssumptions,
+      incomeStreams,
     ),
   )
 
@@ -217,7 +341,7 @@ export async function generateDashboard(
   const existing = liveExisting ?? localExisting
   const mergeSource: GenerateResult["mergeSource"] = liveExisting ? "live" : localExisting ? "local" : "none"
 
-  const dashboard = mergeGeneratedDashboard(generated, existing)
+  const dashboard = mergeGeneratedDashboard(generated, existing, options.pinnedMonteCarloFields)
   const dashboardJson = `${JSON.stringify(dashboard, null, 2)}\n`
   writeFileSync(options.outputPath, dashboardJson)
 
@@ -227,6 +351,7 @@ export async function generateDashboard(
     expenseCategoryCount: expenseCategoryIds.length,
     annualSpend,
     ruleOf55Boosts,
+    debtPayoffs,
     outputPath: options.outputPath,
     widgetTypes: dashboard.widgets.map((widget) => widget.type),
     mergeSource,
@@ -242,6 +367,8 @@ export interface CheckOptions {
   fallbackAnnualSpend: number
   fallbackInflationMean: number
   incomeStreams: readonly RetirementIncomeStream[]
+  monteCarloAssumptions: MonteCarloAssumptions
+  pinnedMonteCarloFields: ReadonlySet<string>
 }
 
 export interface AccountContribution {
@@ -302,7 +429,11 @@ export async function checkDashboard(
             detail: ["Generate and import first, then Reports -> new page -> \"...\" -> Import."],
           },
         ]
-      : [...detectPotDrift(monteCarloMetas, accounts), ...detectCrossoverMismatch(crossoverMetas, accounts)]
+      : [
+          ...detectPotDrift(monteCarloMetas, accounts),
+          ...detectCrossoverMismatch(crossoverMetas, accounts),
+          ...detectMonteCarloSettingsDrift(monteCarloMetas, options.pinnedMonteCarloFields, options.monteCarloAssumptions),
+        ]
 
   // Prefer the inflation the live dashboard is actually simulating with; fall back only when
   // nothing has been imported yet.
@@ -313,9 +444,10 @@ export async function checkDashboard(
   )
   const balances = new Map(balanceEntries)
   const bridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount)
+  const incomeStreams = [...options.incomeStreams, ...debtPayoffIncomeStreams(accounts, options.currentAge)]
   const bridgeFindings = options.retirementAges.map((retirementAge) =>
     bridgeFinding(
-      simulateBridge(bridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, options.incomeStreams),
+      simulateBridge(bridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams),
       options.planToAge,
     ),
   )

@@ -1,9 +1,29 @@
 import { describe, expect, it } from "vitest"
 
-import { bridgeFinding, calculateMortgagePayoff, detectCrossoverMismatch, detectPotDrift, simulateBridge, toBridgeAccounts } from "./fire-analysis.ts"
+import {
+  bridgeFinding,
+  calculateMortgagePayoff,
+  detectCrossoverMismatch,
+  detectMonteCarloSettingsDrift,
+  detectPotDrift,
+  simulateBridge,
+  toBridgeAccounts,
+} from "./fire-analysis.ts"
 import type { BridgeAccount } from "./fire-analysis.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
-import type { MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+
+const MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
+  withdrawalStrategy: "proportional",
+  returnModel: "normal",
+  withdrawalRule: { type: "none" },
+  minimumWithdrawal: 0,
+  inflationMean: 0.03,
+  inflationStdDev: 0.02,
+  taxModel: "flat",
+  taxBands: [],
+  simulationCount: 5000,
+}
 
 // Function to build a bridge account with inert defaults -- no growth, no contributions, no tax --
 // so each test only has to state the one dimension it is actually exercising.
@@ -200,6 +220,39 @@ describe("detectPotDrift", () => {
   it("ignores pots with no linked account", () => {
     const orphan: MonteCarloCardMeta = { pots: [{ id: "p1", accountId: null, accessAge: 59 }] }
     expect(detectPotDrift([orphan], [])).toEqual([])
+  })
+})
+
+describe("detectMonteCarloSettingsDrift", () => {
+  it("reports nothing when nothing is pinned, regardless of what's live", () => {
+    const live: MonteCarloCardMeta = { withdrawalStrategy: "sequential" }
+    expect(detectMonteCarloSettingsDrift([live], new Set(), MONTE_CARLO_ASSUMPTIONS)).toEqual([])
+  })
+
+  it("reports nothing when every pinned field already matches every widget", () => {
+    const live: MonteCarloCardMeta = { withdrawalStrategy: "proportional", simulationCount: 5000 }
+    expect(detectMonteCarloSettingsDrift([live], new Set(["withdrawalStrategy", "simulationCount"]), MONTE_CARLO_ASSUMPTIONS)).toEqual([])
+  })
+
+  it("flags a pinned field that hasn't been re-exported to a widget yet", () => {
+    const stale: MonteCarloCardMeta = { withdrawalStrategy: "sequential" }
+    const findings = detectMonteCarloSettingsDrift([stale], new Set(["withdrawalStrategy"]), MONTE_CARLO_ASSUMPTIONS)
+    expect(findings).toHaveLength(1)
+    expect(findings[0]?.level).toBe("warn")
+    expect(findings[0]?.title).toContain("withdrawalStrategy")
+  })
+
+  it("only flags a field when at least one widget disagrees, across multiple widgets", () => {
+    const matching: MonteCarloCardMeta = { withdrawalStrategy: "proportional" }
+    const stale: MonteCarloCardMeta = { withdrawalStrategy: "sequential" }
+    const findings = detectMonteCarloSettingsDrift([matching, stale], new Set(["withdrawalStrategy"]), MONTE_CARLO_ASSUMPTIONS)
+    expect(findings).toHaveLength(1)
+    expect(findings[0]?.title).toContain("1 of 2")
+  })
+
+  it("ignores an unpinned field even when it visibly differs from the default assumptions", () => {
+    const live: MonteCarloCardMeta = { withdrawalStrategy: "proportional", returnModel: "historical-bootstrap" }
+    expect(detectMonteCarloSettingsDrift([live], new Set(["withdrawalStrategy"]), MONTE_CARLO_ASSUMPTIONS)).toEqual([])
   })
 })
 

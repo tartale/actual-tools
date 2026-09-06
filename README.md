@@ -221,6 +221,28 @@ figure on the page (an Actual-style privacy toggle) — handy before
 sharing a screen; it's a per-browser display preference, not saved to
 `config.json`.
 
+**Owned by the Actual dashboard** (below Plan, its own Refresh button):
+a read-only snapshot of whatever's actually live on your imported "FIRE"
+page right now — safe withdrawal rate, tax model, withdrawal strategy,
+inflation, and everything else this app deliberately doesn't let you edit
+directly (see "Regenerating preserves customizations" below). A field
+also set in **Simulation settings** is marked "pinned by you" — if its
+live value here doesn't match what you configured, Analyze → Check will
+flag it as needing a regenerate/re-import.
+
+**Simulation settings** (optional): withdrawal strategy, return model,
+inflation (mean/std dev), minimum withdrawal, and simulation count.
+Unlike every other Monte Carlo assumption, these can be set once here
+instead of inside Actual's own per-widget UI — worth doing specifically
+because comparing multiple retirement ages generates one independently-
+named widget per age, and tuning one inside Actual never reaches its
+siblings. A field left blank here keeps today's behavior (preserved
+per-widget from whatever's live/local); a field set here is pinned to
+that value on every regenerate, overriding whatever each widget
+independently drifted to. Withdrawal rule (guardrails, ratcheting, ...)
+and tax bands stay Actual-UI-only for now — each has its own multi-field
+shape that didn't fit this pass.
+
 **Accounts**: every open account, each with an **account type** — not just
 a coarse category, but a concrete kind (Traditional 401(k)/403(b)/457/TSP,
 Roth 401(k)/403(b), Traditional IRA, Roth IRA, Inherited/Beneficiary IRA,
@@ -345,6 +367,23 @@ generation.
 under Settings → Advanced → Experimental features → Monte Carlo Analysis
 Report first, or the imported widget won't render.
 
+**Contributions and spending phases are managed for you**, not left at
+Actual's plain per-account defaults:
+
+- A contribution stops at that widget's own retirement age (`toAge`) —
+  nobody is still funding an account from a paycheck once retired, and a
+  scenario already retired at generation time gets no contributions at
+  all.
+- Spending steps down automatically as guaranteed income and debt payoff
+  arrive: a pension/Social Security stream you've entered (see
+  "Retirement income" above), and, per debt account with mortgage payoff
+  fields filled in, once that loan is projected to be paid off. **This
+  assumes the debt payment is counted in your budgeted spend already**
+  (the common Actual setup — a "Mortgage" category you fund monthly, not
+  a bare account-to-account transfer); if yours is tracked purely as a
+  transfer, it was never part of the simulated spend, and this phase would
+  overstate the reduction.
+
 **Check** reads the dashboard that is **live in Actual** — not the
 generated file — through Actual's own ActualQL `run-query` endpoint (gated
 behind your Actual HTTP API's experimental-operations setting; a clear
@@ -352,16 +391,19 @@ message appears if it's off), so it sees whatever you've actually been
 editing in the app. Two things get checked:
 
 - **Drift** — a widget's stored access ages against what your current
-  config would generate, and accounts the crossover counts that the
-  simulation doesn't model (or vice versa). Either usually means the
-  dashboard predates a config change and needs re-importing.
+  config would generate, accounts the crossover counts that the
+  simulation doesn't model (or vice versa), and any **Simulation
+  settings** field you've pinned that isn't live on every Monte Carlo
+  widget yet. Any of these usually means the dashboard predates a config
+  change and needs re-importing.
 - **Bridge** — for each retirement age, whether the accounts you can
   actually reach at that age fund every year until the locked ones open
   up. This projects forward at each allocation's mean return with no
   volatility and grosses withdrawals up for tax, applying the same
   accessible-only funding rule Actual's own Monte Carlo engine uses — a
   *best* case, so a scenario that runs dry here runs dry in essentially
-  every simulated run.
+  every simulated run. Also nets out guaranteed income/debt payoff the
+  same way Generate does.
 
 Retirement spend for both actions comes from the live crossover widget's
 own category selection and date range once one exists (so narrowing either

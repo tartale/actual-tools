@@ -63,6 +63,20 @@ export const MONTE_CARLO_ALLOCATION_PRESET_LABELS: Record<MonteCarloAllocationPr
   cash: "100% cash",
 }
 
+// Mirrors Actual's own MonteCarloWithdrawalStrategy/MonteCarloReturnModel (see fire-dashboard.ts's
+// MonteCarloCardMeta) -- declared here, one level below fire-dashboard.ts, same as
+// MonteCarloAllocationPreset above, since DashboardConfig (this file) needs them for the
+// once-for-every-age-comparison simulation settings a person can pin in this app instead of
+// Actual's own per-widget UI (see retirementIncomeStreams's sibling, monteCarloSettingsOverride, in
+// fire-dashboard.ts). withdrawalRule and taxModel/taxBands are deliberately NOT exposed here yet --
+// each withdrawalRule type has its own multi-field parameter set (guardrails, ratcheting,
+// floor/ceiling, boundaries) and taxBands is an open-ended list -- both stay Actual-UI-only for now.
+export type MonteCarloWithdrawalStrategy = "proportional" | "sequential" | "best-performer" | "target-mix"
+export const MONTE_CARLO_WITHDRAWAL_STRATEGIES: readonly MonteCarloWithdrawalStrategy[] = ["proportional", "sequential", "best-performer", "target-mix"]
+
+export type MonteCarloReturnModel = "normal" | "historical-bootstrap" | "historical-sequence"
+export const MONTE_CARLO_RETURN_MODELS: readonly MonteCarloReturnModel[] = ["normal", "historical-bootstrap", "historical-sequence"]
+
 // The IRS contribution-limit pool an account type draws from, if any. Both employer-plan and IRA
 // limits are shared across every account of that kind (not per-account) -- see
 // resolveMonthlyContributions for how a "max" contribution splits a shared pool. HSA's limit is
@@ -337,6 +351,22 @@ export interface DashboardConfig {
   socialSecurityMonthlyAt62: number | null
   socialSecurityMonthlyAt67: number | null
   socialSecurityMonthlyAt70: number | null
+  // Every Monte Carlo widget this tool generates (one per retirement age being compared) is its
+  // own independently-named widget in Actual, so tuning one inside Actual's own UI never reaches
+  // its siblings -- comparing retirement ages fairly needs the SAME simulation settings on all of
+  // them. Setting any of these here makes it the pinned, always-regenerated value for every
+  // widget (see fire-dashboard.ts's mergeMonteCarloMeta pinnedFields), overriding whatever that
+  // widget's own live/local settings say; leaving a field null keeps today's behavior (preserved
+  // per-widget from Actual). withdrawalRule and taxModel/taxBands stay Actual-UI-only -- see
+  // MonteCarloWithdrawalStrategy's doc comment above for why.
+  monteCarloWithdrawalStrategy: MonteCarloWithdrawalStrategy | null
+  monteCarloReturnModel: MonteCarloReturnModel | null
+  // Decimal fractions (0.03 = 3%), matching every other rate in this file.
+  monteCarloInflationMean: number | null
+  monteCarloInflationStdDev: number | null
+  // Cents/yr.
+  monteCarloMinimumWithdrawal: number | null
+  monteCarloSimulationCount: number | null
 }
 
 export interface FireConfig {
@@ -359,6 +389,12 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   socialSecurityMonthlyAt62: null,
   socialSecurityMonthlyAt67: null,
   socialSecurityMonthlyAt70: null,
+  monteCarloWithdrawalStrategy: null,
+  monteCarloReturnModel: null,
+  monteCarloInflationMean: null,
+  monteCarloInflationStdDev: null,
+  monteCarloMinimumWithdrawal: null,
+  monteCarloSimulationCount: null,
 }
 
 export const EMPTY_FIRE_CONFIG: FireConfig = {
@@ -892,6 +928,24 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       throw new Error(`Invalid config in ${path}: dashboard.${field} must be a positive number.`)
     }
   }
+  if (dashboardSource.monteCarloWithdrawalStrategy != null && !MONTE_CARLO_WITHDRAWAL_STRATEGIES.includes(dashboardSource.monteCarloWithdrawalStrategy)) {
+    throw new Error(`Invalid config in ${path}: dashboard.monteCarloWithdrawalStrategy must be one of ${MONTE_CARLO_WITHDRAWAL_STRATEGIES.join(", ")}, or null.`)
+  }
+  if (dashboardSource.monteCarloReturnModel != null && !MONTE_CARLO_RETURN_MODELS.includes(dashboardSource.monteCarloReturnModel)) {
+    throw new Error(`Invalid config in ${path}: dashboard.monteCarloReturnModel must be one of ${MONTE_CARLO_RETURN_MODELS.join(", ")}, or null.`)
+  }
+  for (const field of ["monteCarloInflationMean", "monteCarloInflationStdDev"] as const) {
+    const value = dashboardSource[field]
+    if (value != null && (typeof value !== "number" || value < 0)) {
+      throw new Error(`Invalid config in ${path}: dashboard.${field} must be a non-negative number.`)
+    }
+  }
+  if (dashboardSource.monteCarloMinimumWithdrawal != null && (typeof dashboardSource.monteCarloMinimumWithdrawal !== "number" || dashboardSource.monteCarloMinimumWithdrawal < 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.monteCarloMinimumWithdrawal must be a non-negative number.`)
+  }
+  if (dashboardSource.monteCarloSimulationCount != null && (typeof dashboardSource.monteCarloSimulationCount !== "number" || dashboardSource.monteCarloSimulationCount <= 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.monteCarloSimulationCount must be a positive number.`)
+  }
 
   const config: FireConfig = {
     version: 1,
@@ -906,6 +960,12 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       socialSecurityMonthlyAt62: dashboardSource.socialSecurityMonthlyAt62 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt62,
       socialSecurityMonthlyAt67: dashboardSource.socialSecurityMonthlyAt67 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt67,
       socialSecurityMonthlyAt70: dashboardSource.socialSecurityMonthlyAt70 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt70,
+      monteCarloWithdrawalStrategy: dashboardSource.monteCarloWithdrawalStrategy ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalStrategy,
+      monteCarloReturnModel: dashboardSource.monteCarloReturnModel ?? DEFAULT_DASHBOARD_CONFIG.monteCarloReturnModel,
+      monteCarloInflationMean: dashboardSource.monteCarloInflationMean ?? DEFAULT_DASHBOARD_CONFIG.monteCarloInflationMean,
+      monteCarloInflationStdDev: dashboardSource.monteCarloInflationStdDev ?? DEFAULT_DASHBOARD_CONFIG.monteCarloInflationStdDev,
+      monteCarloMinimumWithdrawal: dashboardSource.monteCarloMinimumWithdrawal ?? DEFAULT_DASHBOARD_CONFIG.monteCarloMinimumWithdrawal,
+      monteCarloSimulationCount: dashboardSource.monteCarloSimulationCount ?? DEFAULT_DASHBOARD_CONFIG.monteCarloSimulationCount,
     },
   }
 

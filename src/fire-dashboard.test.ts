@@ -11,6 +11,8 @@ import {
   buildSpendingPhases,
   effectiveAccessAge,
   mergeGeneratedDashboard,
+  monteCarloAssumptionsWithOverrides,
+  pinnedMonteCarloFields,
   portfolioAccountIds,
   retirementIncomeStreams,
   totalMonthlyContribution,
@@ -326,6 +328,39 @@ describe("retirementIncomeStreams", () => {
   })
 })
 
+describe("monteCarloAssumptionsWithOverrides", () => {
+  it("falls back to the plain defaults when nothing is pinned", () => {
+    expect(monteCarloAssumptionsWithOverrides(DEFAULT_DASHBOARD_CONFIG)).toEqual(MONTE_CARLO_ASSUMPTIONS)
+  })
+
+  it("layers only the fields actually set, leaving the rest at their defaults", () => {
+    const overridden = monteCarloAssumptionsWithOverrides({
+      ...DEFAULT_DASHBOARD_CONFIG,
+      monteCarloWithdrawalStrategy: "sequential",
+      monteCarloInflationMean: 0.05,
+    })
+    expect(overridden.withdrawalStrategy).toBe("sequential")
+    expect(overridden.inflationMean).toBe(0.05)
+    expect(overridden.returnModel).toBe(MONTE_CARLO_ASSUMPTIONS.returnModel)
+    expect(overridden.simulationCount).toBe(MONTE_CARLO_ASSUMPTIONS.simulationCount)
+  })
+})
+
+describe("pinnedMonteCarloFields", () => {
+  it("returns an empty set when nothing is configured", () => {
+    expect(pinnedMonteCarloFields(DEFAULT_DASHBOARD_CONFIG)).toEqual(new Set())
+  })
+
+  it("names the MonteCarloCardMeta field for each dashboard field that's actually set", () => {
+    const pinned = pinnedMonteCarloFields({
+      ...DEFAULT_DASHBOARD_CONFIG,
+      monteCarloWithdrawalStrategy: "sequential",
+      monteCarloSimulationCount: 10000,
+    })
+    expect(pinned).toEqual(new Set(["withdrawalStrategy", "simulationCount"]))
+  })
+})
+
 describe("buildMonteCarloWidget", () => {
   const portfolioAccount = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" })
   const nonPortfolioAccount = account({ id: "a2", category: "cash" })
@@ -359,12 +394,18 @@ describe("buildMonteCarloWidget", () => {
     expect(widget.meta?.name).toBe("Retire at 55")
   })
 
-  it("builds a contribution entry only for accounts with a nonzero monthlyContribution", () => {
+  it("builds a contribution entry only for accounts with a nonzero monthlyContribution, stopping at retirement", () => {
     const withContribution = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80", monthlyContribution: 50000 })
     const withoutContribution = account({ id: "a2", category: "hsa", allocationPreset: "equity-60" })
-    const widget = buildMonteCarloWidget(0, 6, [withContribution, withoutContribution], 45, 45, 90, 500000, MONTE_CARLO_ASSUMPTIONS)
+    const widget = buildMonteCarloWidget(0, 6, [withContribution, withoutContribution], 45, 60, 90, 500000, MONTE_CARLO_ASSUMPTIONS)
     expect(widget.meta?.contributions).toHaveLength(1)
-    expect(widget.meta?.contributions?.[0]).toMatchObject({ potId: "a1", annualAmount: 600000 })
+    expect(widget.meta?.contributions?.[0]).toMatchObject({ potId: "a1", annualAmount: 600000, toAge: 60 })
+  })
+
+  it("stops modeling contributions entirely once already retired at generation time", () => {
+    const withContribution = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80", monthlyContribution: 50000 })
+    const widget = buildMonteCarloWidget(0, 6, [withContribution], 45, 45, 90, 500000, MONTE_CARLO_ASSUMPTIONS)
+    expect(widget.meta?.contributions).toEqual([])
   })
 
   it("throws a clear error when a portfolio account has no allocationPreset set", () => {
@@ -546,6 +587,31 @@ describe("mergeGeneratedDashboard", () => {
     const phases = meta.spendingPhases as { id: string; annualWithdrawal: number }[]
     expect(phases.map((phase) => phase.id)).toEqual(["pre-retirement", "retirement-spending", "downsize"])
     expect(phases[0]?.annualWithdrawal).toBe(0) // owned id refreshed, not the stale 999
+  })
+
+  it("forces a pinned Monte Carlo field to the generated value, but still preserves an unpinned one", () => {
+    const generated = {
+      version: 1 as const,
+      widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000, { ...MONTE_CARLO_ASSUMPTIONS, withdrawalStrategy: "sequential", simulationCount: 10000 }),
+    }
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "monte-carlo-card",
+          x: 0,
+          y: 6,
+          width: 12,
+          height: 4,
+          meta: { name: "Monte Carlo", pots: [], spendingPhases: [], withdrawalStrategy: "proportional", returnModel: "historical-bootstrap" },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing, new Set(["withdrawalStrategy", "simulationCount"]))
+    const meta = merged.widgets[0]?.meta as Record<string, unknown>
+    expect(meta.withdrawalStrategy).toBe("sequential") // pinned -- generated wins over the stale live value
+    expect(meta.simulationCount).toBe(10000) // pinned -- generated wins even though existing never set it
+    expect(meta.returnModel).toBe("historical-bootstrap") // unpinned -- existing still wins, same as before
   })
 
   it("drops a monte-carlo-card whose retirement age is no longer requested", () => {

@@ -2,7 +2,7 @@ import { addMonthsToDate, formatUsd } from "./actual-helpers.ts"
 import { isPortfolioCategory } from "./fire-accounts.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import { ALLOCATION_PRESET_RETURNS, WITHDRAWAL_TAX_RATES, effectiveAccessAge } from "./fire-dashboard.ts"
-import type { CrossoverCardMeta, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { CrossoverCardMeta, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 
 export type FindingLevel = "fail" | "warn" | "info" | "ok"
 
@@ -300,6 +300,48 @@ export function detectPotDrift(
     }
   }
 
+  return findings
+}
+
+// The MonteCarloCardMeta field name for each pinnable setting, alongside its expected (configured)
+// value -- see fire-dashboard.ts's pinnedMonteCarloFields for how pinnedFields itself is computed.
+const PINNABLE_FIELD_VALUES: ReadonlyArray<keyof MonteCarloAssumptions> = [
+  "withdrawalStrategy",
+  "returnModel",
+  "inflationMean",
+  "inflationStdDev",
+  "minimumWithdrawal",
+  "simulationCount",
+]
+
+// Function to compare each pinned "Simulation settings" field (see fire-dashboard.ts's
+// monteCarloAssumptionsWithOverrides) against what's actually live on every Monte Carlo widget --
+// a pinned field exists specifically so every retirement-age comparison widget uses the same
+// value, so any widget still showing something else means it hasn't been regenerated/re-imported
+// since the setting was pinned (or changed).
+export function detectMonteCarloSettingsDrift(
+  metas: readonly MonteCarloCardMeta[],
+  pinnedFields: ReadonlySet<string>,
+  assumptions: MonteCarloAssumptions,
+): Finding[] {
+  if (metas.length === 0 || pinnedFields.size === 0) {
+    return []
+  }
+  const findings: Finding[] = []
+  for (const field of PINNABLE_FIELD_VALUES) {
+    if (!pinnedFields.has(field)) {
+      continue
+    }
+    const expected = assumptions[field]
+    const stale = metas.filter((meta) => JSON.stringify((meta as unknown as Record<string, unknown>)[field] ?? null) !== JSON.stringify(expected ?? null))
+    if (stale.length > 0) {
+      findings.push({
+        level: "warn",
+        title: `Pinned simulation setting "${field}" isn't live on ${stale.length === metas.length ? "any" : `${stale.length} of ${metas.length}`} Monte Carlo widget${metas.length === 1 ? "" : "s"} yet.`,
+        detail: [`Configured value: ${JSON.stringify(expected)}. Regenerate and re-import to apply it everywhere.`],
+      })
+    }
+  }
   return findings
 }
 

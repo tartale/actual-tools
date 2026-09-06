@@ -232,6 +232,15 @@ describe("GET /api/retirement/check", () => {
   })
 })
 
+describe("GET /api/retirement/live-settings", () => {
+  it("returns all-null when no FIRE dashboard page exists yet", async () => {
+    const url = await boot({ dashboardRows: [] })
+    const res = await fetch(`${url}api/retirement/live-settings`)
+    expect(res.status).toBe(200)
+    expect(await readJson<{ crossover: unknown; monteCarlo: unknown }>(res)).toEqual({ crossover: null, monteCarlo: null })
+  })
+})
+
 describe("unknown routes", () => {
   it("404s", async () => {
     const url = await boot()

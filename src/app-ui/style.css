@@ -188,6 +188,14 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .income-label { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
 .income-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 
+.live-settings-body { border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 10px; }
+.live-settings-body h3 { font-size: 12px; font-weight: 500; margin: 0; color: var(--ink-strong); }
+.kv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 20px; }
+.kv-grid .kv { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px dashed var(--line-soft); font-size: 12px; }
+.kv-grid .kv .k { color: var(--ink-soft); }
+.kv-grid .kv .v { color: var(--ink); font-weight: 500; }
+.kv-grid .kv .v.pinned { color: var(--accent-selected); }
+
 .contrib-row { display: flex; align-items: center; gap: 6px; }
 .contrib-row input[type="number"] { flex: 1; }
 .toggle {
