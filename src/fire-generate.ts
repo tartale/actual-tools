@@ -113,6 +113,9 @@ export interface GenerateResult {
   outputPath: string
   widgetTypes: string[]
   preservedExisting: boolean
+  // The generated dashboard, pre-serialized -- lets a caller (the web UI) hand it straight to the
+  // browser as a download, without a second round trip to re-read what was just written.
+  dashboardJson: string
 }
 
 // Function to build (or regenerate) the FIRE dashboard from live account/category data and write
@@ -158,7 +161,8 @@ export async function generateDashboard(
 
   const existing = loadExistingDashboard(options.outputPath)
   const dashboard = mergeGeneratedDashboard(generated, existing)
-  writeFileSync(options.outputPath, `${JSON.stringify(dashboard, null, 2)}\n`)
+  const dashboardJson = `${JSON.stringify(dashboard, null, 2)}\n`
+  writeFileSync(options.outputPath, dashboardJson)
 
   return {
     portfolioAccountCount: portfolioIds.length,
@@ -169,6 +173,7 @@ export async function generateDashboard(
     outputPath: options.outputPath,
     widgetTypes: dashboard.widgets.map((widget) => widget.type),
     preservedExisting: existing !== null,
+    dashboardJson,
   }
 }
 

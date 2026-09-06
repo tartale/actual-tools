@@ -20,7 +20,7 @@
         <div class="section-item disabled">Transactions <span class="soon">Planned</span></div>
       </nav>
       <div class="rail-foot">
-        Reads and writes your local <code id="configPathLabel">config.json</code>. Generates dashboards Actual imports directly — nothing is pushed to Actual automatically.
+        Changes save automatically. Nothing here changes Actual itself until you choose to import a downloaded dashboard.
       </div>
     </aside>
 
@@ -88,11 +88,10 @@
         <div class="card">
           <div class="card-head">
             <h2>Generate dashboard</h2>
-            <span class="hint">Writes fire-dashboard.json</span>
           </div>
           <div class="card-body generate-row">
             <div style="font-size:12px;color:var(--ink-soft);max-width:48ch;">Builds net-worth, crossover, and Monte Carlo widgets from live balances and the accounts on the left. Import once into a new Actual dashboard page — regenerating never overwrites your hand edits there.</div>
-            <button type="button" class="btn" id="generateBtn">Generate dashboard</button>
+            <button type="button" class="btn" id="generateBtn">Download dashboard</button>
           </div>
           <div class="gen-result" id="genResult" hidden></div>
         </div>
@@ -100,7 +99,6 @@
         <div class="card">
           <div class="card-head">
             <h2>Check</h2>
-            <span class="hint">Reads the live dashboard via ActualQL</span>
           </div>
           <div id="checkResult">
             <div class="empty-note">Open this tab to run a check.</div>

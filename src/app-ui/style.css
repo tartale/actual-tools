@@ -117,14 +117,40 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
   width: 100%; font: inherit; font-size: 13px; padding: 5px; border: 1px solid var(--line);
   border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink);
 }
-.field input:disabled, select:disabled { color: var(--ink-faint); }
+.field input:disabled, select:disabled { color: var(--ink-faint); background: var(--surface); }
+
+.input-affix { position: relative; }
+.input-affix::before, .input-affix::after {
+  position: absolute; top: 50%; transform: translateY(-50%); color: var(--ink-faint); font-size: 12px; pointer-events: none;
+}
+.input-affix.prefix-dollar::before { content: "$"; left: 8px; }
+.input-affix.prefix-dollar input { padding-left: 17px; }
+.input-affix.suffix-percent::after { content: "%"; right: 9px; }
+.input-affix.suffix-percent input { padding-right: 22px; }
+.input-affix:has(input:disabled)::before, .input-affix:has(input:disabled)::after { opacity: 0.5; }
 .field input:focus, select:focus, .toggle:focus-visible, .tab:focus-visible, .btn:focus-visible {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
 }
-.field .derived, .acct-fields > .derived { font-size: 11px; color: var(--ink-faint); margin-top: 5px; grid-column: 1 / -1; }
+.field .derived, .acct-fields > .derived, .employer-block > .derived { font-size: 11px; color: var(--ink-faint); margin-top: 5px; grid-column: 1 / -1; }
 .derived.warn-text { color: var(--warn); }
 .checkbox-label, .radio-row label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 400; color: var(--ink); cursor: pointer; }
 .checkbox-label input, .radio-row input { width: auto; margin: 0; accent-color: var(--accent); }
+
+/* Groups the "active employer plan" checkbox with the fields that only make sense when it's
+   checked -- same fields, same positions, whether active or not, so toggling the checkbox dims
+   the group rather than reflowing the row around it. */
+.employer-block {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px 18px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.employer-block .field.full { grid-column: 1 / -1; }
+.employer-block.inactive { opacity: 0.55; }
 .radio-row { display: flex; gap: 16px; align-items: center; height: 100%; padding-top: 2px; }
 .saved-flag { font-size: 10.5px; color: var(--ok); opacity: 0; transition: opacity 0.3s; margin-left: 6px; }
 .saved-flag.show { opacity: 1; }

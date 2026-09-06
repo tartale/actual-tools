@@ -159,6 +159,9 @@ function renderAccounts() {
       : ""
 
     const isRuleOf55Active = account.ruleOf55SeparationAge != null
+    // A 401(k)-family account with no active employer relationship has nothing to contribute
+    // to right now -- disabled, not hidden, so the field stays in the same place either way.
+    const contributionDisabled = typeInfo.ruleOf55Eligible && !isRuleOf55Active
 
     const employer = account.employerContribution
     const employerNote = employer
@@ -190,32 +193,42 @@ function renderAccounts() {
         <div class="field ${showContribution ? "" : "hidden"}">
           <label>Monthly contribution</label>
           <div class="contrib-row">
-            <input type="number" min="0" step="0.01" data-field="monthlyContribution" value="${contributionValue}" placeholder="0" ${account.monthlyContributionIsMax ? "disabled" : ""}>
-            ${typeInfo.limitGroup ? `<button type="button" class="toggle ${account.monthlyContributionIsMax ? "on" : ""}" data-toggle-max><span class="dot"></span>Max</button>` : ""}
+            <div class="input-affix prefix-dollar">
+              <input type="number" min="0" step="0.01" data-field="monthlyContribution" value="${contributionValue}" placeholder="0" ${account.monthlyContributionIsMax || contributionDisabled ? "disabled" : ""}>
+            </div>
+            ${typeInfo.limitGroup ? `<button type="button" class="toggle ${account.monthlyContributionIsMax ? "on" : ""}" data-toggle-max ${contributionDisabled ? "disabled" : ""}><span class="dot"></span>Max</button>` : ""}
           </div>
           ${maxCaption}
         </div>
         ${typeInfo.ruleOf55Eligible ? `
-        <div class="field">
-          <label class="checkbox-label"><input type="checkbox" data-field="ruleOf55Active" ${isRuleOf55Active ? "checked" : ""}> Active account with this employer</label>
-        </div>
-        <div class="field ${isRuleOf55Active ? "" : "hidden"}">
-          <label>Age you'll separate from this employer</label>
-          <input type="number" min="1" data-field="ruleOf55SeparationAge" value="${account.ruleOf55SeparationAge ?? 55}">
-        </div>
-        <div class="field">
-          <label>Annual salary</label>
-          <input type="number" min="0" step="0.01" data-field="annualSalary" value="${account.annualSalary != null ? (account.annualSalary / 100) : ""}" placeholder="not entered">
-        </div>
-        <div class="field">
-          <label>Employer match %</label>
-          <input type="number" min="0" step="1" data-field="employerMatchRate" value="${account.employerMatchRate != null ? (account.employerMatchRate * 100) : ""}" placeholder="e.g. 100">
-        </div>
-        <div class="field">
-          <label>...up to this % of pay</label>
-          <input type="number" min="0" step="0.5" data-field="employerMatchCapRate" value="${account.employerMatchCapRate != null ? (account.employerMatchCapRate * 100) : ""}" placeholder="e.g. 4">
-        </div>
-        ${employerNote}` : ""}
+        <div class="employer-block ${isRuleOf55Active ? "" : "inactive"}">
+          <div class="field full">
+            <label class="checkbox-label"><input type="checkbox" data-field="ruleOf55Active" ${isRuleOf55Active ? "checked" : ""}> Active account with this employer</label>
+          </div>
+          <div class="field">
+            <label>Age you'll separate from this employer</label>
+            <input type="number" min="1" data-field="ruleOf55SeparationAge" value="${account.ruleOf55SeparationAge ?? 55}" ${isRuleOf55Active ? "" : "disabled"}>
+          </div>
+          <div class="field">
+            <label>Annual salary</label>
+            <div class="input-affix prefix-dollar">
+              <input type="number" min="0" step="0.01" data-field="annualSalary" value="${account.annualSalary != null ? (account.annualSalary / 100) : ""}" placeholder="not entered" ${isRuleOf55Active ? "" : "disabled"}>
+            </div>
+          </div>
+          <div class="field">
+            <label>Employer match</label>
+            <div class="input-affix suffix-percent">
+              <input type="number" min="0" step="1" data-field="employerMatchRate" value="${account.employerMatchRate != null ? (account.employerMatchRate * 100) : ""}" placeholder="e.g. 100" ${isRuleOf55Active ? "" : "disabled"}>
+            </div>
+          </div>
+          <div class="field">
+            <label>...up to this % of pay</label>
+            <div class="input-affix suffix-percent">
+              <input type="number" min="0" step="0.5" data-field="employerMatchCapRate" value="${account.employerMatchCapRate != null ? (account.employerMatchCapRate * 100) : ""}" placeholder="e.g. 4" ${isRuleOf55Active ? "" : "disabled"}>
+            </div>
+          </div>
+          ${isRuleOf55Active ? employerNote : ""}
+        </div>` : ""}
         ${account.type === "hsa" ? `
         <div class="field">
           <label>Coverage</label>
@@ -226,12 +239,16 @@ function renderAccounts() {
         </div>` : ""}
         ${account.type === "debt" ? `
         <div class="field">
-          <label>Interest rate %</label>
-          <input type="number" min="0" step="0.01" data-field="mortgageInterestRate" value="${account.mortgageInterestRate != null ? (account.mortgageInterestRate * 100) : ""}" placeholder="e.g. 6.5">
+          <label>Interest rate</label>
+          <div class="input-affix suffix-percent">
+            <input type="number" min="0" step="0.01" data-field="mortgageInterestRate" value="${account.mortgageInterestRate != null ? (account.mortgageInterestRate * 100) : ""}" placeholder="e.g. 6.5">
+          </div>
         </div>
         <div class="field">
           <label>Monthly payment</label>
-          <input type="number" min="0" step="0.01" data-field="mortgageMonthlyPayment" value="${account.mortgageMonthlyPayment != null ? (account.mortgageMonthlyPayment / 100) : ""}" placeholder="not entered">
+          <div class="input-affix prefix-dollar">
+            <input type="number" min="0" step="0.01" data-field="mortgageMonthlyPayment" value="${account.mortgageMonthlyPayment != null ? (account.mortgageMonthlyPayment / 100) : ""}" placeholder="not entered">
+          </div>
         </div>
         <div class="field">
           <label>Balance as of</label>
@@ -239,7 +256,9 @@ function renderAccounts() {
         </div>
         <div class="field">
           <label>Balance on that date</label>
-          <input type="number" min="0" step="0.01" data-field="mortgageBalanceAsOf" value="${account.mortgageBalanceAsOf != null ? (account.mortgageBalanceAsOf / 100) : ""}" placeholder="not entered">
+          <div class="input-affix prefix-dollar">
+            <input type="number" min="0" step="0.01" data-field="mortgageBalanceAsOf" value="${account.mortgageBalanceAsOf != null ? (account.mortgageBalanceAsOf / 100) : ""}" placeholder="not entered">
+          </div>
         </div>
         ${payoffNote}` : ""}
         ${!typeInfo.isPortfolio ? `<div class="no-fields-note">Not part of the investable portfolio — no allocation or contribution to set.</div>` : ""}
@@ -392,12 +411,26 @@ async function runCheck() {
   }
 }
 
+function downloadFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
 async function runGenerate() {
   const btn = document.getElementById("generateBtn")
   const result = document.getElementById("genResult")
   btn.disabled = true
   try {
     const r = await api("/api/retirement/generate", { method: "POST" })
+    const filename = r.outputPath.split("/").pop()
+    downloadFile(filename, r.dashboardJson, "application/json")
     const boostLines = r.ruleOf55Boosts
       .map((b) => `<div class="line boost">Rule of 55 applied: ${escapeHtml(b.accountName)} accessible from age ${b.to} (was ${b.from ?? "none"}).</div>`)
       .join("")
@@ -405,12 +438,12 @@ async function runGenerate() {
       <div class="line">Portfolio accounts (${r.portfolioAccountCount}): current total <span class="num">${usd(r.portfolioTotal)}</span></div>
       <div class="line">Expense categories (${r.expenseCategoryCount}): trailing 12-month spend <span class="num">${usd(r.annualSpend)}</span>/yr</div>
       ${boostLines}
-      <div class="line">Wrote <span class="num">${escapeHtml(r.outputPath)}</span> (${r.widgetTypes.length} widgets: ${r.widgetTypes.join(", ")}).${r.preservedExisting ? " Preserved customizations from the existing file." : ""}</div>
+      <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span> (${r.widgetTypes.length} widgets: ${r.widgetTypes.join(", ")}).${r.preservedExisting ? " Preserved customizations from the existing file." : ""}</div>
       <div class="import-steps">
         Import it into Actual:
         <ol>
           <li>Reports → new dashboard page (e.g. "FIRE")</li>
-          <li>On that page, "…" menu → Import → pick <code class="num">${escapeHtml(r.outputPath)}</code></li>
+          <li>On that page, "…" menu → Import → pick the file you just downloaded</li>
         </ol>
       </div>`
     result.hidden = false

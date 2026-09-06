@@ -163,8 +163,9 @@ health today; bulk budget edits and spending analysis (currently
 - `-i`, `--irs-limits PATH` — path to the IRS contribution limits reference
   file (default: `irs-limits.json`). Missing is fine, just skips that
   context.
-- `-o`, `--output PATH` — where the "Generate dashboard" action writes the
-  dashboard JSON (default: `fire-dashboard.json`).
+- `-o`, `--output PATH` — filename the "Generate dashboard" action's
+  browser download suggests, and the server-side copy it also keeps
+  (default: `fire-dashboard.json`).
 - `-p`, `--port N` — run on this fixed port instead of an OS-assigned one.
 - `--no-open` — don't try to open the page in a browser automatically, just
   print the URL. Useful over SSH or in a container with no browser to open.
@@ -288,9 +289,13 @@ the old category field for that account.
 used to (a full-width net-worth widget, a safe-withdrawal-rate "crossover"
 projection, and a Monte Carlo retirement simulation, using Actual's own
 built-in dashboard widgets rather than reimplementing FIRE math) from your
-real account and spending data, and writes them to the output file. It
-refuses to run without a birth date, at least one retirement age, and at
-least one account classified into the portfolio.
+real account and spending data, and **downloads it to your browser** —
+useful since the server and the browser viewing it aren't always the same
+machine (e.g. running this on a home server, viewed from a laptop). It
+also keeps its own server-side copy at the output path, for continuity if
+you're running it locally. Refuses to run without a birth date, at least
+one retirement age, and at least one account classified into the
+portfolio.
 
 **This does not talk to Actual's dashboard feature directly for writing**
 — there's no API for that (confirmed against both `@actual-app/api` and
