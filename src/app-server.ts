@@ -13,6 +13,7 @@ import {
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
   classifyAccounts,
   contributionLimitLines,
+  employerContributionSummary,
   findOverride,
   isPortfolioCategory,
   loadFireConfig,
@@ -20,8 +21,18 @@ import {
   pruneStaleOverrides,
   writeFireConfig,
 } from "./fire-accounts.ts"
-import type { AccountType, ClassifiedAccount, ContributionLimitGroup, FireAccountOverride, FireConfig, MonteCarloAllocationPreset } from "./fire-accounts.ts"
+import type {
+  AccountType,
+  ClassifiedAccount,
+  ContributionLimitGroup,
+  EmployerContributionSummary,
+  FireAccountOverride,
+  FireConfig,
+  MonteCarloAllocationPreset,
+} from "./fire-accounts.ts"
 import { loadIrsLimits } from "./irs-limits.ts"
+import { calculateMortgagePayoff } from "./fire-analysis.ts"
+import type { MortgagePayoff } from "./fire-analysis.ts"
 import { checkDashboard, generateDashboard } from "./fire-generate.ts"
 
 // A plain node:http server -- no new dependency, matching this repo's zero-runtime-deps
@@ -84,6 +95,41 @@ interface AccountState {
   monthlyContributionIsMax: boolean
   ruleOf55SeparationAge: number | null
   limitLines: string[]
+  // Employer-plan types only; null fields mean "not entered yet," not zero.
+  annualSalary: number | null
+  employerMatchRate: number | null
+  employerMatchCapRate: number | null
+  employerContribution: EmployerContributionSummary | null
+  // hsa only.
+  hsaCoverage: "self" | "family" | null
+  // debt only.
+  mortgageInterestRate: number | null
+  mortgageMonthlyPayment: number | null
+  mortgageBalanceAsOfDate: string | null
+  mortgageBalanceAsOf: number | null
+  mortgagePayoff: MortgagePayoff | { error: string } | null
+}
+
+// A balance never changes as a side effect of a config edit -- only Actual's own ledger changes
+// it -- so re-fetching every account's full transaction history (the only way this API exposes a
+// balance; see fetchAccountBalance) on every single field edit was the real cause of "Max feels
+// delayed": a dozen real accounts' full histories, refetched after every keystroke. Cached here per
+// server process, keyed by account id; "fresh" (GET /api/retirement/state) always refetches
+// everything, "cached" (every mutating route's response) reuses what's known and only fetches an
+// account this process has never seen before.
+const balanceCache = new Map<string, number>()
+
+async function getBalances(
+  actualConfig: ActualConfig,
+  accounts: readonly { id: string }[],
+  mode: "fresh" | "cached",
+): Promise<Map<string, number>> {
+  const needsFetch = mode === "fresh" ? accounts : accounts.filter((account) => !balanceCache.has(account.id))
+  if (needsFetch.length > 0) {
+    const fetched = await Promise.all(needsFetch.map((account) => fetchAccountBalance(actualConfig, account.id, "1970-01-01")))
+    needsFetch.forEach((account, index) => balanceCache.set(account.id, fetched[index] as number))
+  }
+  return new Map(accounts.map((account) => [account.id, balanceCache.get(account.id) ?? 0]))
 }
 
 interface StateResponse {
@@ -98,7 +144,12 @@ interface StateResponse {
 // Function to build the one JSON snapshot both GET /api/retirement/state and every mutating route
 // return after persisting a change -- so the client always renders from the same shape and never
 // has to separately recompute what a "max" contribution resolves to or which fields a type implies.
-async function buildState(actualConfig: ActualConfig, configPath: string, irsLimitsPath: string): Promise<StateResponse> {
+async function buildState(
+  actualConfig: ActualConfig,
+  configPath: string,
+  irsLimitsPath: string,
+  balanceMode: "fresh" | "cached",
+): Promise<StateResponse> {
   const { config: fireConfig } = loadFireConfig(configPath)
   const irsLimits = loadIrsLimits(irsLimitsPath)
   const birthDate = fireConfig.dashboard.birthDate
@@ -106,11 +157,19 @@ async function buildState(actualConfig: ActualConfig, configPath: string, irsLim
 
   const rawAccounts = await fetchAllOpenAccounts(actualConfig)
   const classified = classifyAccounts(rawAccounts, fireConfig, birthDate, irsLimits)
-  const balances = await Promise.all(rawAccounts.map((account) => fetchAccountBalance(actualConfig, account.id, "1970-01-01")))
-  const balanceById = new Map(rawAccounts.map((account, index) => [account.id, balances[index] as number]))
+  const balanceById = await getBalances(actualConfig, rawAccounts, balanceMode)
 
   const accounts: AccountState[] = classified.map((account) => {
     const override = findOverride(account, fireConfig)
+    const mortgagePayoff =
+      account.mortgageInterestRate != null && account.mortgageMonthlyPayment != null && account.mortgageBalanceAsOfDate != null && account.mortgageBalanceAsOf != null
+        ? calculateMortgagePayoff({
+            interestRate: account.mortgageInterestRate,
+            monthlyPayment: account.mortgageMonthlyPayment,
+            balanceAsOfDate: account.mortgageBalanceAsOfDate,
+            balanceAsOf: account.mortgageBalanceAsOf,
+          })
+        : null
     return {
       id: account.id,
       name: account.name,
@@ -123,7 +182,17 @@ async function buildState(actualConfig: ActualConfig, configPath: string, irsLim
       monthlyContribution: account.monthlyContribution,
       monthlyContributionIsMax: override?.monthlyContribution === "max",
       ruleOf55SeparationAge: account.ruleOf55SeparationAge,
-      limitLines: contributionLimitLines(account.type, irsLimits),
+      limitLines: contributionLimitLines(account.type, irsLimits, account.hsaCoverage ?? "self"),
+      annualSalary: account.annualSalary,
+      employerMatchRate: account.employerMatchRate,
+      employerMatchCapRate: account.employerMatchCapRate,
+      employerContribution: currentAge === null || irsLimits === null ? null : employerContributionSummary(account, currentAge, irsLimits),
+      hsaCoverage: account.hsaCoverage,
+      mortgageInterestRate: account.mortgageInterestRate,
+      mortgageMonthlyPayment: account.mortgageMonthlyPayment,
+      mortgageBalanceAsOfDate: account.mortgageBalanceAsOfDate,
+      mortgageBalanceAsOf: account.mortgageBalanceAsOf,
+      mortgagePayoff,
     }
   })
 
@@ -247,6 +316,54 @@ function applyAccountPatch(
     }
   }
 
+  // Function to apply one "a positive number, or null to clear it" field -- the shape shared by
+  // every optional numeric field below.
+  const applyPositiveOrNull = (field: keyof FireAccountOverride, label: string): void => {
+    if (!(field in patch)) {
+      return
+    }
+    const value = patch[field]
+    if (value === null) {
+      delete next[field]
+    } else if (typeof value === "number" && value > 0) {
+      ;(next as unknown as Record<string, unknown>)[field] = value
+    } else {
+      throw new Error(`${label} must be a positive number or null.`)
+    }
+  }
+  applyPositiveOrNull("annualSalary", "annualSalary")
+  applyPositiveOrNull("employerMatchRate", "employerMatchRate")
+  applyPositiveOrNull("employerMatchCapRate", "employerMatchCapRate")
+  applyPositiveOrNull("mortgageMonthlyPayment", "mortgageMonthlyPayment")
+  applyPositiveOrNull("mortgageBalanceAsOf", "mortgageBalanceAsOf")
+
+  if ("mortgageInterestRate" in patch) {
+    const value = patch.mortgageInterestRate
+    if (value === null) {
+      delete next.mortgageInterestRate
+    } else if (typeof value === "number" && value >= 0) {
+      next.mortgageInterestRate = value
+    } else {
+      throw new Error("mortgageInterestRate must be a non-negative number or null.")
+    }
+  }
+  if ("mortgageBalanceAsOfDate" in patch) {
+    const value = patch.mortgageBalanceAsOfDate
+    if (value === null) {
+      delete next.mortgageBalanceAsOfDate
+    } else if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      next.mortgageBalanceAsOfDate = value
+    } else {
+      throw new Error("mortgageBalanceAsOfDate must be a YYYY-MM-DD string or null.")
+    }
+  }
+  if ("hsaCoverage" in patch) {
+    if (patch.hsaCoverage !== "self" && patch.hsaCoverage !== "family") {
+      throw new Error('hsaCoverage must be "self" or "family".')
+    }
+    next.hsaCoverage = patch.hsaCoverage
+  }
+
   const accounts = [...fireConfig.accounts]
   if (index === -1) {
     accounts.push(next)
@@ -280,7 +397,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       }
 
       if (req.method === "GET" && path === "/api/retirement/state") {
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath))
+        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "fresh"))
         return
       }
 
@@ -307,7 +424,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           dashboard.planToAge = body.planToAge
         }
         writeFireConfig(configPath, { ...fireConfig, dashboard })
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath))
+        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))
         return
       }
 
@@ -331,7 +448,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         if (prunedAccounts.length !== reloaded.accounts.length) {
           writeFireConfig(configPath, { ...reloaded, accounts: prunedAccounts })
         }
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath))
+        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))
         return
       }
 

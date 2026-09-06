@@ -10,8 +10,11 @@ import {
   annualContributionLimit,
   classifyAccounts,
   classifyByHeuristic,
+  combinedAnnualAdditionsLimit,
+  computeEmployerContribution,
   contributionLimitLines,
   DEFAULT_PLAN_TO_AGE,
+  employerContributionSummary,
   findOverride,
   FIRE_ACCOUNT_CATEGORIES,
   isPortfolioCategory,
@@ -33,7 +36,7 @@ const config: ActualConfig = { baseUrl: "https://actual.test/v1", budgetId: "bud
 const IRS_LIMITS: IrsLimits = {
   taxYear: 2026,
   source: "test fixture",
-  employerPlan: { standard: 2450000, catchUp50: 800000, catchUp60to63: 1125000 },
+  employerPlan: { standard: 2450000, catchUp50: 800000, catchUp60to63: 1125000, annualAdditions: 7200000 },
   ira: { standard: 750000, catchUp50: 110000 },
   hsa: { selfOnly: 440000, family: 875000, catchUp55: 100000 },
 }
@@ -315,6 +318,23 @@ describe("classifyAccounts", () => {
       const [, ira] = classifyAccounts(accounts, cfg, "1980-01-01", IRS_LIMITS)
       expect(ira?.monthlyContribution).toBe(Math.round(750000 / 12))
     })
+
+    // Regression guard: a real bug found via live testing. A legacy (category-only) override's
+    // `match` is usually an account id, not a name -- guessing its type straight from `match`
+    // (rather than the real account name) silently mis-groups it, e.g. a legacy Roth IRA landing
+    // in "employer-plan" instead of "ira" because an id string matches neither the IRA nor the
+    // employer-plan name pattern and falls through to roth-401k's default.
+    it("resolves \"max\" correctly for a legacy override whose match is an account id, not a name", () => {
+      const accounts = [{ id: "47baec55-3cb7-4cbe-b95c-5d0cea767d1b", name: "E*Trade Roth IRA", offbudget: true }]
+      const cfg = {
+        accounts: [{ match: "47baec55-3cb7-4cbe-b95c-5d0cea767d1b", category: "retirement-roth", taxTreatment: "tax-free", accessAge: 59, monthlyContribution: "max" }],
+      } as unknown as Pick<FireConfig, "accounts">
+      const [result] = classifyAccounts(accounts, cfg, "1980-01-01", IRS_LIMITS)
+      expect(result?.type).toBe("roth-ira")
+      // The IRA limit ($7,500 base in this fixture), not the much larger employer-plan limit --
+      // wrong grouping would silently return Math.round(2450000 / 12) instead.
+      expect(result?.monthlyContribution).toBe(Math.round(750000 / 12))
+    })
   })
 })
 
@@ -467,6 +487,14 @@ describe("loadClassifiedAccounts", () => {
         allocationPreset: "equity-80",
         monthlyContribution: null,
         ruleOf55SeparationAge: null,
+        annualSalary: null,
+        employerMatchRate: null,
+        employerMatchCapRate: null,
+        hsaCoverage: null,
+        mortgageInterestRate: null,
+        mortgageMonthlyPayment: null,
+        mortgageBalanceAsOfDate: null,
+        mortgageBalanceAsOf: null,
         source: "heuristic",
       },
     ])
@@ -529,9 +557,77 @@ describe("annualContributionLimit", () => {
     expect(annualContributionLimit("ira", 50, IRS_LIMITS)).toBe(750000 + 110000)
   })
 
-  it("uses the self-only HSA limit, adding the 55+ catch-up", () => {
+  it("uses the self-only HSA limit by default, adding the 55+ catch-up", () => {
     expect(annualContributionLimit("hsa", 40, IRS_LIMITS)).toBe(440000)
     expect(annualContributionLimit("hsa", 55, IRS_LIMITS)).toBe(440000 + 100000)
+  })
+
+  it("uses the family HSA limit when coverage is family", () => {
+    expect(annualContributionLimit("hsa", 40, IRS_LIMITS, "family")).toBe(875000)
+    expect(annualContributionLimit("hsa", 55, IRS_LIMITS, "family")).toBe(875000 + 100000)
+  })
+})
+
+describe("combinedAnnualAdditionsLimit", () => {
+  it("uses the standard 415(c) limit under 50", () => {
+    expect(combinedAnnualAdditionsLimit(40, IRS_LIMITS)).toBe(7200000)
+  })
+
+  it("adds the same 50-59-or-64+ catch-up dollar amount as the elective-deferral limit", () => {
+    expect(combinedAnnualAdditionsLimit(55, IRS_LIMITS)).toBe(7200000 + 800000)
+    expect(combinedAnnualAdditionsLimit(64, IRS_LIMITS)).toBe(7200000 + 800000)
+  })
+
+  it("uses the larger 60-63 catch-up, not the 50+ one", () => {
+    expect(combinedAnnualAdditionsLimit(61, IRS_LIMITS)).toBe(7200000 + 1125000)
+  })
+})
+
+describe("computeEmployerContribution", () => {
+  it("matches dollar-for-dollar up to the cap when the employee contributes at least that much", () => {
+    // $150,000 salary, 100% match up to 4% of pay -> employer contributes up to $6,000/yr.
+    expect(computeEmployerContribution(15000000, 1.0, 0.04, 1000000)).toBe(600000)
+  })
+
+  it("matches only the employee's actual contribution when it's below the cap", () => {
+    // Same plan, but the employee only put in $3,000 -- employer matches that $3,000, not the $6,000 cap.
+    expect(computeEmployerContribution(15000000, 1.0, 0.04, 300000)).toBe(300000)
+  })
+
+  it("applies a partial match rate", () => {
+    // 50% match up to 6% of a $100,000 salary -- cap is $6,000, employee contributes $8,000 (above cap).
+    expect(computeEmployerContribution(10000000, 0.5, 0.06, 800000)).toBe(300000)
+  })
+
+  it("returns 0, not null, when any input is missing", () => {
+    expect(computeEmployerContribution(null, 1.0, 0.04, 500000)).toBe(0)
+    expect(computeEmployerContribution(15000000, null, 0.04, 500000)).toBe(0)
+    expect(computeEmployerContribution(15000000, 1.0, null, 500000)).toBe(0)
+  })
+})
+
+describe("employerContributionSummary", () => {
+  it("returns null when salary/match info isn't entered", () => {
+    const account = { annualSalary: null, employerMatchRate: null, employerMatchCapRate: null, monthlyContribution: 200000 }
+    expect(employerContributionSummary(account, 40, IRS_LIMITS)).toBeNull()
+  })
+
+  it("combines employee and employer contributions against the 415(c) limit", () => {
+    const account = { annualSalary: 15000000, employerMatchRate: 1.0, employerMatchCapRate: 0.04, monthlyContribution: 204167 }
+    const summary = employerContributionSummary(account, 40, IRS_LIMITS)
+    expect(summary?.employerAnnualContribution).toBe(600000)
+    expect(summary?.combinedAnnual).toBe(204167 * 12 + 600000)
+    expect(summary?.combinedLimit).toBe(7200000)
+    expect(summary?.exceedsLimit).toBe(false)
+  })
+
+  it("flags when the combined total exceeds the 415(c) limit", () => {
+    // An extreme, deliberately unrealistic case just to exercise the flag: a 100% match up to
+    // 100% of a $500,000 salary, with the employee contributing $60,000/yr -- $60,000 employee +
+    // $60,000 employer = $120,000, well past the $72,000 combined limit at this age.
+    const account = { annualSalary: 50000000, employerMatchRate: 1.0, employerMatchCapRate: 1.0, monthlyContribution: 500000 }
+    const summary = employerContributionSummary(account, 40, IRS_LIMITS)
+    expect(summary?.exceedsLimit).toBe(true)
   })
 })
 
@@ -580,6 +676,16 @@ describe("contributionLimitLines", () => {
     expect(lines[1]).toContain("age 50-59, 64+")
     expect(lines[2]).toContain("age 60-63")
   })
+
+  it("defaults to the self-only HSA tier, and switches to family when asked", () => {
+    const selfLines = contributionLimitLines("hsa", IRS_LIMITS)
+    expect(selfLines[0]).toContain("(self-only)")
+    expect(selfLines[0]).toContain("$4400.00/yr")
+
+    const familyLines = contributionLimitLines("hsa", IRS_LIMITS, "family")
+    expect(familyLines[0]).toContain("(family)")
+    expect(familyLines[0]).toContain("$8750.00/yr")
+  })
 })
 
 describe("writeFireConfig", () => {
@@ -617,6 +723,14 @@ describe("portfolioAccounts", () => {
       allocationPreset: null,
       monthlyContribution: null,
       ruleOf55SeparationAge: null,
+      annualSalary: null,
+      employerMatchRate: null,
+      employerMatchCapRate: null,
+      hsaCoverage: null,
+      mortgageInterestRate: null,
+      mortgageMonthlyPayment: null,
+      mortgageBalanceAsOfDate: null,
+      mortgageBalanceAsOf: null,
       source: "heuristic",
       ...overrides,
     }

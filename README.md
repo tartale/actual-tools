@@ -204,8 +204,12 @@ conservative default, not a lifespan estimate).
 **Accounts**: every open account, each with an **account type** — not just
 a coarse category, but a concrete kind (Traditional 401(k)/403(b)/457/TSP,
 Roth 401(k)/403(b), Traditional IRA, Roth IRA, Inherited/Beneficiary IRA,
-HSA, taxable brokerage, debt, cash, other). The type drives everything else
-about the account, and which fields even show up:
+HSA, taxable brokerage, high-yield savings/money market, debt, cash,
+other). A high-yield savings account or money market is its own type,
+distinct from a plain brokerage: taxable like one, but with no age-based
+withdrawal restriction and a stable, cash-like balance rather than market
+exposure, so it defaults to a cash allocation instead of stocks. The type
+drives everything else about the account, and which fields even show up:
 
 - **Allocation** and **monthly contribution** — shown for every portfolio
   type (retirement/HSA/taxable). A contribution can be a plain number, or
@@ -227,14 +231,40 @@ about the account, and which fields even show up:
   allocation-adjacent limit line appears for that type.
 - **Rule of 55** (IRC §72(t)(2)(A)(v)) — shown only for the two
   401(k)-family types, never for an IRA, since the exception can never
-  apply to one. If you'll separate from that employer at 55 or older, give
-  the age; the account's effective access age in the Monte Carlo widget
-  drops to that age (or stays at the normal one if that's earlier).
+  apply to one. A checkbox ("Active account with this employer") replaces
+  a bare "0 for not applicable" number field: checking it reveals the
+  separation-age input (defaulting to 55, the exception's own floor);
+  unchecking it clears the age entirely, rather than leaving a stray 0
+  meaning the same thing as "never asked." When set, the account's
+  effective access age in the Monte Carlo widget drops to that age (or
+  stays at the normal one if that's earlier).
+- **Employer match** — also 401(k)-family only: annual salary, match rate,
+  and the pay percentage it's capped at (e.g. 100% up to 4% of pay).
+  Deliberately a flat two-number formula, not a tiered one (e.g. "100% on
+  the first 3%, 50% on the next 2%") — covers the common case without
+  needing more inputs. Once entered, the page shows the estimated employer
+  contribution and checks it against the combined IRC §415(c) "annual
+  additions" limit (employee elective deferrals + employer money
+  together) — a separate, much larger ceiling than the elective-deferral
+  limit above, which mostly only binds for a large employer match or
+  profit-sharing plan (e.g. a solo 401(k)'s "employer" contribution).
+- **HSA coverage** — self-only or family, since the two have different IRS
+  limits; the contribution-limit lines and a **Max** contribution both use
+  whichever is selected.
 
 An **inherited/beneficiary IRA** also gets a real correctness fix: it has
 no early-withdrawal-penalty age restriction at all (IRC §72(t)(2)(A)(iv)),
 unlike every other IRA/401(k) type here — so its access age is always
 unrestricted, not the usual 59.
+
+**Mortgage/loan payoff** (debt accounts): interest rate, monthly payment,
+and a balance as of a given date — independent of Actual's own ledger
+balance for the account, since a real servicer's payoff balance often
+isn't what a synced or manually-tracked Actual account reflects. From
+those four numbers the page computes and shows an estimated payoff date
+using standard loan amortization, or a clear message if the payment
+doesn't even cover the interest accruing each month (the balance would
+grow, not shrink).
 
 Two real strategies exist but aren't modeled: a **Roth conversion ladder**
 (staggered Traditional→Roth conversions, each with its own 5-year clock)
@@ -335,19 +365,20 @@ and hand-updated:
 {
   "taxYear": 2026,
   "source": "https://www.irs.gov/...",
-  "employerPlan": { "standard": 2450000, "catchUp50": 800000, "catchUp60to63": 1125000 },
+  "employerPlan": { "standard": 2450000, "catchUp50": 800000, "catchUp60to63": 1125000, "annualAdditions": 7200000 },
   "ira": { "standard": 750000, "catchUp50": 110000 },
   "hsa": { "selfOnly": 440000, "family": 875000, "catchUp55": 100000 }
 }
 ```
 
-All dollar amounts in cents. There's no IRS API for this (only annual news
-releases and Revenue Procedure PDFs) — ask a future session to re-verify
-it via a real web search once a new tax year's limits are announced,
-usually in the preceding fall. HSA's family-coverage figure is tracked in
-the file but not used to compute a "Max" contribution (self-only vs.
-family coverage isn't tracked per account) — type an explicit monthly
-number for a family-coverage HSA instead.
+All dollar amounts in cents. `employerPlan.annualAdditions` is the IRC
+§415(c) combined employee+employer limit (see the employer-match note
+above) — a real, separate figure, not derived from `standard`; its
+catch-up amounts happen to equal the elective-deferral ones above (verified
+via a real web search, not assumed), but the base figure is its own. There's
+no IRS API for any of this (only annual news releases and Revenue Procedure
+PDFs) — ask a future session to re-verify it via a real web search once a
+new tax year's limits are announced, usually in the preceding fall.
 ## Layout
 
 ```

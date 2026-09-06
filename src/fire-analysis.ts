@@ -1,4 +1,4 @@
-import { formatUsd } from "./actual-helpers.ts"
+import { addMonthsToDate, formatUsd } from "./actual-helpers.ts"
 import { isPortfolioCategory } from "./fire-accounts.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import { ALLOCATION_PRESET_RETURNS, WITHDRAWAL_TAX_RATES, effectiveAccessAge } from "./fire-dashboard.ts"
@@ -10,6 +10,48 @@ export interface Finding {
   level: FindingLevel
   title: string
   detail: string[]
+}
+
+export interface MortgageDetails {
+  // Decimal, e.g. 0.065 for 6.5% -- matches this repo's convention for rates everywhere else
+  // (safeWithdrawalRate, ALLOCATION_PRESET_RETURNS, ...).
+  interestRate: number
+  monthlyPayment: number
+  balanceAsOfDate: string
+  balanceAsOf: number
+}
+
+export interface MortgagePayoff {
+  monthsRemaining: number
+  payoffDate: string
+}
+
+// Function to project a standard amortizing loan forward from its own stated balance/date (not
+// Actual's ledger balance for the account -- a real mortgage servicer's payoff balance often isn't
+// what a synced or manually-tracked Actual account reflects, so this is deliberately its own
+// independent anchor point) to a payoff date, using the standard fixed-payment amortization
+// formula. Returns an error, not a nonsensical date, when the payment doesn't even cover the
+// interest accruing each month -- the balance would grow forever, not reach zero.
+export function calculateMortgagePayoff(details: MortgageDetails): MortgagePayoff | { error: string } {
+  const monthlyRate = details.interestRate / 12
+  if (details.balanceAsOf <= 0) {
+    return { monthsRemaining: 0, payoffDate: details.balanceAsOfDate }
+  }
+  if (monthlyRate === 0) {
+    if (details.monthlyPayment <= 0) {
+      return { error: "Monthly payment must be greater than zero." }
+    }
+    const monthsRemaining = Math.ceil(details.balanceAsOf / details.monthlyPayment)
+    return { monthsRemaining, payoffDate: addMonthsToDate(details.balanceAsOfDate, monthsRemaining) }
+  }
+  const monthlyInterest = details.balanceAsOf * monthlyRate
+  if (details.monthlyPayment <= monthlyInterest) {
+    return { error: "Payment doesn't cover the interest accruing each month -- the balance would grow, not shrink." }
+  }
+  const monthsRemaining = Math.ceil(
+    -Math.log(1 - (details.balanceAsOf * monthlyRate) / details.monthlyPayment) / Math.log(1 + monthlyRate),
+  )
+  return { monthsRemaining, payoffDate: addMonthsToDate(details.balanceAsOfDate, monthsRemaining) }
 }
 
 // One portfolio account reduced to just what the bridge projection needs. accessAge here is

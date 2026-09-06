@@ -11,8 +11,12 @@ export interface IrsLimits {
   taxYear: number
   source: string
   // 401(k)/403(b)/most 457 plans/the federal TSP -- one shared limit across pre-tax and Roth
-  // contributions to the same plan.
-  employerPlan: { standard: number; catchUp50: number; catchUp60to63: number }
+  // contributions to the same plan. `annualAdditions` is the separate, much larger IRC Sec. 415(c)
+  // ceiling on employee + employer money TOGETHER (elective deferrals, employer match/profit-
+  // sharing, after-tax contributions) -- the same catchUp50/catchUp60to63 amounts apply on top of
+  // this limit too, confirmed via a real web search (not assumed): the 2026 figures are identical
+  // dollar amounts to the elective-deferral catch-ups.
+  employerPlan: { standard: number; catchUp50: number; catchUp60to63: number; annualAdditions: number }
   // Traditional + Roth IRA combined annual limit (not per-account).
   ira: { standard: number; catchUp50: number }
   hsa: { selfOnly: number; family: number; catchUp55: number }
@@ -30,7 +34,7 @@ export function loadIrsLimits(path: string = DEFAULT_IRS_LIMITS_PATH): IrsLimits
       typeof parsed !== "object" ||
       parsed === null ||
       typeof (parsed as { taxYear?: unknown }).taxYear !== "number" ||
-      !(parsed as { employerPlan?: unknown }).employerPlan ||
+      !(parsed as { employerPlan?: { annualAdditions?: unknown } }).employerPlan?.annualAdditions ||
       !(parsed as { ira?: unknown }).ira ||
       !(parsed as { hsa?: unknown }).hsa
     ) {

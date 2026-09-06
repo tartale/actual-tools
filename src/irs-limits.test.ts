@@ -10,7 +10,7 @@ const TEST_PATH = "/tmp/irs-limits.test.json"
 const VALID_LIMITS: IrsLimits = {
   taxYear: 2026,
   source: "https://example.com",
-  employerPlan: { standard: 2450000, catchUp50: 800000, catchUp60to63: 1125000 },
+  employerPlan: { standard: 2450000, catchUp50: 800000, catchUp60to63: 1125000, annualAdditions: 7200000 },
   ira: { standard: 750000, catchUp50: 110000 },
   hsa: { selfOnly: 440000, family: 875000, catchUp55: 100000 },
 }

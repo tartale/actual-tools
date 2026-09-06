@@ -160,6 +160,20 @@ export function addDays(date: string, delta: number): string {
   return `${yyyy}-${mm}-${dd}`
 }
 
+// Function to shift a yyyy-mm-dd date by a (possibly negative) number of months, keeping the same
+// day of month where the target month has it (JS's own Date overflow rules apply otherwise, e.g.
+// Jan 31 + 1 month lands on Mar 2/3, not Feb 28/29) -- used for month-denominated schedules like a
+// loan amortization, where addDays' day-granularity would drift.
+export function addMonthsToDate(date: string, months: number): string {
+  validateDateFormat(date)
+  const [year, month, day] = date.split("-").map(Number) as [number, number, number]
+  const shifted = new Date(Date.UTC(year, month - 1 + months, day))
+  const yyyy = shifted.getUTCFullYear()
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, "0")
+  const dd = String(shifted.getUTCDate()).padStart(2, "0")
+  return `${yyyy}-${mm}-${dd}`
+}
+
 // Function to enumerate the inclusive month range between start and end, in either direction
 export function monthRange(start: string, end: string): string[] {
   validateMonthFormat(start)

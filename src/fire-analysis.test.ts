@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { bridgeFinding, detectCrossoverMismatch, detectPotDrift, simulateBridge, toBridgeAccounts } from "./fire-analysis.ts"
+import { bridgeFinding, calculateMortgagePayoff, detectCrossoverMismatch, detectPotDrift, simulateBridge, toBridgeAccounts } from "./fire-analysis.ts"
 import type { BridgeAccount } from "./fire-analysis.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import type { MonteCarloCardMeta } from "./fire-dashboard.ts"
@@ -28,6 +28,14 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     allocationPreset: null,
     monthlyContribution: null,
     ruleOf55SeparationAge: null,
+    annualSalary: null,
+    employerMatchRate: null,
+    employerMatchCapRate: null,
+    hsaCoverage: null,
+    mortgageInterestRate: null,
+    mortgageMonthlyPayment: null,
+    mortgageBalanceAsOfDate: null,
+    mortgageBalanceAsOf: null,
     source: "heuristic",
     ...overrides,
   }
@@ -205,5 +213,28 @@ describe("detectCrossoverMismatch", () => {
 
   it("says nothing when there is no crossover widget to compare against", () => {
     expect(detectCrossoverMismatch([], [portfolio])).toEqual([])
+  })
+})
+
+describe("calculateMortgagePayoff", () => {
+  it("computes months remaining and a payoff date for a standard amortizing loan", () => {
+    const result = calculateMortgagePayoff({ interestRate: 0.06, monthlyPayment: 200000, balanceAsOfDate: "2026-01-01", balanceAsOf: 30000000 })
+    expect(result).toEqual({ monthsRemaining: 278, payoffDate: "2049-03-01" })
+  })
+
+  it("errors instead of returning a payoff date when the payment doesn't cover the interest", () => {
+    // $300,000 at 6% accrues $1,500/mo in interest -- a $1,000/mo payment can never catch up.
+    const result = calculateMortgagePayoff({ interestRate: 0.06, monthlyPayment: 100000, balanceAsOfDate: "2026-01-01", balanceAsOf: 30000000 })
+    expect("error" in result && result.error).toContain("doesn't cover the interest")
+  })
+
+  it("handles a zero-interest loan as simple division", () => {
+    const result = calculateMortgagePayoff({ interestRate: 0, monthlyPayment: 50000, balanceAsOfDate: "2026-01-01", balanceAsOf: 500000 })
+    expect(result).toEqual({ monthsRemaining: 10, payoffDate: "2026-11-01" })
+  })
+
+  it("treats an already-paid-off balance as zero months remaining", () => {
+    const result = calculateMortgagePayoff({ interestRate: 0.06, monthlyPayment: 200000, balanceAsOfDate: "2026-01-01", balanceAsOf: 0 })
+    expect(result).toEqual({ monthsRemaining: 0, payoffDate: "2026-01-01" })
   })
 })

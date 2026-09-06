@@ -47,6 +47,25 @@ body {
   -webkit-font-smoothing: antialiased;
   margin: 0;
 }
+body.busy { cursor: progress; }
+body.busy main { opacity: 0.6; pointer-events: none; }
+
+.saving-pill {
+  position: fixed;
+  top: 16px;
+  right: 20px;
+  background: var(--surface);
+  border: 1px solid var(--card-border);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 999px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+body.busy .saving-pill { opacity: 1; }
 
 /* The Tabular Number Rule (DESIGN.md): financial figures use Inter's own tabular/stylistic-set
    features, not a separate monospace face. */
@@ -68,7 +87,7 @@ nav.sections { display: flex; flex-direction: column; gap: 1px; }
 .rail-foot code { font-family: 'Inter', sans-serif; background: var(--sidebar-hover); padding: 1px 4px; border-radius: 3px; font-size: 10.5px; color: var(--ink); }
 
 /* --- Main --- */
-main { padding: 26px 36px 56px; max-width: 980px; }
+main { padding: 26px 40px 56px; max-width: 1360px; }
 .page-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; gap: 20px; }
 h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color: var(--ink-strong); text-wrap: balance; }
 .page-head p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12.5px; max-width: 48ch; }
@@ -102,19 +121,23 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .field input:focus, select:focus, .toggle:focus-visible, .tab:focus-visible, .btn:focus-visible {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
 }
-.field .derived { font-size: 11px; color: var(--ink-faint); margin-top: 5px; }
+.field .derived, .acct-fields > .derived { font-size: 11px; color: var(--ink-faint); margin-top: 5px; grid-column: 1 / -1; }
+.derived.warn-text { color: var(--warn); }
+.checkbox-label, .radio-row label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 400; color: var(--ink); cursor: pointer; }
+.checkbox-label input, .radio-row input { width: auto; margin: 0; accent-color: var(--accent); }
+.radio-row { display: flex; gap: 16px; align-items: center; height: 100%; padding-top: 2px; }
 .saved-flag { font-size: 10.5px; color: var(--ok); opacity: 0; transition: opacity 0.3s; margin-left: 6px; }
 .saved-flag.show { opacity: 1; }
 .error-flag { font-size: 10.5px; color: var(--fail); margin-top: 5px; }
 
 .accounts { display: flex; flex-direction: column; }
-.account-row { border-bottom: 1px solid var(--line-soft); padding: 13px 16px; display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; align-items: start; }
+.account-row { border-bottom: 1px solid var(--line-soft); padding: 14px 16px; display: grid; grid-template-columns: 260px 1fr; gap: 24px; align-items: start; }
 .account-row:last-child { border-bottom: none; }
 .acct-id .name { font-weight: 500; font-size: 13px; color: var(--ink-strong); }
 .acct-id .balance { color: var(--ink-soft); font-size: 12px; margin-top: 2px; }
-.acct-id .cat-note { font-size: 11px; color: var(--ink-faint); margin-top: 6px; max-width: 34ch; }
+.acct-id .cat-note { font-size: 11px; color: var(--ink-faint); margin-top: 6px; }
 
-.acct-fields { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 14px; }
+.acct-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 .acct-fields .field.full { grid-column: 1 / -1; }
 .acct-fields .field.hidden { display: none; }
 
@@ -171,5 +194,10 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
   .app { grid-template-columns: 1fr; }
   .rail { flex-direction: row; overflow-x: auto; }
   .summary, .plan-grid, .acct-fields { grid-template-columns: 1fr 1fr; }
+  .account-row { grid-template-columns: 1fr; }
   main { padding: 18px; }
+}
+
+@media (min-width: 861px) and (max-width: 1150px) {
+  .acct-fields { grid-template-columns: repeat(2, 1fr); }
 }

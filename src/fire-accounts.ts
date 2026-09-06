@@ -256,6 +256,19 @@ export interface ClassifiedAccount {
   // mere presence asserts "this is a real, currently-held 401(k)/403(b)" -- only ever meaningful
   // when the account's type has ruleOf55Eligible: true. See fire-dashboard.ts's effectiveAccessAge.
   ruleOf55SeparationAge: number | null
+  // Employer-match inputs -- see FireAccountOverride's doc comment. Pass-through fields, not
+  // resolved to anything here; employerContributionSummary does the actual math once an account's
+  // resolved monthlyContribution is known.
+  annualSalary: number | null
+  employerMatchRate: number | null
+  employerMatchCapRate: number | null
+  // hsa only; null for every other type (there's no "self/family coverage" concept elsewhere).
+  hsaCoverage: "self" | "family" | null
+  // debt only; see FireAccountOverride's doc comment and calculateMortgagePayoff.
+  mortgageInterestRate: number | null
+  mortgageMonthlyPayment: number | null
+  mortgageBalanceAsOfDate: string | null
+  mortgageBalanceAsOf: number | null
 }
 
 // One user-supplied override. `match` is an account id OR an exact account name, mirroring how
@@ -279,6 +292,26 @@ export interface FireAccountOverride {
   // crosses the 50/60-63 age-tier boundaries, rather than going stale the moment it's set.
   monthlyContribution?: number | "max"
   ruleOf55SeparationAge?: number | null
+  // Only meaningful for the two employer-plan types (traditional-401k/roth-401k) -- used together
+  // to estimate the employer's own contribution against the combined IRC Sec. 415(c) "annual
+  // additions" limit (employee + employer together), a separate, much larger ceiling than the
+  // elective-deferral limit above. See employerContributionSummary. A simple "match% up to cap% of
+  // pay" model -- doesn't represent a tiered formula (e.g. "100% on the first 3%, 50% on the next
+  // 2%"), which wasn't asked for and would need more than these two numbers.
+  annualSalary?: number
+  employerMatchRate?: number
+  employerMatchCapRate?: number
+  // Only meaningful for hsa -- which of the two IRS limits (see contributionLimitLines) applies to
+  // this account. Defaults to "self" when absent, since that's the smaller, safer assumption.
+  hsaCoverage?: "self" | "family"
+  // Only meaningful for debt -- independent of Actual's own ledger balance for the account (a
+  // mortgage servicer's real payoff balance often isn't what a synced/manually-tracked Actual
+  // account reflects), so this is its own anchor point: what the balance was, as of when. See
+  // calculateMortgagePayoff in fire-analysis.ts for how these four become a payoff date.
+  mortgageInterestRate?: number
+  mortgageMonthlyPayment?: number
+  mortgageBalanceAsOfDate?: string
+  mortgageBalanceAsOf?: number
 }
 
 // The plan-wide inputs the app needs that aren't a per-account fact: your birth date, the
@@ -464,7 +497,12 @@ function resolveOverrideType(override: FireAccountOverride, accountName: string)
 // simplified to the self-only limit -- family-vs-self-only coverage isn't tracked per account here
 // (nothing asked for it), so a family-coverage HSA should use an explicit monthly number rather
 // than "max", which will undercount it.
-export function annualContributionLimit(limitGroup: ContributionLimitGroup, age: number, irsLimits: IrsLimits): number {
+export function annualContributionLimit(
+  limitGroup: ContributionLimitGroup,
+  age: number,
+  irsLimits: IrsLimits,
+  hsaCoverage: "self" | "family" = "self",
+): number {
   if (limitGroup === "employer-plan") {
     if (age >= 60 && age <= 63) {
       return irsLimits.employerPlan.standard + irsLimits.employerPlan.catchUp60to63
@@ -474,7 +512,71 @@ export function annualContributionLimit(limitGroup: ContributionLimitGroup, age:
   if (limitGroup === "ira") {
     return age >= 50 ? irsLimits.ira.standard + irsLimits.ira.catchUp50 : irsLimits.ira.standard
   }
-  return age >= 55 ? irsLimits.hsa.selfOnly + irsLimits.hsa.catchUp55 : irsLimits.hsa.selfOnly
+  const hsaBase = hsaCoverage === "family" ? irsLimits.hsa.family : irsLimits.hsa.selfOnly
+  return age >= 55 ? hsaBase + irsLimits.hsa.catchUp55 : hsaBase
+}
+
+// Function to compute the combined IRC Sec. 415(c) "annual additions" limit -- employee elective
+// deferrals PLUS employer contributions together, a separate and much larger ceiling than
+// annualContributionLimit("employer-plan", ...) above. The age-50/60-63 catch-up amounts are the
+// same dollar figures as the elective-deferral catch-ups (confirmed via a real web search, not
+// assumed) and apply on top of this limit the same way.
+export function combinedAnnualAdditionsLimit(age: number, irsLimits: IrsLimits): number {
+  const { annualAdditions, catchUp50, catchUp60to63 } = irsLimits.employerPlan
+  if (age >= 60 && age <= 63) {
+    return annualAdditions + catchUp60to63
+  }
+  return age >= 50 ? annualAdditions + catchUp50 : annualAdditions
+}
+
+// Function to estimate an employer's own 401(k)/403(b) contribution from a flat "match% up to
+// cap% of pay" formula -- e.g. employerMatchRate 1.0 (100%) and employerMatchCapRate 0.04 (4%)
+// means the employer matches dollar-for-dollar up to 4% of salary. Deliberately doesn't represent
+// a tiered formula (e.g. "100% on the first 3%, 50% on the next 2%"), which needs more than two
+// numbers and wasn't asked for. Returns 0, not null, when any input is missing -- this is meant to
+// be added directly to an employee contribution, and "unknown" and "zero" should behave the same
+// way for that purpose.
+export function computeEmployerContribution(
+  annualSalary: number | null,
+  employerMatchRate: number | null,
+  employerMatchCapRate: number | null,
+  employeeAnnualContribution: number,
+): number {
+  if (annualSalary == null || employerMatchRate == null || employerMatchCapRate == null) {
+    return 0
+  }
+  const matchedBase = Math.min(employeeAnnualContribution, Math.round(annualSalary * employerMatchCapRate))
+  return Math.round(matchedBase * employerMatchRate)
+}
+
+export interface EmployerContributionSummary {
+  employerAnnualContribution: number
+  combinedAnnual: number
+  combinedLimit: number
+  exceedsLimit: boolean
+}
+
+// Function to summarize an employer-plan account's combined-limit standing, once salary and match
+// info are provided -- null when they aren't (nothing to combine), so a caller can skip showing
+// anything rather than displaying a summary built from assumed zeros.
+export function employerContributionSummary(
+  account: Pick<ClassifiedAccount, "annualSalary" | "employerMatchRate" | "employerMatchCapRate" | "monthlyContribution">,
+  age: number,
+  irsLimits: IrsLimits,
+): EmployerContributionSummary | null {
+  if (account.annualSalary == null || account.employerMatchRate == null || account.employerMatchCapRate == null) {
+    return null
+  }
+  const employeeAnnualContribution = (account.monthlyContribution ?? 0) * 12
+  const employerAnnualContribution = computeEmployerContribution(
+    account.annualSalary,
+    account.employerMatchRate,
+    account.employerMatchCapRate,
+    employeeAnnualContribution,
+  )
+  const combinedAnnual = employeeAnnualContribution + employerAnnualContribution
+  const combinedLimit = combinedAnnualAdditionsLimit(age, irsLimits)
+  return { employerAnnualContribution, combinedAnnual, combinedLimit, exceedsLimit: combinedAnnual > combinedLimit }
 }
 
 // Function to resolve every account's monthlyContribution, turning the "max" sentinel into a
@@ -490,14 +592,24 @@ export function resolveMonthlyContributions(
   overrides: readonly FireAccountOverride[],
   birthDate: string | null,
   irsLimits: IrsLimits | null,
+  // Real accounts, so a LEGACY (category-only) override's type can be guessed from its actual
+  // name -- `override.match` is frequently an account id, not a name (see resolveOverrideType's
+  // doc comment), and guessing straight from an id-shaped `match` silently mis-groups a legacy
+  // override into the wrong limit group (e.g. a legacy Roth IRA guessed as roth-401k, landing in
+  // "employer-plan" instead of "ira"). Optional and defaulting to empty only so callers that
+  // already know every override carries a real `type` (no legacy guessing needed) aren't forced
+  // to plumb the account list through for nothing.
+  accounts: readonly Pick<Account, "id" | "name">[] = [],
 ): Map<string, number> {
   const resolved = new Map<string, number>()
   const claimedAnnualByGroup = new Map<ContributionLimitGroup, number>()
+  const nameForOverride = (override: FireAccountOverride): string =>
+    accounts.find((account) => account.id === override.match || account.name === override.match)?.name ?? override.match
 
   for (const override of overrides) {
     if (typeof override.monthlyContribution === "number") {
       resolved.set(override.match, override.monthlyContribution)
-      const limitGroup = ACCOUNT_TYPE_TRAITS[resolveOverrideType(override, override.match)].limitGroup
+      const limitGroup = ACCOUNT_TYPE_TRAITS[resolveOverrideType(override, nameForOverride(override))].limitGroup
       if (limitGroup) {
         claimedAnnualByGroup.set(limitGroup, (claimedAnnualByGroup.get(limitGroup) ?? 0) + override.monthlyContribution * 12)
       }
@@ -513,11 +625,11 @@ export function resolveMonthlyContributions(
     if (override.monthlyContribution !== "max") {
       continue
     }
-    const limitGroup = ACCOUNT_TYPE_TRAITS[resolveOverrideType(override, override.match)].limitGroup
+    const limitGroup = ACCOUNT_TYPE_TRAITS[resolveOverrideType(override, nameForOverride(override))].limitGroup
     if (!limitGroup) {
       continue
     }
-    const annualLimit = annualContributionLimit(limitGroup, age, irsLimits)
+    const annualLimit = annualContributionLimit(limitGroup, age, irsLimits, override.hsaCoverage ?? "self")
     const alreadyClaimed = claimedAnnualByGroup.get(limitGroup) ?? 0
     resolved.set(override.match, Math.round(Math.max(0, annualLimit - alreadyClaimed) / 12))
   }
@@ -529,7 +641,7 @@ export function resolveMonthlyContributions(
 // per age tier, e.g. ["Roth IRA: $7500.00/yr [$625.00/mo]", "Roth IRA age 50+: $8600.00/yr
 // [$716.67/mo]"]. Empty for a type with no limitGroup (debt/cash/other/inherited-ira -- an
 // inherited IRA can't be contributed to at all) or when irsLimits isn't available.
-export function contributionLimitLines(type: AccountType, irsLimits: IrsLimits | null): string[] {
+export function contributionLimitLines(type: AccountType, irsLimits: IrsLimits | null, hsaCoverage: "self" | "family" = "self"): string[] {
   const { limitGroup, label } = ACCOUNT_TYPE_TRAITS[type]
   if (limitGroup === null || irsLimits === null) {
     return []
@@ -549,9 +661,11 @@ export function contributionLimitLines(type: AccountType, irsLimits: IrsLimits |
     const { standard, catchUp50 } = irsLimits.ira
     return [line(label, standard), line(`${label} age 50+`, standard + catchUp50)]
   }
-  // hsa
-  const { selfOnly, catchUp55 } = irsLimits.hsa
-  return [line(`${label} (self-only)`, selfOnly), line(`${label} (self-only) age 55+`, selfOnly + catchUp55)]
+  // hsa -- shows whichever coverage tier is actually selected for this account, not both, matching
+  // the "one limit that actually applies" pattern used for every other type above.
+  const base = hsaCoverage === "family" ? irsLimits.hsa.family : irsLimits.hsa.selfOnly
+  const coverageLabel = hsaCoverage === "family" ? "family" : "self-only"
+  return [line(`${label} (${coverageLabel})`, base), line(`${label} (${coverageLabel}) age 55+`, base + irsLimits.hsa.catchUp55)]
 }
 
 // Function to classify every account: override > heuristic > safe default ("other"). "other" --
@@ -567,7 +681,7 @@ export function classifyAccounts(
   birthDate: string | null = null,
   irsLimits: IrsLimits | null = null,
 ): ClassifiedAccount[] {
-  const resolvedContributions = resolveMonthlyContributions(config.accounts, birthDate, irsLimits)
+  const resolvedContributions = resolveMonthlyContributions(config.accounts, birthDate, irsLimits, accounts)
 
   return accounts.map((account) => {
     const identity = { id: account.id, name: account.name, offbudget: account.offbudget }
@@ -596,6 +710,14 @@ export function classifyAccounts(
         allocationPreset: override.allocationPreset ?? defaults.allocationPreset,
         monthlyContribution: resolvedContributions.get(override.match) ?? null,
         ruleOf55SeparationAge: override.ruleOf55SeparationAge ?? null,
+        annualSalary: override.annualSalary ?? null,
+        employerMatchRate: override.employerMatchRate ?? null,
+        employerMatchCapRate: override.employerMatchCapRate ?? null,
+        hsaCoverage: type === "hsa" ? (override.hsaCoverage ?? "self") : null,
+        mortgageInterestRate: override.mortgageInterestRate ?? null,
+        mortgageMonthlyPayment: override.mortgageMonthlyPayment ?? null,
+        mortgageBalanceAsOfDate: override.mortgageBalanceAsOfDate ?? null,
+        mortgageBalanceAsOf: override.mortgageBalanceAsOf ?? null,
         source: "override" as const,
       }
     }
@@ -607,6 +729,14 @@ export function classifyAccounts(
         ...classifiedFieldsForType(heuristicType),
         monthlyContribution: null,
         ruleOf55SeparationAge: null,
+        annualSalary: null,
+        employerMatchRate: null,
+        employerMatchCapRate: null,
+        hsaCoverage: heuristicType === "hsa" ? "self" : null,
+        mortgageInterestRate: null,
+        mortgageMonthlyPayment: null,
+        mortgageBalanceAsOfDate: null,
+        mortgageBalanceAsOf: null,
         source: "heuristic" as const,
       }
     }
@@ -616,6 +746,14 @@ export function classifyAccounts(
       ...classifiedFieldsForType("other"),
       monthlyContribution: null,
       ruleOf55SeparationAge: null,
+      annualSalary: null,
+      employerMatchRate: null,
+      employerMatchCapRate: null,
+      hsaCoverage: null,
+      mortgageInterestRate: null,
+      mortgageMonthlyPayment: null,
+      mortgageBalanceAsOfDate: null,
+      mortgageBalanceAsOf: null,
       source: "default" as const,
     }
   })
