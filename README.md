@@ -169,13 +169,25 @@ health today; bulk budget edits and spending analysis (currently
 - `--no-open` — don't try to open the page in a browser automatically, just
   print the URL. Useful over SSH or in a container with no browser to open.
 
-Running it starts a local server (plain `node:http`, no new dependency)
-and prints its URL:
+Running it starts a local server (plain `node:http`, no new dependency),
+bound to every network interface rather than just loopback, and prints
+its URL:
 
 ```
-Runway is running at http://127.0.0.1:54321/
+Runway is running at http://localhost:54321/
+Also reachable from another device on your network at:
+  http://192.168.1.23:54321/
+(no login is required -- only share these on a network you trust)
 Press Ctrl+C to stop.
 ```
+
+Binding every interface means the page also works from another device on
+the same network — e.g. running this on a home server and pulling it up
+on your phone or laptop's browser. **There is no authentication at all**,
+so anyone who can reach one of the printed network addresses can read
+your accounts and edit `config.json`; fine on a trusted home LAN, not
+something to expose past it (e.g. port-forwarded to the internet) without
+adding real auth first.
 
 Everything the page does reads and writes `config.json` directly and
 autosaves on every change — there's no separate "save" step, and no

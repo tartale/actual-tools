@@ -16,7 +16,7 @@ interface ErrorBody {
 // backed by a real temp config.json/irs-limits.json on disk (loadFireConfig/writeFireConfig are
 // plain fs functions -- a temp file exercises them exactly as the real app does, no mocking
 // needed there) and a mocked global fetch standing in for Actual's REST API. The mock only
-// intercepts calls to the fake Actual host; a call to the local server's own 127.0.0.1 address
+// intercepts calls to the fake Actual host; a call to the local server's own address
 // passes straight through to the real fetch implementation, since both share one global.
 
 const actualConfig: ActualConfig = { baseUrl: "https://actual.test/v1", budgetId: "budget-1", apiKey: "secret-key" }
@@ -236,5 +236,15 @@ describe("unknown routes", () => {
     const url = await boot()
     const res = await fetch(`${url}api/nonexistent`)
     expect(res.status).toBe(404)
+  })
+})
+
+describe("network binding", () => {
+  it("prints a localhost URL but is reachable via 127.0.0.1 directly, proving it isn't loopback-only bound", async () => {
+    await boot()
+    expect((server as RunningServer).url).toMatch(/^http:\/\/localhost:\d+\/$/)
+    const port = new URL((server as RunningServer).url).port
+    const res = await fetch(`http://127.0.0.1:${port}/api/retirement/state`)
+    expect(res.status).toBe(200)
   })
 })

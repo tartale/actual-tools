@@ -1,6 +1,7 @@
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { readFileSync } from "node:fs"
+import { networkInterfaces } from "node:os"
 import { extname, join } from "node:path"
 
 import { ageFromBirthDate, fetchAccountBalance, fetchAllOpenAccounts, formatError } from "./actual-helpers.ts"
@@ -39,6 +40,13 @@ export interface AppServerOptions {
 
 export interface RunningServer {
   url: string
+  // One http://<lan-ip>:<port>/ entry per non-internal network interface -- populated because the
+  // server binds every interface (0.0.0.0), not just loopback, so it's reachable from another
+  // device on the same network (e.g. viewing the page from a phone or laptop while this runs on a
+  // home server). There is no authentication at all, so anyone who can reach one of these
+  // addresses can read your accounts and edit config.json -- fine on a trusted home LAN, not
+  // something to expose past it (e.g. via port forwarding) without adding real auth first.
+  networkUrls: string[]
   close: () => Promise<void>
 }
 
@@ -371,13 +379,21 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
     }
   }
 
-  await new Promise<void>((resolve) => server.listen(options.port ?? 0, "127.0.0.1", resolve))
+  // Binds every interface, not just loopback, so the page is reachable from another device on the
+  // same network -- see RunningServer.networkUrls' doc comment for the real security tradeoff that
+  // comes with this.
+  await new Promise<void>((resolve) => server.listen(options.port ?? 0, "0.0.0.0", resolve))
   const address = server.address()
   const port = typeof address === "object" && address !== null ? address.port : 0
-  const url = `http://127.0.0.1:${port}/`
+  const url = `http://localhost:${port}/`
+  const networkUrls = Object.values(networkInterfaces())
+    .flat()
+    .filter((info): info is NonNullable<typeof info> => info !== undefined && info.family === "IPv4" && !info.internal)
+    .map((info) => `http://${info.address}:${port}/`)
 
   return {
     url,
+    networkUrls,
     close: () => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
   }
 }

@@ -130,6 +130,13 @@ async function main(): Promise<void> {
   })
 
   console.log(`Runway is running at ${server.url}`)
+  if (server.networkUrls.length > 0) {
+    console.log("Also reachable from another device on your network at:")
+    for (const networkUrl of server.networkUrls) {
+      console.log(`  ${networkUrl}`)
+    }
+    console.log("(no login is required -- only share these on a network you trust)")
+  }
   console.log("Press Ctrl+C to stop.")
   if (options.open) {
     tryOpenBrowser(server.url)
