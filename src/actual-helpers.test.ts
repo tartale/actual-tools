@@ -83,6 +83,7 @@ function stubFetch(responses: readonly { ok?: boolean; status?: number; body: un
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe("loadConfigFromEnv", () => {
@@ -665,6 +666,59 @@ describe("fetchAllOpenAccounts", () => {
   it("rejects a response without a data array", async () => {
     stubFetch([{ body: { data: null } }])
     await expect(fetchAllOpenAccounts(config)).rejects.toThrow("Unexpected response fetching accounts")
+  })
+})
+
+// actualRequest's retry logic (exercised via fetchAllOpenAccounts, a plain GET) -- Actual's server
+// can return this exact message for any budget-scoped request in the brief window right after it
+// starts, before it's finished loading the budget file; a network-level fetch() failure is treated
+// the same way, since it's just as plausible during that same window. See actual-helpers.ts's own
+// doc comment on actualRequest for the full reasoning.
+const TRANSIENT_ERROR_BODY = { error: "Unknown error while interacting with Actual Api. See server logs for more information" }
+
+describe("actualRequest retry behavior", () => {
+  it("retries a transient error and succeeds once Actual recovers", async () => {
+    vi.useFakeTimers()
+    stubFetch([
+      { ok: false, status: 500, body: TRANSIENT_ERROR_BODY },
+      { body: { data: [{ id: "a1", name: "Checking", offbudget: false, closed: false }] } },
+    ])
+    const promise = fetchAllOpenAccounts(config)
+    await vi.advanceTimersByTimeAsync(300)
+    await expect(promise).resolves.toEqual([{ id: "a1", name: "Checking", offbudget: false, closed: false }])
+  })
+
+  it("gives up after exhausting retries, with a clearer message than the raw one", async () => {
+    vi.useFakeTimers()
+    stubFetch([{ ok: false, status: 500, body: TRANSIENT_ERROR_BODY }])
+    const promise = fetchAllOpenAccounts(config)
+    const assertion = expect(promise).rejects.toThrow(/still be starting up/)
+    await vi.advanceTimersByTimeAsync(300 + 800 + 1500)
+    await assertion
+  })
+
+  it("retries a network-level fetch failure the same way", async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    vi.stubGlobal("fetch", async () => {
+      calls++
+      if (calls === 1) throw new TypeError("fetch failed")
+      return { ok: true, status: 200, json: async () => ({ data: [] }) }
+    })
+    const promise = fetchAllOpenAccounts(config)
+    await vi.advanceTimersByTimeAsync(300)
+    await expect(promise).resolves.toEqual([])
+  })
+
+  it("does not retry a non-transient error", async () => {
+    stubFetch([{ ok: false, status: 400, body: { error: "Invalid budget id" } }])
+    await expect(fetchAllOpenAccounts(config)).rejects.toThrow("Invalid budget id")
+  })
+
+  it("does not retry a mutating request, even on the transient message -- but still surfaces the clearer wording", async () => {
+    const { calls } = stubFetch([{ ok: false, status: 500, body: TRANSIENT_ERROR_BODY }])
+    await expect(patchCategoryBudget(config, "2024-01", "c1", 100)).rejects.toThrow(/still be starting up/)
+    expect(calls).toHaveLength(1)
   })
 })
 

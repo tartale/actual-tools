@@ -44,11 +44,12 @@
       <div class="walkthrough" id="walkthrough" hidden>
         <button type="button" class="walkthrough-dismiss" id="walkthroughDismiss" title="Dismiss" aria-label="Dismiss this walkthrough">×</button>
         <h2>Getting started</h2>
-        <p>No FIRE dashboard is imported into Actual yet. Three steps to get one going:</p>
+        <p>No FIRE dashboard is imported into Actual yet. Four steps to get one going:</p>
         <ol>
           <li>Below, fill in <strong>Plan</strong> (birth date, retirement ages to compare, plan-to-age) and check each account's <strong>type</strong> in <strong>Accounts</strong> — allocation, contributions, and everything else follow from that.</li>
           <li>Switch to the <strong>Analyze</strong> tab and click <strong>Download dashboard</strong>.</li>
           <li>In Actual: <strong>Reports</strong> → new dashboard page (e.g. "FIRE") → <strong>"…"</strong> menu → <strong>Import</strong> → pick the file you just downloaded.</li>
+          <li>Open the <strong>crossover</strong> widget on that page and pick which accounts/categories it should actually count (it starts out covering everything non-income, which is rarely what you want) — this matters: the Monte Carlo widget's own spending figure is read back from that same selection on every future regenerate, not recalculated separately.</li>
         </ol>
         <p>Come back here any time after that — this page will show what's actually live under "Configured in the Actual Dashboard" below, and Analyze → Check flags anything that's drifted out of sync as you keep editing.</p>
       </div>
@@ -211,7 +212,7 @@
             <span class="hint" id="accountCountHint">—</span>
           </div>
           <div class="derived reorder-hint" id="reorderHint" hidden>Withdrawal strategy is "Drain pots in order" — drag accounts below by the ⠿ handle to set the order pots are drained in.</div>
-          <div class="accounts" id="accountsList"></div>
+          <div class="accounts" id="accountsList"><div class="empty-note">Loading accounts…</div></div>
         </div>
       </div>
 

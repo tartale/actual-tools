@@ -257,20 +257,65 @@ function extractErrorMessage(body: unknown): string | undefined {
   return undefined
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Actual's own server can return this exact, uninformative message for any budget-scoped request
+// made in the brief window right after it starts, before it's finished loading/syncing the budget
+// file into memory -- reloading the page a few seconds later always works, since that's really just
+// this window passing, not a real failure. A network-level failure (fetch() itself throwing --
+// Actual's HTTP server not listening yet) is exactly as plausible during that same window, so both
+// get the same treatment below.
+function isTransientActualError(message: string): boolean {
+  return /unknown error while interacting with actual api/i.test(message)
+}
+
+// Short, since this only exists to ride out a few-hundred-ms-to-low-seconds startup window, not to
+// paper over a real outage -- 4 attempts (initial + 3 retries) spanning ~2.6s of backoff.
+const RETRY_DELAYS_MS = [300, 800, 1500]
+
 async function actualRequest(config: ActualConfig, path: string, init?: RequestInit): Promise<unknown> {
-  const response = await fetch(`${config.baseUrl}${path}`, {
-    ...init,
-    headers: {
-      accept: "application/json",
-      "x-api-key": config.apiKey,
-      ...(init?.body ? { "content-type": "application/json" } : {}),
-    },
-  })
-  const body: unknown = await response.json().catch(() => null)
-  if (!response.ok) {
-    throw new Error(`Request to ${path} failed: ${extractErrorMessage(body) ?? `HTTP ${response.status}`}`)
+  // Retried automatically only when idempotent (no body-mutating side effect to duplicate) --
+  // every plain GET this module makes, never a PATCH/POST.
+  const isIdempotent = !init?.method || init.method === "GET"
+  const maxAttempts = isIdempotent ? RETRY_DELAYS_MS.length + 1 : 1
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let response: Response
+    try {
+      response = await fetch(`${config.baseUrl}${path}`, {
+        ...init,
+        headers: {
+          accept: "application/json",
+          "x-api-key": config.apiKey,
+          ...(init?.body ? { "content-type": "application/json" } : {}),
+        },
+      })
+    } catch (error) {
+      if (attempt < maxAttempts) {
+        await delay(RETRY_DELAYS_MS[attempt - 1] as number)
+        continue
+      }
+      throw error
+    }
+    const body: unknown = await response.json().catch(() => null)
+    if (response.ok) {
+      return body
+    }
+    const message = extractErrorMessage(body) ?? `HTTP ${response.status}`
+    if (isTransientActualError(message) && attempt < maxAttempts) {
+      await delay(RETRY_DELAYS_MS[attempt - 1] as number)
+      continue
+    }
+    throw new Error(
+      isTransientActualError(message)
+        ? `Request to ${path} failed: Actual isn't responding normally yet -- it may still be starting up. Try again in a few seconds.`
+        : `Request to ${path} failed: ${message}`,
+    )
   }
-  return body
+  // Unreachable -- every branch above either returns or throws before the loop runs out.
+  throw new Error(`Request to ${path} failed.`)
 }
 
 function isDataArray(body: unknown): body is { data: unknown[] } {

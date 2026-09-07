@@ -76,9 +76,18 @@ function attachMoneyFormatting(input) {
   })
 }
 
-function showError(message) {
+// onRetry is optional -- when given, the banner grows a Retry button wired to it (used by
+// loadState's initial-load failure, where the server itself already retried a few times -- see
+// actualRequest's own retry loop in actual-helpers.ts -- so a further failure here is worth a
+// one-click way to try again without a full page reload, rather than just a static message).
+function showError(message, onRetry) {
   const el = document.getElementById("topError")
-  el.textContent = message
+  if (onRetry) {
+    el.innerHTML = `<span>${escapeHtml(message)}</span> <button type="button" class="btn secondary error-retry">Retry</button>`
+    el.querySelector(".error-retry").addEventListener("click", onRetry)
+  } else {
+    el.textContent = message
+  }
   el.hidden = false
 }
 function clearError() {
@@ -98,12 +107,18 @@ async function api(path, options) {
 }
 
 async function loadState() {
+  // The server itself already retries a transient Actual-still-starting-up failure a few times
+  // (actualRequest in actual-helpers.ts) before this ever rejects, so a slow-but-eventually-fine
+  // load can take a couple of seconds -- this placeholder is what fills that window instead of a
+  // blank accounts list that looks broken/frozen.
+  document.getElementById("accountsList").innerHTML = `<div class="empty-note">Loading accounts…</div>`
   try {
     STATE = await api("/api/retirement/state")
     clearError()
     render()
   } catch (error) {
-    showError(error.message)
+    showError(error.message, () => loadState())
+    document.getElementById("accountsList").innerHTML = `<div class="empty-note">Couldn't load accounts — see error above.</div>`
   }
 }
 

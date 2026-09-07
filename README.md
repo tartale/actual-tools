@@ -196,6 +196,15 @@ question order to work through; edit whatever you want, whenever you want.
 Press Ctrl+C in the terminal when you're done; it's a plain foreground
 process, not a background daemon.
 
+If Actual's own server is still starting up (loading/syncing the budget
+file) right when the page loads, its API can briefly return an
+uninformative "Unknown error" for any request — every read this app makes
+retries automatically a few times over ~2.5s before giving up, so this
+usually resolves on its own; the accounts list shows "Loading accounts…"
+while that's happening. If it does ultimately fail, the error banner gets
+a clearer message plus a **Retry** button, rather than requiring a full
+page reload.
+
 The page also hot-reloads: it polls a per-process id
 (`GET /api/dev/build-id`) every 1.5s and reloads itself the moment that id
 changes. `app.js`/`style.css`/`index.html` are re-read from disk on every
@@ -209,14 +218,21 @@ moved on.
 ### Retirement — Configure tab
 
 The first time you open the page with nothing imported into Actual yet, a
-**"Getting started"** banner walks through the three steps end to end
-(fill in Plan/Accounts here → Analyze tab → Download dashboard → import it
-into Actual via Reports → new page → "…" menu → Import). It appears
-automatically whenever no live FIRE dashboard is found (the same check
-"Configured in the Actual Dashboard" below already makes) and disappears
-on its own the moment one is — or dismiss it with the × any time before
-that; the dismissal is a per-browser cookie, so it stays dismissed across
-restarts without needing a live dashboard to hide it permanently.
+**"Getting started"** banner walks through four steps end to end: fill in
+Plan/Accounts here → Analyze tab → Download dashboard → import it into
+Actual via Reports → new page → "…" menu → Import → **open the crossover
+widget on that page and narrow its account/category checklist down to
+what should actually count** (it starts out covering everything
+non-income, which is rarely right — and matters beyond just that one
+widget, since the Monte Carlo widget's own spend figure is read back from
+that same selection on every future regenerate, not recalculated
+separately; see "Regenerating preserves customizations" below). The
+banner appears automatically whenever no live FIRE dashboard is found (the
+same check "Configured in the Actual Dashboard" below already makes) and
+disappears on its own the moment one is — or dismiss it with the × any
+time before that; the dismissal is a per-browser cookie, so it stays
+dismissed across restarts without needing a live dashboard to hide it
+permanently.
 
 **Plan**: birth date, one or more retirement ages to compare (space- or
 comma-separated), and the age to assume the plan needs to last to (a
