@@ -86,6 +86,22 @@ body.privacy .icon-btn { color: var(--accent-selected); border-color: var(--acce
 body.privacy .icon-btn .slash { opacity: 1; }
 .money { transition: filter 0.15s ease; }
 body.privacy .money { filter: blur(6px); user-select: none; }
+/* Every dollar/percent <input> tied to a real account (contribution, salary, mortgage payment/
+   balance/interest rate, employer match, pension/Social Security, minimum withdrawal) uses this
+   same input-affix wrapper -- blur the typed value too, not just read-only text, revealing it on
+   focus so it's still usable for editing. */
+body.privacy .input-affix input { filter: blur(6px); transition: filter 0.15s; }
+body.privacy .input-affix input:focus { filter: none; }
+/* The stock/bond split is a real portfolio detail, not just a dollar figure -- blur it too. */
+body.privacy select[data-field="allocationPreset"] { filter: blur(6px); transition: filter 0.15s; }
+body.privacy select[data-field="allocationPreset"]:focus { filter: none; }
+/* Pension start age and Social Security claiming age are personal timeline choices, not public
+   figures like the IRS limits -- blur them too. */
+body.privacy #pensionStartAge, body.privacy #ssClaimAge { filter: blur(6px); transition: filter 0.15s; }
+body.privacy #pensionStartAge:focus, body.privacy #ssClaimAge:focus { filter: none; }
+/* Simulation settings are generic modeling assumptions, not personal financial data -- exempt
+   from the .input-affix input blur rule above (id selectors win regardless of source order). */
+body.privacy #mcInflationMean, body.privacy #mcInflationStdDev, body.privacy #mcMinimumWithdrawal { filter: none; }
 
 /* --- Sidebar --- */
 .rail { background: var(--sidebar-bg); padding: 18px 14px; display: flex; flex-direction: column; gap: 26px; }

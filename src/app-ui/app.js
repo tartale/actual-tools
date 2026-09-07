@@ -222,7 +222,7 @@ function renderLiveSettings(settings) {
     rows.push(row("Tax model", m.taxModel))
     rows.push(row("Inflation (mean)", `${Math.round((m.inflationMean ?? 0) * 1000) / 10}%`, "monteCarloInflationMean"))
     rows.push(row("Inflation (std dev)", `${Math.round(m.inflationStdDev * 1000) / 10}%`, "monteCarloInflationStdDev"))
-    rows.push(row("Minimum withdrawal", m.minimumWithdrawal, "monteCarloMinimumWithdrawal", true))
+    rows.push(row("Minimum withdrawal", usd(m.minimumWithdrawal), "monteCarloMinimumWithdrawal"))
     rows.push(row("Simulation count", m.simulationCount.toLocaleString(), "monteCarloSimulationCount"))
   }
   container.innerHTML = `<div class="kv-grid">${rows.join("")}</div>`
@@ -293,7 +293,7 @@ function renderAccounts() {
     const payoffNote = payoff
       ? payoff.error
         ? `<div class="derived warn-text">${escapeHtml(payoff.error)}</div>`
-        : `<div class="derived">Payoff in ~${payoff.monthsRemaining} mo, around ${payoff.payoffDate}${account.mortgagePayoffAge != null ? ` (age ~${account.mortgagePayoffAge})` : ""}</div>`
+        : `<div class="derived">Payoff in <span class="money">~${payoff.monthsRemaining} mo, around ${payoff.payoffDate}${account.mortgagePayoffAge != null ? ` (age ~${account.mortgagePayoffAge})` : ""}</span></div>`
       : ""
 
     row.innerHTML = `
@@ -383,7 +383,7 @@ function renderAccounts() {
         </div>
         ${payoffNote}` : ""}
         ${!typeInfo.isPortfolio ? `<div class="no-fields-note">Not part of the investable portfolio — no allocation or contribution to set.</div>` : ""}
-        ${!typeInfo.isPortfolio ? "" : account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div>${moneyify(line)}</div>`).join("")}</div>` : (showContribution ? `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>` : "")}
+        ${!typeInfo.isPortfolio ? "" : account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>` : (showContribution ? `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>` : "")}
       </div>
     `
 
