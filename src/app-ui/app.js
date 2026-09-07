@@ -218,6 +218,18 @@ const WITHDRAWAL_RULE_LABELS = {
 const TAX_MODEL_LABELS = { flat: "Flat rate per pot", bands: "Tax bands (progressive)" }
 const PROJECTION_TYPE_LABELS = { hampel: "Hampel Filtered Median", median: "Median", mean: "Mean" }
 
+// Maps a pinned DashboardConfig field to the Simulation settings input that actually sets it, so
+// hovering the pinned value below can highlight where to go change it -- see renderLiveSettings.
+const PINNED_FIELD_TO_INPUT_ID = {
+  monteCarloWithdrawalStrategy: "mcWithdrawalStrategy",
+  monteCarloReturnModel: "mcReturnModel",
+  monteCarloTaxModel: "mcTaxModel",
+  monteCarloInflationMean: "mcInflationMean",
+  monteCarloInflationStdDev: "mcInflationStdDev",
+  monteCarloMinimumWithdrawal: "mcMinimumWithdrawal",
+  monteCarloSimulationCount: "mcSimulationCount",
+}
+
 // Renders the read-only "Configured in the Actual Dashboard" panel from GET /api/retirement/live-settings
 // -- fetched separately from the main state (see loadLiveSettings) since it's its own live ActualQL
 // read and isn't needed on every keystroke the way account balances are. Split into Crossover and
@@ -233,10 +245,8 @@ function renderLiveSettings(settings) {
   const row = (label, value, pinnedField, isMoney) => {
     const isPinned = pinnedField && pinned[pinnedField] != null
     const valueHtml = isMoney ? moneySpan(value) : escapeHtml(String(value))
-    const pinArrow = isPinned
-      ? `<svg class="pin-arrow" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-label="Pinned by you" title="Pinned by you"><path d="M12 4v14M6 13l6 6 6-6"/></svg>`
-      : ""
-    return `<div class="kv"><span class="k">${escapeHtml(label)}${pinArrow}</span><span class="v${isPinned ? " pinned" : ""}">${valueHtml}</span></div>`
+    const target = isPinned ? PINNED_FIELD_TO_INPUT_ID[pinnedField] : null
+    return `<div class="kv"><span class="k">${escapeHtml(label)}</span><span class="v${isPinned ? " pinned" : ""}"${target ? ` data-highlight-target="${target}" title="Set in Simulation settings"` : ""}>${valueHtml}</span></div>`
   }
   const sections = []
   if (settings.crossover) {
@@ -270,6 +280,12 @@ function renderLiveSettings(settings) {
   container.innerHTML = sections
     .map((section) => `<div class="income-label">${escapeHtml(section.label)}</div><div class="kv-grid">${section.rows.join("")}</div>`)
     .join("")
+  container.querySelectorAll("[data-highlight-target]").forEach((el) => {
+    const target = document.getElementById(el.dataset.highlightTarget)
+    if (!target) return
+    el.addEventListener("mouseenter", () => target.classList.add("sim-field-highlight"))
+    el.addEventListener("mouseleave", () => target.classList.remove("sim-field-highlight"))
+  })
 }
 
 async function loadLiveSettings() {

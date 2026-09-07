@@ -228,9 +228,11 @@ imported "FIRE" page right now, split into its own **Crossover** and
 return for the former; withdrawal strategy, tax model, withdrawal rule,
 inflation, and everything else this app deliberately doesn't let you edit
 directly for the latter — see "Regenerating preserves customizations"
-below). A field also set in **Simulation settings** shows a small purple
-arrow next to its label — if its live value here doesn't match what you
-configured, Analyze → Check will flag it as needing a regenerate/re-import.
+below). A field also set in **Simulation settings** shows its value in
+purple — hover it to highlight the matching input down in Simulation
+settings, so it's obvious where to go change it. If the live value here
+doesn't match what you configured, Analyze → Check will flag it as
+needing a regenerate/re-import.
 
 **Simulation settings** (optional): withdrawal strategy, return model, tax
 model, inflation (mean/std dev), minimum withdrawal, and simulation
