@@ -305,6 +305,31 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .walkthrough-dismiss { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border: none; background: transparent; color: var(--ink-faint); font-size: 16px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .walkthrough-dismiss:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
 
+/* Budget table -- styled to read like Actual's own budget page: a group row you can fold, an
+   indented category row underneath with its own checkbox, and a Budgeted/Spent/Balance triplet per
+   month rendered as real table columns (not a fixed-height scroll box) so the panel just grows to
+   fit however many categories/months are showing, instead of clipping them behind a tiny listbox. */
+.budget-table { margin-top: 10px; overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); }
+.budget-table-el { width: 100%; border-collapse: collapse; font-size: 12px; }
+.budget-table-el th, .budget-table-el td { padding: 6px 10px; white-space: nowrap; }
+.budget-table-el thead th { position: sticky; top: 0; background: var(--surface-2); color: var(--ink-soft); font-weight: 500; text-align: right; border-bottom: 1px solid var(--line-soft); z-index: 1; }
+.budget-table-el thead tr:first-child th { text-align: center; font-weight: 600; color: var(--ink-strong); border-left: 1px solid var(--line-soft); }
+.budget-table-el thead tr:first-child th.bt-name-head { border-left: none; }
+.budget-table-el .bt-name-head { text-align: left; min-width: 220px; }
+.budget-table-el .bt-sub { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.03em; border-left: 1px solid var(--line-soft); }
+.budget-table-el .bt-sub:nth-of-type(3n+1) { border-left: 1px solid var(--line-soft); }
+.budget-table-el tbody tr:not(.bt-group-header) { border-top: 1px solid color-mix(in srgb, var(--line-soft) 55%, transparent); }
+.budget-table-el .bt-group-header td { background: var(--surface-2); padding: 5px 10px; border-top: 1px solid var(--line-soft); }
+.budget-table-el .bt-group-header:first-child td { border-top: none; }
+.bt-fold-toggle { background: none; border: none; color: var(--ink-soft); cursor: pointer; font-size: 11px; width: 16px; padding: 0; vertical-align: middle; }
+.bt-group-check-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ink-strong); cursor: pointer; vertical-align: middle; }
+.bt-group-check-label input, .bt-name label input { accent-color: var(--accent); margin: 0; }
+.budget-table-el .bt-name { text-align: left; }
+.budget-table-el .bt-name label { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--ink); font-weight: 400; }
+.budget-table-el .bt-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-soft); border-left: 1px solid color-mix(in srgb, var(--line-soft) 55%, transparent); }
+.budget-table-el tbody tr.bt-row:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.budget-table-el tr[hidden] { display: none; }
+
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
   .rail { flex-direction: row; overflow-x: auto; }

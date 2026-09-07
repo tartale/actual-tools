@@ -309,6 +309,24 @@ describe("GET /api/budget/context", () => {
   })
 })
 
+describe("POST /api/budget/table", () => {
+  it("returns budgeted/spent/balance grouped by category group, income excluded", async () => {
+    const url = await boot({
+      categoryGroups: [
+        { id: "g1", name: "Everyday", is_income: false, hidden: false, categories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] },
+        { id: "g2", name: "Income", is_income: true, hidden: false, categories: [{ id: "c2", name: "Paycheck", is_income: true, hidden: false, group_id: "g2" }] },
+      ],
+      monthCategories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 50000, spent: -45000, balance: 5000, carryover: false }],
+    })
+    const res = await fetch(`${url}api/budget/table`, { method: "POST", body: JSON.stringify({ startMonth: "2026-01" }) })
+    expect(res.status).toBe(200)
+    const body = await readJson<{ months: string[]; groups: { id: string; categories: { id: string; months: Record<string, unknown> }[] }[] }>(res)
+    expect(body.months).toEqual(["2026-01"])
+    expect(body.groups).toHaveLength(1)
+    expect(body.groups[0]?.categories[0]?.months["2026-01"]).toEqual({ budgeted: 50000, spent: -45000, balance: 5000 })
+  })
+})
+
 describe("POST /api/budget/set-values", () => {
   it("previews a change without writing when dryRun isn't explicitly false", async () => {
     const url = await boot({

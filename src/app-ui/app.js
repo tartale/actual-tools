@@ -915,6 +915,7 @@ document.querySelectorAll(".section-item[data-section]").forEach((item) => {
     document.getElementById("page-" + item.dataset.section).classList.add("active")
     if (item.dataset.section === "budget") {
       loadBudgetContext()
+      loadBudgetTable()
     }
   })
 })
@@ -941,8 +942,10 @@ function currentMonthValue() {
   document.getElementById(id).value = currentMonthValue()
 })
 
-// Function to fetch and cache the category groups both Budget pickers share -- lazy (only once
-// Budget is actually opened) since most sessions never touch this section at all.
+// Function to fetch and cache the category groups the Anomalies picker uses -- lazy (only once
+// Budget is actually opened) since most sessions never touch this section at all. Set Values has
+// its own richer picker (see loadBudgetTable) that needs budgeted/spent/balance per month, which
+// this plain group/category listing doesn't carry.
 async function loadBudgetContext() {
   if (BUDGET_CATEGORY_GROUPS) {
     return
@@ -950,7 +953,6 @@ async function loadBudgetContext() {
   try {
     const body = await api("/api/budget/context")
     BUDGET_CATEGORY_GROUPS = body.categoryGroups
-    renderCategoryOptions(document.getElementById("budgetCategories"))
     renderCategoryOptions(document.getElementById("anomalyCategories"))
   } catch (error) {
     showError(error.message)
@@ -974,6 +976,113 @@ document.getElementById("budgetAction").addEventListener("change", (e) => {
   document.getElementById("budgetCustomAmountField").hidden = e.target.value !== "custom"
 })
 
+// Function to fetch and render the Set Values category picker -- a read-only grid styled after
+// Actual's own budget page (foldable groups, a Budgeted/Spent/Balance triplet per month), reloaded
+// whenever the month range changes since the figures it shows are specific to that range. Any
+// currently-checked categories are lost on reload (the range and the selection are shown together
+// deliberately, but reconciling a checked set against a table that may no longer even list the
+// same months isn't worth the complexity for how rarely the range changes mid-review).
+async function loadBudgetTable() {
+  const startMonth = document.getElementById("budgetStartMonth").value
+  const container = document.getElementById("budgetTable")
+  if (!startMonth) {
+    container.innerHTML = `<div class="empty-note">Pick a start month first.</div>`
+    return
+  }
+  const endMonth = document.getElementById("budgetEndMonth").value || startMonth
+  container.innerHTML = `<div class="empty-note">Loading…</div>`
+  try {
+    const table = await api("/api/budget/table", { method: "POST", body: JSON.stringify({ startMonth, endMonth }) })
+    clearError()
+    renderBudgetTable(table)
+  } catch (error) {
+    showError(error.message)
+    container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+  }
+}
+;["budgetStartMonth", "budgetEndMonth"].forEach((id) => {
+  document.getElementById(id).addEventListener("change", () => loadBudgetTable())
+})
+
+// Function to render the budget table's grouped, foldable, checkbox-driven grid from
+// GET /api/budget/table's response. Each group gets its own "select all in this group" checkbox
+// and fold toggle; category rows carry a plain checkbox plus one Budgeted/Spent/Balance cell per
+// month, in the same order the API returned them (already capped server-side, see
+// BUDGET_TABLE_MAX_MONTHS in budget-tools.ts).
+function renderBudgetTable(table) {
+  const container = document.getElementById("budgetTable")
+  if (table.groups.every((group) => group.categories.length === 0)) {
+    container.innerHTML = `<div class="empty-note">No categories found.</div>`
+    return
+  }
+
+  const monthLabel = (month) => {
+    const [year, monthNum] = month.split("-").map(Number)
+    return new Date(year, monthNum - 1, 1).toLocaleDateString(undefined, { month: "short", year: "numeric" })
+  }
+  const colCount = 1 + table.months.length * 3
+
+  const monthHeaderCells = table.months.map((month) => `<th colspan="3">${escapeHtml(monthLabel(month))}</th>`).join("")
+  const subHeaderCells = table.months.map(() => `<th class="bt-sub">Budgeted</th><th class="bt-sub">Spent</th><th class="bt-sub">Balance</th>`).join("")
+
+  const groupsHtml = table.groups
+    .map((group, groupIndex) => {
+      const groupClass = `bt-group-${groupIndex}`
+      const rows = group.categories
+        .map((category) => {
+          const cells = table.months
+            .map((month) => {
+              const m = category.months[month] ?? { budgeted: 0, spent: 0, balance: 0 }
+              return `<td class="bt-num">${usd(m.budgeted)}</td><td class="bt-num">${usd(m.spent)}</td><td class="bt-num">${usd(m.balance)}</td>`
+            })
+            .join("")
+          return `<tr class="bt-row ${groupClass}"><td class="bt-name"><label><input type="checkbox" class="bt-category-check" data-category-id="${category.id}" data-group="${groupClass}"> ${escapeHtml(category.name)}</label></td>${cells}</tr>`
+        })
+        .join("")
+      return `
+        <tr class="bt-group-header">
+          <td colspan="${colCount}">
+            <button type="button" class="bt-fold-toggle" data-fold-target="${groupClass}" aria-expanded="true">▾</button>
+            <label class="bt-group-check-label"><input type="checkbox" class="bt-group-check" data-group="${groupClass}"> ${escapeHtml(group.name)}</label>
+          </td>
+        </tr>
+        ${rows}`
+    })
+    .join("")
+
+  container.innerHTML = `
+    <table class="budget-table-el">
+      <thead>
+        <tr><th class="bt-name-head"></th>${monthHeaderCells}</tr>
+        <tr><th class="bt-name-head"></th>${subHeaderCells}</tr>
+      </thead>
+      <tbody>${groupsHtml}</tbody>
+    </table>`
+
+  container.querySelectorAll(".bt-fold-toggle").forEach((button) => {
+    button.addEventListener("click", () => {
+      const expanded = button.getAttribute("aria-expanded") === "true"
+      button.setAttribute("aria-expanded", String(!expanded))
+      button.textContent = expanded ? "▸" : "▾"
+      container.querySelectorAll(`.${button.dataset.foldTarget}`).forEach((row) => {
+        row.hidden = expanded
+      })
+    })
+  })
+
+  container.querySelectorAll(".bt-group-check").forEach((groupCheckbox) => {
+    groupCheckbox.addEventListener("change", () => {
+      container.querySelectorAll(`.bt-category-check[data-group="${groupCheckbox.dataset.group}"]`).forEach((categoryCheckbox) => {
+        categoryCheckbox.checked = groupCheckbox.checked
+      })
+    })
+  })
+}
+
+function checkedBudgetCategoryIds() {
+  return [...document.querySelectorAll("#budgetTable .bt-category-check:checked")].map((checkbox) => checkbox.dataset.categoryId)
+}
+
 // Function to run (preview or apply) a set-values request -- the same request either way, just
 // dryRun flipped; a fresh Preview is required before Apply becomes clickable (see the button's
 // default `disabled` in index.html), so a real write is never the very first thing a click does.
@@ -988,7 +1097,7 @@ async function runSetValues(dryRun) {
     action,
     startMonth,
     endMonth: document.getElementById("budgetEndMonth").value || startMonth,
-    categories: selectedValues(document.getElementById("budgetCategories")),
+    categories: checkedBudgetCategoryIds(),
     dryRun,
   }
   try {

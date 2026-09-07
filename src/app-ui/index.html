@@ -266,7 +266,7 @@
               <div class="field">
                 <label for="budgetAction">Action</label>
                 <select id="budgetAction">
-                  <option value="balance">Zero out this month's balance</option>
+                  <option value="balance">Zero out these months/categories budget values</option>
                   <option value="spent">Match last month's actual spending</option>
                   <option value="spent-3">Match average spending, last 3 months</option>
                   <option value="spent-12">Match average spending, last 12 months</option>
@@ -290,9 +290,9 @@
               </div>
             </div>
             <div class="field full">
-              <label for="budgetCategories">Categories</label>
-              <select id="budgetCategories" multiple size="8"></select>
-              <div class="derived">Leave nothing selected to include every category. Ctrl/Cmd-click (or shift-click) to select more than one.</div>
+              <label>Categories</label>
+              <div class="derived">Check the categories to include, or leave none checked to include every category. The table below mirrors Actual's own budget page — click a group's caret to fold it, and its checkbox to select every category inside.</div>
+              <div class="budget-table" id="budgetTable"><div class="empty-note">Loading…</div></div>
             </div>
             <div class="generate-row">
               <button type="button" class="btn secondary" id="previewSetValuesBtn">Preview</button>

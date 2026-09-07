@@ -238,24 +238,28 @@ help text and "exiting").
 
 The web equivalent of `./actual budget set-values`/`anomalies` — same
 underlying logic (`src/budget-tools.ts`, shared with both CLIs so there's
-one implementation, not two drifting apart), with a live preview and a
-category picker instead of `-c NAME` flags and a positional action
-argument. Both tabs share one category multi-select control per action,
-built from every non-income category group (income is never a valid
-target for either tool, exactly as the CLI has always enforced) — leave
-nothing selected to mean "every category" on **Set Values** (matching the
-CLI's own unfiltered-sweep default), but **Anomalies requires picking at
-least one**, since checking literally every category by default would be
-noisy rather than useful.
+one implementation, not two drifting apart), with a live preview instead
+of `-c NAME` flags and a positional action argument. Income is never a
+valid target for either tool (exactly as the CLI has always enforced), so
+neither tab's category picker even offers an income category or group.
 
 **Set Values**: pick an **action** (the same five as the CLI --
 `balance`/`spent`/`spent-3`/`spent-12`/`previous` -- or **Custom amount**
-for a flat dollar figure), a month range, and categories, then
-**Preview** — always a dry run, computing what every matching category's
-new budgeted amount would be without writing anything. **Apply changes**
-(disabled until a Preview has run at least once) re-runs the identical
-request for real. Every line shows its status (unchanged/would
-update/updated) and the old → new amounts, grouped by month.
+for a flat dollar figure) and a month range, then check which categories
+to include in the table below — styled after Actual's own budget page: a
+foldable row per category group (click the caret to collapse it, or its
+own checkbox to select every category inside at once), and a real
+Budgeted/Spent/Balance column triplet per month in the selected range
+(capped at 6 months, taken from the start of the range, so a wide range
+doesn't render an unusably wide table — `BUDGET_TABLE_MAX_MONTHS` in
+`src/budget-tools.ts`), reloaded automatically whenever the range
+changes. Leave nothing checked to mean "every category" (matching the
+CLI's own unfiltered-sweep default). Then **Preview** — always a dry run,
+computing what every matching category's new budgeted amount would be
+without writing anything. **Apply changes** (disabled until a Preview has
+run at least once) re-runs the identical request for real. Every result
+line shows its status (unchanged/would update/updated) and the old → new
+amounts, grouped by month.
 
 **Anomalies**: pick a month range and at least one category, then **Find
 anomalies** — always read-only, using the same robust (median-based)

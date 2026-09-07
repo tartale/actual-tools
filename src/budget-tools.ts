@@ -137,6 +137,66 @@ export async function setBudgetValues(config: ActualConfig, options: SetBudgetVa
   return monthResults
 }
 
+// --- budget table (a read-only grid for the web UI's category picker/preview -- no CLI equivalent) ---
+
+// The most months of budgeted/spent/balance the table renders side by side -- unbounded would let
+// a wide start/end range (the same range the bulk action itself still applies across in full)
+// request and render an unusably wide grid; this caps just the table's own display, not what
+// setBudgetValues/findAnomalies actually operate on.
+export const BUDGET_TABLE_MAX_MONTHS = 6
+
+export interface BudgetTableCategory {
+  id: string
+  name: string
+  months: Record<string, { budgeted: number; spent: number; balance: number }>
+}
+
+export interface BudgetTableGroup {
+  id: string
+  name: string
+  categories: BudgetTableCategory[]
+}
+
+export interface BudgetTable {
+  months: string[]
+  groups: BudgetTableGroup[]
+}
+
+// Function to fetch a read-only budgeted/spent/balance grid, one column-group per month (capped at
+// BUDGET_TABLE_MAX_MONTHS, taken from the START of the requested range -- the range's own start is
+// what a person is most likely mid-editing right now), grouped and ordered the same way Actual's
+// own category groups are, income excluded (never a valid target for either budget tool, so never
+// worth showing here either).
+export async function fetchBudgetTable(config: ActualConfig, startMonth: string, endMonth: string): Promise<BudgetTable> {
+  const months = monthRange(startMonth, endMonth).slice(0, BUDGET_TABLE_MAX_MONTHS)
+  const monthCache = new Map<string, CategoryMonth[]>()
+  const categoriesByMonth = await Promise.all(months.map((month) => getCachedMonthCategories(config, month, monthCache)))
+  const byMonthThenCategory = new Map(months.map((month, index) => [month, new Map((categoriesByMonth[index] as CategoryMonth[]).map((c) => [c.id, c]))]))
+
+  const groups = await fetchCategoryGroups(config)
+  return {
+    months,
+    groups: groups
+      .filter((group) => !group.is_income)
+      .map((group) => ({
+        id: group.id,
+        name: group.name,
+        categories: group.categories
+          .filter((category) => !category.is_income)
+          .map((category) => ({
+            id: category.id,
+            name: category.name,
+            months: Object.fromEntries(
+              months.map((month) => {
+                const categoryMonth = byMonthThenCategory.get(month)?.get(category.id)
+                return [month, { budgeted: categoryMonth?.budgeted ?? 0, spent: categoryMonth?.spent ?? 0, balance: categoryMonth?.balance ?? 0 }]
+              }),
+            ),
+          })),
+      })),
+  }
+}
+
 // --- anomalies ---
 
 // How many trailing months of history a category/month or a transaction is judged against.

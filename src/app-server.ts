@@ -7,7 +7,7 @@ import { extname, join } from "node:path"
 
 import { ACTIONS, ageFromBirthDate, fetchAccountBalance, fetchAllOpenAccounts, fetchCategoryGroups, formatError, isAction, parseDollarAmount, validateMonthFormat } from "./actual-helpers.ts"
 import type { Action, ActualConfig } from "./actual-helpers.ts"
-import { findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
+import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import {
   ACCOUNT_TYPES,
   ACCOUNT_TYPE_TRAITS,
@@ -759,6 +759,14 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           .filter((group) => !group.is_income)
           .map((group) => ({ ...group, categories: group.categories.filter((category) => !category.is_income) }))
         sendJson(res, 200, { categoryGroups })
+        return
+      }
+
+      if (req.method === "POST" && path === "/api/budget/table") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const startMonth = parseBudgetMonth(body.startMonth, "startMonth")
+        const table = await fetchBudgetTable(actualConfig, startMonth, parseBudgetMonth(body.endMonth ?? startMonth, "endMonth"))
+        sendJson(res, 200, table)
         return
       }
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { ActualConfig, CategoryMonth, Transaction } from "./actual-helpers.ts"
-import { findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
+import { BUDGET_TABLE_MAX_MONTHS, fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import type { AnomalyFinding } from "./budget-tools.ts"
 
 const config: ActualConfig = {
@@ -144,6 +144,42 @@ describe("setBudgetValues", () => {
 })
 
 const LOW_SPEND_MONTH = { body: { data: [categoryMonth({ id: "c1", spent: -10000 })] } }
+
+describe("fetchBudgetTable", () => {
+  it("groups categories under their group, excluding income entirely, with per-month figures", async () => {
+    stubFetch([
+      { body: { data: [categoryMonth({ id: "c1", name: "Groceries", budgeted: 50000, spent: -45000, balance: 5000 })] } },
+      {
+        body: {
+          data: [
+            { id: "g1", name: "Everyday", is_income: false, hidden: false, categories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] },
+            { id: "g2", name: "Income", is_income: true, hidden: false, categories: [{ id: "c2", name: "Paycheck", is_income: true, hidden: false, group_id: "g2" }] },
+          ],
+        },
+      },
+    ])
+    const table = await fetchBudgetTable(config, "2026-01", "2026-01")
+    expect(table.months).toEqual(["2026-01"])
+    expect(table.groups).toEqual([
+      { id: "g1", name: "Everyday", categories: [{ id: "c1", name: "Groceries", months: { "2026-01": { budgeted: 50000, spent: -45000, balance: 5000 } } }] },
+    ])
+  })
+
+  it("fills in a zeroed entry for a category missing from a given month's response", async () => {
+    stubFetch([{ body: { data: [] } }, { body: { data: [{ id: "g1", name: "Everyday", is_income: false, hidden: false, categories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }] } }])
+    const table = await fetchBudgetTable(config, "2026-01", "2026-01")
+    expect(table.groups[0]?.categories[0]?.months["2026-01"]).toEqual({ budgeted: 0, spent: 0, balance: 0 })
+  })
+
+  it("caps the number of month columns at BUDGET_TABLE_MAX_MONTHS, taken from the start of the range", async () => {
+    const { calls } = stubFetch([{ body: { data: [] } }, { body: { data: [] } }])
+    const table = await fetchBudgetTable(config, "2026-01", "2027-01") // 13 months requested
+    expect(table.months).toHaveLength(BUDGET_TABLE_MAX_MONTHS)
+    expect(table.months[0]).toBe("2026-01")
+    // one getCachedMonthCategories call per rendered month, plus one for fetchCategoryGroups
+    expect(calls).toHaveLength(BUDGET_TABLE_MAX_MONTHS + 1)
+  })
+})
 
 describe("findAnomalies", () => {
   it("requires at least one category", async () => {
