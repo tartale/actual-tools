@@ -106,17 +106,23 @@ body.privacy #mcInflationMean, body.privacy #mcInflationStdDev, body.privacy #mc
    a dollar/percent one) but is still a real financial detail -- blur it too. */
 body.privacy input[data-field="mortgageBalanceAsOfDate"] { filter: blur(6px); transition: filter 0.15s; }
 body.privacy input[data-field="mortgageBalanceAsOfDate"]:focus { filter: none; }
-/* Whether an account is set to "Max" contribution reveals a real financial choice -- blur the
-   toggle's own on/off appearance too, not just the dollar amount it resolves to. */
-body.privacy .toggle { filter: blur(6px); transition: filter 0.15s; }
+/* Whether an account is set to "Max" contribution reveals a real financial choice. Blur alone
+   still lets the accent color leak through as a legible cue even with soft edges, so the "on"
+   look is neutralized to match "off" exactly instead -- the two states become indistinguishable,
+   not just hard to read. */
+body.privacy .toggle.on { color: var(--ink-soft); border-color: var(--line); background: var(--surface-2); }
+body.privacy .toggle.on .dot { border-color: var(--ink-faint); background: transparent; }
+body.privacy .toggle.on .dot::after { content: none; }
 /* The age someone plans to separate from an employer (Rule of 55) is a personal choice, same
    category as pension/SS timing -- blur the input, not just its own account-header note (already
    wrapped in .money). */
 body.privacy input[data-field="ruleOf55SeparationAge"] { filter: blur(6px); transition: filter 0.15s; }
 body.privacy input[data-field="ruleOf55SeparationAge"]:focus { filter: none; }
 /* HSA coverage: blur which radio is filled in, but keep "Self-only"/"Family" themselves readable
-   -- only the input's own circle is targeted, not the label text next to it. */
-body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); }
+   -- only the input's own circle is targeted, not the label text next to it. accent-color is
+   neutralized too, since a blurred purple dot vs. a blurred gray ring is still a legible color
+   cue even once the edges are soft. */
+body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); accent-color: var(--ink-faint); }
 
 /* --- Sidebar --- */
 .rail { background: var(--sidebar-bg); padding: 18px 14px; display: flex; flex-direction: column; gap: 26px; }
