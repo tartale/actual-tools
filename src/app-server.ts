@@ -98,12 +98,11 @@ interface AccountState {
   isPortfolio: boolean
   accessAge: number | null
   allocationPreset: MonteCarloAllocationPreset | null
-  // Only meaningful when allocationPreset is "custom"; null fields mean "not entered yet."
+  // The account's own override, independent of allocationPreset; null fields mean "not entered."
   customReturnMean: number | null
   customReturnStdDev: number | null
-  // What the CURRENT (non-custom) preset implies, so the UI can show real numbers instead of an
-  // empty box before you ever switch to Custom -- null when there's no preset to show one for
-  // (allocationPreset is null or already "custom").
+  // What the account's preset implies, so the UI can show/prefill real numbers rather than an
+  // empty box -- null only when allocationPreset itself is null (a non-portfolio account).
   defaultReturnMean: number | null
   defaultReturnStdDev: number | null
   // The account's own override, or null if using the type's rough default (see
@@ -197,7 +196,7 @@ async function buildState(
           })
         : null
     const mortgagePayoffAge = mortgagePayoff && !("error" in mortgagePayoff) && currentAge !== null ? currentAge + Math.round(mortgagePayoff.monthsRemaining / 12) : null
-    const presetReturns = account.allocationPreset != null && account.allocationPreset !== "custom" ? ALLOCATION_PRESET_RETURNS[account.allocationPreset] : null
+    const presetReturns = account.allocationPreset != null ? ALLOCATION_PRESET_RETURNS[account.allocationPreset] : null
     return {
       id: account.id,
       name: account.name,

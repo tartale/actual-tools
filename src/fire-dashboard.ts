@@ -276,12 +276,10 @@ export interface MonteCarloCardMeta {
   targetAge?: number
 }
 
-// Illustrative nominal annual return assumptions per fixed allocation preset, vendored verbatim
-// from Actual's own ALLOCATION_PRESETS constant (monteCarloSimulation.ts) -- keep these in sync
-// with upstream if that table ever changes, since a stale copy here would misrepresent the pot's
-// risk. "custom" has no table entry -- its mean/stdDev come from the account's own
-// customReturnMean/customReturnStdDev instead (see returnAssumptionsFor).
-export const ALLOCATION_PRESET_RETURNS: Record<Exclude<MonteCarloAllocationPreset, "custom">, { mean: number; stdDev: number }> = {
+// Illustrative nominal annual return assumptions per allocation preset, vendored verbatim from
+// Actual's own ALLOCATION_PRESETS constant (monteCarloSimulation.ts) -- keep these in sync with
+// upstream if that table ever changes, since a stale copy here would misrepresent the pot's risk.
+export const ALLOCATION_PRESET_RETURNS: Record<MonteCarloAllocationPreset, { mean: number; stdDev: number }> = {
   "equity-100": { mean: 0.07, stdDev: 0.15 },
   "equity-80": { mean: 0.065, stdDev: 0.12 },
   "equity-60": { mean: 0.06, stdDev: 0.1 },
@@ -289,20 +287,21 @@ export const ALLOCATION_PRESET_RETURNS: Record<Exclude<MonteCarloAllocationPrese
   cash: { mean: 0.03, stdDev: 0.015 },
 }
 
-// Function to resolve one account's actual return/volatility assumption -- the fixed preset
-// table's entry, or (for "custom") the account's own hand-entered numbers. Throws for "custom"
-// with nothing entered yet, mirroring buildMonteCarloWidget's existing "no allocationPreset set"
-// guard for a null preset -- both are the same kind of incomplete-config error.
+// Function to resolve one account's actual return/volatility assumption -- customReturnMean/
+// customReturnStdDev override independently of each other and independently of allocationPreset,
+// so two accounts can both be labeled "100% stocks" while assuming different real returns (a
+// growth-heavy fund vs. blue chips, say). Falls back, per field, to the preset table's own value
+// when that field isn't overridden -- every account has a concrete preset (see
+// MonteCarloAllocationPreset's own doc comment for why there's no separate "custom" preset value
+// to fall back to nothing for), so this never has an incomplete case to reject.
 export function returnAssumptionsFor(
-  account: Pick<ClassifiedAccount, "name" | "allocationPreset" | "customReturnMean" | "customReturnStdDev"> & { allocationPreset: MonteCarloAllocationPreset },
+  account: Pick<ClassifiedAccount, "allocationPreset" | "customReturnMean" | "customReturnStdDev"> & { allocationPreset: MonteCarloAllocationPreset },
 ): { mean: number; stdDev: number } {
-  if (account.allocationPreset !== "custom") {
-    return ALLOCATION_PRESET_RETURNS[account.allocationPreset]
+  const presetDefaults = ALLOCATION_PRESET_RETURNS[account.allocationPreset]
+  return {
+    mean: account.customReturnMean ?? presetDefaults.mean,
+    stdDev: account.customReturnStdDev ?? presetDefaults.stdDev,
   }
-  if (account.customReturnMean == null || account.customReturnStdDev == null) {
-    throw new Error(`"${account.name}" is set to a custom allocation but has no return/volatility entered -- set both, or pick a preset instead.`)
-  }
-  return { mean: account.customReturnMean, stdDev: account.customReturnStdDev }
 }
 
 // Flat-model effective withdrawal tax rate per tax treatment. Deliberately rough, user-owned

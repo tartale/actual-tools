@@ -40,15 +40,19 @@ export type TaxTreatment = "tax-deferred" | "tax-free" | "taxable" | "none"
 
 export const TAX_TREATMENTS: readonly TaxTreatment[] = ["tax-deferred", "tax-free", "taxable", "none"]
 
-// Mirrors Actual's own MonteCarloAllocationPreset, minus "custom" -- we always generate a concrete
-// preset, or a hand-typed "custom" expected return/volatility for an account whose real
-// investments don't match one of the fixed presets. Actual's own real type additionally has
-// "custom-mix" (a stocks/bonds/cash percentage split, blended against historical return series) --
-// deliberately not supported here; "custom" (direct mean/stdDev entry, matching customReturnMean/
-// customReturnStdDev below) covers what was actually asked for with one concrete pair of numbers,
-// not a three-way asset-mix editor. See fire-dashboard.ts for the exact mean/stdDev each
-// non-custom preset implies (ALLOCATION_PRESET_RETURNS, vendored from Actual's own source).
-export type MonteCarloAllocationPreset = "equity-100" | "equity-80" | "equity-60" | "equity-40" | "cash" | "custom"
+// Mirrors Actual's own MonteCarloAllocationPreset, minus "custom"/"custom-mix". Every account gets
+// one of these 5 concrete labels -- purely descriptive of its real stock/bond mix -- and
+// separately, optionally, its own customReturnMean/customReturnStdDev override (see
+// returnAssumptionsFor in fire-dashboard.ts) for when its real historical return doesn't match the
+// preset's own illustrative number (a growth fund and blue chips can both be "100% stocks" with
+// very different actual returns). A standalone "custom" preset value existed briefly for this same
+// purpose but was redundant once overrides work independently of which preset is selected --
+// removed rather than kept as a second way to do the same thing. Actual's own "custom-mix" (a
+// stocks/bonds/cash percentage split blended against historical return series) stays unsupported --
+// this app has no arbitrary-mix editor, only the fixed labels below plus a numeric override. See
+// fire-dashboard.ts for the exact mean/stdDev each preset implies (ALLOCATION_PRESET_RETURNS,
+// vendored from Actual's own source).
+export type MonteCarloAllocationPreset = "equity-100" | "equity-80" | "equity-60" | "equity-40" | "cash"
 
 export const MONTE_CARLO_ALLOCATION_PRESETS: readonly MonteCarloAllocationPreset[] = [
   "equity-100",
@@ -56,7 +60,6 @@ export const MONTE_CARLO_ALLOCATION_PRESETS: readonly MonteCarloAllocationPreset
   "equity-60",
   "equity-40",
   "cash",
-  "custom",
 ]
 
 // Plain-language description of each preset's stock/bond mix, for display next to the preset name
@@ -67,7 +70,6 @@ export const MONTE_CARLO_ALLOCATION_PRESET_LABELS: Record<MonteCarloAllocationPr
   "equity-60": "60% stocks / 40% bonds",
   "equity-40": "40% stocks / 60% bonds",
   cash: "100% cash",
-  custom: "Custom return/volatility",
 }
 
 // Mirrors Actual's own MonteCarloWithdrawalStrategy/MonteCarloReturnModel (see fire-dashboard.ts's
@@ -273,10 +275,11 @@ export interface ClassifiedAccount {
   taxTreatment: TaxTreatment
   accessAge: number | null
   allocationPreset: MonteCarloAllocationPreset | null
-  // Only meaningful when allocationPreset is "custom" -- the account's own hand-entered expected
-  // return/volatility (decimal fractions, e.g. 0.07 for 7%) instead of one of the fixed presets'
-  // table values. Null otherwise, including for a "custom" account that hasn't set them yet (see
-  // buildPot's own guard for that incomplete-config case).
+  // The account's own hand-entered expected return/volatility (decimal fractions, e.g. 0.07 for
+  // 7%), overriding allocationPreset's own table value -- independently of each other, and
+  // independently of which preset is selected, so two "100% stocks" accounts can assume different
+  // real returns without either giving up the label. Null means "use the preset's own default"
+  // (see returnAssumptionsFor in fire-dashboard.ts).
   customReturnMean: number | null
   customReturnStdDev: number | null
   // Overrides WITHDRAWAL_TAX_RATES[taxTreatment]'s rough, type-wide estimate (fire-dashboard.ts's
@@ -335,7 +338,7 @@ export interface FireAccountOverride {
   taxTreatment?: TaxTreatment
   accessAge?: number | null
   allocationPreset?: MonteCarloAllocationPreset | null
-  // See ClassifiedAccount's doc comment -- only meaningful when allocationPreset is "custom".
+  // See ClassifiedAccount's doc comment.
   customReturnMean?: number | null
   customReturnStdDev?: number | null
   // See ClassifiedAccount's doc comment.

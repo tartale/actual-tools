@@ -227,13 +227,12 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
 // both the ordinary single-entry case and the Roth-basis split below, so the growth/return logic
 // only lives in one place).
 function bridgeReturnMean(account: ClassifiedAccount): number {
-  if (account.allocationPreset === null) {
-    return 0
-  }
-  if (account.allocationPreset === "custom") {
-    return account.customReturnMean ?? 0
-  }
-  return ALLOCATION_PRESET_RETURNS[account.allocationPreset].mean
+  // Same per-field override-over-preset-default resolution as fire-dashboard.ts's
+  // returnAssumptionsFor, but never throws -- an account with no preset at all (never classified
+  // into the portfolio with one) contributes 0 growth rather than failing the whole read-only
+  // analysis.
+  const presetDefaultMean = account.allocationPreset != null ? ALLOCATION_PRESET_RETURNS[account.allocationPreset].mean : null
+  return account.customReturnMean ?? presetDefaultMean ?? 0
 }
 
 // Function to build bridge inputs from classified accounts plus live balances and derived annual

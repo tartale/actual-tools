@@ -265,17 +265,18 @@ drives everything else about the account, and which fields even show up:
   Roth IRA share another) — recomputed from your current age and
   `irs-limits.json` on every read, so it never goes stale as limits update
   each tax year or as you cross the 50 and 60–63 catch-up tiers. At most
-  one account per limit group can be **Max** at a time. Allocation also has
-  a **Custom** option — for an account whose real holdings don't match one
-  of the fixed presets, enter your own expected return and volatility
-  directly instead of picking equity-100/80/60/40/cash. Actual's own
-  "custom-mix" (a stocks/bonds/cash percentage split blended against
-  historical return series) isn't supported — Custom here is a plain,
-  hand-typed mean/stdDev pair, not a three-way asset-mix editor. **Expected
-  return/Volatility are always shown**, even without Custom selected —
-  disabled, displaying whatever the current preset implies, so you can see
-  the real numbers behind "equity-80" before deciding whether to override
-  them; pick Custom above to make them editable.
+  one account per limit group can be **Max** at a time. **Expected
+  return/Volatility** are shown right below Allocation, pre-filled with
+  whatever the chosen preset implies — override either one independently
+  to assume a different real return for this specific account without
+  losing the preset's own label (two accounts can both be "100% stocks"
+  while assuming different actual returns, e.g. a growth fund vs. blue
+  chips). There's no separate "Custom" preset — with return/volatility
+  editable everywhere, a standalone preset value that only existed to
+  unlock the same two fields would just be a second way to do the same
+  thing. Actual's own "custom-mix" (a stocks/bonds/cash percentage split
+  blended against historical return series) stays unsupported regardless —
+  this is a plain numeric override, not a three-way asset-mix editor.
 - **Withdrawal tax rate** — every portfolio account also gets its own
   override for the flat effective tax rate applied to its withdrawals,
   shown alongside a placeholder naming the type's own rough default (e.g.

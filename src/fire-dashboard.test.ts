@@ -222,19 +222,19 @@ describe("buildPot", () => {
     }
   })
 
-  it("uses the account's own customReturnMean/customReturnStdDev for a custom allocation", () => {
+  it("uses the account's own customReturnMean/customReturnStdDev, overriding its preset's own defaults", () => {
     const pot = buildPot(
-      portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "custom", customReturnMean: 0.055, customReturnStdDev: 0.09 }),
+      portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-100", customReturnMean: 0.055, customReturnStdDev: 0.09 }),
     )
-    expect(pot.allocationPreset).toBe("custom")
+    expect(pot.allocationPreset).toBe("equity-100")
     expect(pot.expectedReturnMean).toBe(0.055)
     expect(pot.returnStdDev).toBe(0.09)
   })
 
-  it("throws a clear error for a custom allocation with nothing entered yet", () => {
-    expect(() =>
-      buildPot(portfolioTestAccount({ id: "a1", name: "Brokerage", category: "investment-taxable", allocationPreset: "custom" })),
-    ).toThrow(/Brokerage.*custom allocation/)
+  it("overrides only the field that's actually set, keeping the preset's own default for the other", () => {
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-100", customReturnMean: 0.055 }))
+    expect(pot.expectedReturnMean).toBe(0.055)
+    expect(pot.returnStdDev).toBe(ALLOCATION_PRESET_RETURNS["equity-100"].stdDev)
   })
 
   it("uses the account's own customWithdrawalTaxRate over the type-wide default", () => {

@@ -309,7 +309,6 @@ function renderAccounts() {
     const allocOptions = STATE.allocationPresets
       .map((preset) => `<option value="${preset.value}" ${preset.value === account.allocationPreset ? "selected" : ""}>${preset.value} — ${preset.label}</option>`)
       .join("")
-    const isCustomAllocation = account.allocationPreset === "custom"
     const allocationLabel = account.allocationPreset != null ? (STATE.allocationPresets.find((preset) => preset.value === account.allocationPreset)?.label ?? account.allocationPreset) : ""
 
     const accessNote = account.accessAge === null
@@ -360,14 +359,14 @@ function renderAccounts() {
         <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
           <label>Expected return</label>
           <div class="input-affix suffix-percent">
-            <input type="number" step="0.1" data-field="customReturnMean" value="${isCustomAllocation ? (account.customReturnMean != null ? account.customReturnMean * 100 : "") : (account.defaultReturnMean != null ? Math.round(account.defaultReturnMean * 1000) / 10 : "")}" placeholder="e.g. 6" ${isCustomAllocation ? "" : "disabled"}>
+            <input type="number" step="0.1" data-field="customReturnMean" value="${account.customReturnMean != null ? account.customReturnMean * 100 : (account.defaultReturnMean != null ? Math.round(account.defaultReturnMean * 1000) / 10 : "")}" placeholder="e.g. 6">
           </div>
-          ${!isCustomAllocation ? `<div class="derived">From the ${escapeHtml(allocationLabel)} preset — pick Custom above to set your own</div>` : ""}
+          <div class="derived">Defaults to the ${escapeHtml(allocationLabel)} preset — override just this account if its real return differs</div>
         </div>
         <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
           <label>Volatility</label>
           <div class="input-affix suffix-percent">
-            <input type="number" min="0" step="0.1" data-field="customReturnStdDev" value="${isCustomAllocation ? (account.customReturnStdDev != null ? account.customReturnStdDev * 100 : "") : (account.defaultReturnStdDev != null ? Math.round(account.defaultReturnStdDev * 1000) / 10 : "")}" placeholder="e.g. 12" ${isCustomAllocation ? "" : "disabled"}>
+            <input type="number" min="0" step="0.1" data-field="customReturnStdDev" value="${account.customReturnStdDev != null ? account.customReturnStdDev * 100 : (account.defaultReturnStdDev != null ? Math.round(account.defaultReturnStdDev * 1000) / 10 : "")}" placeholder="e.g. 12">
           </div>
         </div>
         <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">

@@ -186,8 +186,8 @@ describe("toBridgeAccounts", () => {
     expect(built[0]).toMatchObject({ balance: 0, annualContribution: 0, returnMean: 0 })
   })
 
-  it("uses the account's own customReturnMean for a custom allocation", () => {
-    const accounts = [account({ id: "a1", category: "investment-taxable", allocationPreset: "custom", customReturnMean: 0.055 })]
+  it("uses the account's own customReturnMean, overriding its preset's own default", () => {
+    const accounts = [account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-100", customReturnMean: 0.055 })]
     const built = toBridgeAccounts(accounts, new Map(), new Map())
     expect(built[0]).toMatchObject({ returnMean: 0.055 })
   })
@@ -196,12 +196,6 @@ describe("toBridgeAccounts", () => {
     const accounts = [account({ id: "a1", category: "retirement-tax-deferred", taxTreatment: "tax-deferred", customWithdrawalTaxRate: 0.3 })]
     const built = toBridgeAccounts(accounts, new Map(), new Map())
     expect(built[0]).toMatchObject({ withdrawalTaxRate: 0.3 })
-  })
-
-  it("falls back to no growth (not a thrown error) for a custom allocation with nothing entered yet", () => {
-    const accounts = [account({ id: "a1", category: "investment-taxable", allocationPreset: "custom" })]
-    const built = toBridgeAccounts(accounts, new Map(), new Map())
-    expect(built[0]).toMatchObject({ returnMean: 0 })
   })
 
   it("splits a roth-ira with a basis into an always-accessible and a locked entry", () => {
