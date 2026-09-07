@@ -58,6 +58,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     mortgageMonthlyPayment: null,
     mortgageBalanceAsOfDate: null,
     mortgageBalanceAsOf: null,
+    rothBasis: null,
     source: "heuristic",
     ...overrides,
   }
@@ -193,6 +194,44 @@ describe("toBridgeAccounts", () => {
     const accounts = [account({ id: "a1", category: "investment-taxable", allocationPreset: "custom" })]
     const built = toBridgeAccounts(accounts, new Map(), new Map())
     expect(built[0]).toMatchObject({ returnMean: 0 })
+  })
+
+  it("splits a roth-ira with a basis into an always-accessible and a locked entry", () => {
+    const accounts = [
+      account({ id: "a1", name: "Roth", category: "retirement-roth", type: "roth-ira", accessAge: 59, allocationPreset: "equity-80", rothBasis: 300 }),
+    ]
+    const built = toBridgeAccounts(accounts, new Map([["a1", 1000]]), new Map([["a1", 120]]))
+    expect(built).toHaveLength(2)
+    const basis = built.find((b) => b.id === "a1-basis")
+    const growth = built.find((b) => b.id === "a1-growth")
+    expect(basis).toMatchObject({ name: "Roth (basis)", balance: 300, accessAge: null, annualContribution: 120 })
+    expect(growth).toMatchObject({ name: "Roth (growth)", balance: 700, accessAge: 59, annualContribution: 0 })
+  })
+
+  it("clamps a roth-ira's basis portion to the live balance when the market has dropped below it", () => {
+    const accounts = [account({ id: "a1", category: "retirement-roth", type: "roth-ira", accessAge: 59, allocationPreset: "equity-80", rothBasis: 1000 })]
+    const built = toBridgeAccounts(accounts, new Map([["a1", 400]]), new Map())
+    expect(built.find((b) => b.id === "a1-basis")).toMatchObject({ balance: 400 })
+    expect(built.find((b) => b.id === "a1-growth")).toMatchObject({ balance: 0 })
+  })
+
+  it("keeps the growth portion's normal access age (roth-ira is never Rule of 55 eligible)", () => {
+    const accounts = [account({ id: "a1", category: "retirement-roth", type: "roth-ira", accessAge: 59, allocationPreset: "equity-80", rothBasis: 100 })]
+    const built = toBridgeAccounts(accounts, new Map([["a1", 500]]), new Map())
+    expect(built.find((b) => b.id === "a1-growth")).toMatchObject({ accessAge: 59 })
+  })
+
+  it("does not split a roth-ira with no basis entered, or any other account type", () => {
+    const noBasis = toBridgeAccounts([account({ id: "a1", category: "retirement-roth", type: "roth-ira", allocationPreset: "equity-80" })], new Map(), new Map())
+    expect(noBasis).toHaveLength(1)
+    expect(noBasis[0]?.id).toBe("a1")
+
+    const traditional = toBridgeAccounts(
+      [account({ id: "a1", category: "retirement-tax-deferred", type: "traditional-ira", allocationPreset: "equity-80", rothBasis: 300 })],
+      new Map(),
+      new Map(),
+    )
+    expect(traditional).toHaveLength(1)
   })
 })
 

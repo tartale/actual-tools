@@ -314,13 +314,29 @@ using standard loan amortization, or a clear message if the payment
 doesn't even cover the interest accruing each month (the balance would
 grow, not shrink).
 
-Two real strategies exist but aren't modeled: a **Roth conversion ladder**
-(staggered Traditional→Roth conversions, each with its own 5-year clock)
-isn't expressible with Actual's single access age per pot without a much
-bigger approximation, and **SEPP/72(t)** (substantially equal periodic
-payments) is a fixed IRS-formula payment schedule, not an age threshold —
-there's no honest way to represent it here, so it's left out rather than
-approximated.
+**Roth IRA contributed basis** (roth-ira only): under the ordering rule in
+IRC §408A(d)(4), a Roth IRA's own contributions (and conversions, not
+modeled here) can be withdrawn tax- and penalty-free at any age, before
+touching earnings — unlike every other account here, and unlike a Roth
+401(k)/403(b) pre-rollover, which has no such rule. Entering your
+cumulative contributions splits that amount out as always-accessible for
+the Analyze tab's **Bridge** check, clamped to the account's live balance
+(a market drop can leave less in the account than you've contributed).
+**This only affects Bridge, not the generated Monte Carlo widget** — Actual's
+own pot format has no way to give one account two different access ages
+without either double-counting its balance or hand-entering a starting
+balance that would drift from reality on every regenerate, so Actual's own
+simulation still treats the whole account as locked until its normal
+access age.
+
+One more real strategy exists but isn't modeled: a **Roth conversion
+ladder** (staggered Traditional→Roth conversions, each with its own 5-year
+clock) hits the same "one account, one access age" wall as basis
+withdrawal above, N times over, plus real open questions about sizing each
+rung — a bigger lift than the basis case, not attempted yet.
+**SEPP/72(t)** (substantially equal periodic payments) is a fixed
+IRS-formula payment schedule, not an age threshold — there's no honest way
+to represent it here, so it's left out rather than approximated.
 
 **Migrating an older `config.json`**: an account with no type yet (from
 before this existed) gets one guessed from its old category and real name

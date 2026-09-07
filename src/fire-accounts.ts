@@ -296,6 +296,15 @@ export interface ClassifiedAccount {
   mortgageMonthlyPayment: number | null
   mortgageBalanceAsOfDate: string | null
   mortgageBalanceAsOf: number | null
+  // roth-ira only -- cumulative contributions ever made (cost basis), in cents. IRC
+  // Sec. 408A(d)(4)'s ordering rule lets a Roth IRA's own contributions/conversions be withdrawn
+  // tax- and penalty-free at any age, before touching earnings, unlike every other retirement
+  // account here (and unlike a Roth 401(k)/403(b), which has no such rule pre-rollover). Null
+  // means "not entered" -- the account is still treated as 100% locked until accessAge, same as
+  // today. See toBridgeAccounts (fire-analysis.ts) for where this actually splits the account into
+  // an always-accessible and a locked portion; deliberately NOT threaded into the Monte Carlo
+  // dashboard widget Actual itself simulates -- see toBridgeAccounts's own doc comment for why.
+  rothBasis: number | null
 }
 
 // One user-supplied override. `match` is an account id OR an exact account name, mirroring how
@@ -342,6 +351,8 @@ export interface FireAccountOverride {
   mortgageMonthlyPayment?: number
   mortgageBalanceAsOfDate?: string
   mortgageBalanceAsOf?: number
+  // See ClassifiedAccount's doc comment -- only meaningful for roth-ira.
+  rothBasis?: number | null
 }
 
 // Which of the three SSA-statement reference ages (the ones the statement itself reports a
@@ -795,6 +806,7 @@ export function classifyAccounts(
         mortgageMonthlyPayment: override.mortgageMonthlyPayment ?? null,
         mortgageBalanceAsOfDate: override.mortgageBalanceAsOfDate ?? null,
         mortgageBalanceAsOf: override.mortgageBalanceAsOf ?? null,
+        rothBasis: override.rothBasis ?? null,
         source: "override" as const,
       }
     }
@@ -816,6 +828,7 @@ export function classifyAccounts(
         mortgageMonthlyPayment: null,
         mortgageBalanceAsOfDate: null,
         mortgageBalanceAsOf: null,
+        rothBasis: null,
         source: "heuristic" as const,
       }
     }
@@ -835,6 +848,7 @@ export function classifyAccounts(
       mortgageMonthlyPayment: null,
       mortgageBalanceAsOfDate: null,
       mortgageBalanceAsOf: null,
+      rothBasis: null,
       source: "default" as const,
     }
   })
@@ -914,6 +928,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     }
     if (override.customReturnStdDev != null && (typeof override.customReturnStdDev !== "number" || override.customReturnStdDev < 0)) {
       throw new Error(`Invalid config in ${path}: customReturnStdDev for "${override.match}" must be a non-negative number.`)
+    }
+    if (override.rothBasis != null && (typeof override.rothBasis !== "number" || override.rothBasis < 0)) {
+      throw new Error(`Invalid config in ${path}: rothBasis for "${override.match}" must be a non-negative number.`)
     }
     if (
       override.monthlyContribution !== undefined &&

@@ -42,6 +42,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     mortgageMonthlyPayment: null,
     mortgageBalanceAsOfDate: null,
     mortgageBalanceAsOf: null,
+    rothBasis: null,
     source: "heuristic",
     ...overrides,
   }

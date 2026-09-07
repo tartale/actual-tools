@@ -120,6 +120,8 @@ interface AccountState {
   // this mirrors) -- null whenever mortgagePayoff itself is null/an error, or currentAge isn't
   // known yet (no birth date entered).
   mortgagePayoffAge: number | null
+  // roth-ira only; null means "not entered." See ClassifiedAccount's doc comment.
+  rothBasis: number | null
 }
 
 // A balance never changes as a side effect of a config edit -- only Actual's own ledger changes
@@ -209,6 +211,7 @@ async function buildState(
       mortgageBalanceAsOf: account.mortgageBalanceAsOf,
       mortgagePayoff,
       mortgagePayoffAge,
+      rothBasis: account.rothBasis,
     }
   })
 
@@ -386,6 +389,7 @@ function applyAccountPatch(
   applyPositiveOrNull("employerMatchCapRate", "employerMatchCapRate")
   applyPositiveOrNull("mortgageMonthlyPayment", "mortgageMonthlyPayment")
   applyPositiveOrNull("mortgageBalanceAsOf", "mortgageBalanceAsOf")
+  applyPositiveOrNull("rothBasis", "rothBasis")
 
   if ("mortgageInterestRate" in patch) {
     const value = patch.mortgageInterestRate

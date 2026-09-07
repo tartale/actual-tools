@@ -223,33 +223,85 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
   }
 }
 
+// Function to reduce one classified account to the fields simulateBridge cares about (shared by
+// both the ordinary single-entry case and the Roth-basis split below, so the growth/return logic
+// only lives in one place).
+function bridgeReturnMean(account: ClassifiedAccount): number {
+  if (account.allocationPreset === null) {
+    return 0
+  }
+  if (account.allocationPreset === "custom") {
+    return account.customReturnMean ?? 0
+  }
+  return ALLOCATION_PRESET_RETURNS[account.allocationPreset].mean
+}
+
 // Function to build bridge inputs from classified accounts plus live balances and derived annual
 // contributions, keyed by account id. Non-portfolio accounts (debt/cash/other) are dropped, and an
 // account with no allocation preset (or a "custom" one with nothing entered yet) contributes
 // nothing to growth rather than silently assuming one or failing the whole analysis -- this is a
 // read-only Check pass, not the stricter Generate path (see buildPot/returnAssumptionsFor, which
 // throws on the same incomplete "custom" config since a dashboard genuinely can't be built without it).
+//
+// A roth-ira account with rothBasis set splits into two synthetic entries instead of one: IRC
+// Sec. 408A(d)(4)'s ordering rule lets a Roth IRA's own contributions (and conversions, not
+// modeled here) be withdrawn tax- and penalty-free at any age, before touching earnings -- unlike
+// every other retirement account here, and unlike a Roth 401(k)/403(b) pre-rollover, which has no
+// such rule. This is deliberately NOT threaded into the Monte Carlo dashboard widget Actual itself
+// simulates: Actual's own pot format has no way to give one account two different access ages
+// without either double-counting its balance or hand-entering a starting balance that drifts from
+// reality on every regenerate. Scoped to this bridge/Check analysis only, which is this app's own
+// pure function with no such constraint. The basis-side entry is where an ongoing contribution
+// goes too -- a new Roth contribution IS new basis.
 export function toBridgeAccounts(
   accounts: readonly ClassifiedAccount[],
   balances: ReadonlyMap<string, number>,
   annualContributions: ReadonlyMap<string, number>,
 ): BridgeAccount[] {
-  return accounts
-    .filter((account) => isPortfolioCategory(account.category))
-    .map((account) => ({
-      id: account.id,
-      name: account.name,
-      balance: balances.get(account.id) ?? 0,
-      accessAge: effectiveAccessAge(account),
-      annualContribution: annualContributions.get(account.id) ?? 0,
-      returnMean:
-        account.allocationPreset === null
-          ? 0
-          : account.allocationPreset === "custom"
-            ? (account.customReturnMean ?? 0)
-            : ALLOCATION_PRESET_RETURNS[account.allocationPreset].mean,
-      withdrawalTaxRate: WITHDRAWAL_TAX_RATES[account.taxTreatment],
-    }))
+  return accounts.filter((account) => isPortfolioCategory(account.category)).flatMap((account) => {
+    const balance = balances.get(account.id) ?? 0
+    const returnMean = bridgeReturnMean(account)
+    const withdrawalTaxRate = WITHDRAWAL_TAX_RATES[account.taxTreatment]
+
+    if (account.type === "roth-ira" && account.rothBasis != null && account.rothBasis > 0) {
+      // Clamped, not just subtracted -- a market drop since the contributions were made can leave
+      // the live balance below the cumulative basis, and you can't withdraw money that isn't there.
+      const basisPortion = Math.min(account.rothBasis, balance)
+      const growthPortion = balance - basisPortion
+      return [
+        {
+          id: `${account.id}-basis`,
+          name: `${account.name} (basis)`,
+          balance: basisPortion,
+          accessAge: null,
+          annualContribution: annualContributions.get(account.id) ?? 0,
+          returnMean,
+          withdrawalTaxRate,
+        },
+        {
+          id: `${account.id}-growth`,
+          name: `${account.name} (growth)`,
+          balance: growthPortion,
+          accessAge: effectiveAccessAge(account),
+          annualContribution: 0,
+          returnMean,
+          withdrawalTaxRate,
+        },
+      ]
+    }
+
+    return [
+      {
+        id: account.id,
+        name: account.name,
+        balance,
+        accessAge: effectiveAccessAge(account),
+        annualContribution: annualContributions.get(account.id) ?? 0,
+        returnMean,
+        withdrawalTaxRate,
+      },
+    ]
+  })
 }
 
 // Function to compare the access ages actually stored in the live dashboard's Monte Carlo pots

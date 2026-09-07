@@ -410,6 +410,14 @@ function renderAccounts() {
             <label><input type="radio" name="hsaCoverage-${account.id}" data-field="hsaCoverage" value="family" ${account.hsaCoverage === "family" ? "checked" : ""}> Family</label>
           </div>
         </div>` : ""}
+        ${account.type === "roth-ira" ? `
+        <div class="field wide">
+          <label>Contributed basis (withdrawable anytime)</label>
+          <div class="input-affix prefix-dollar">
+            <input type="text" inputmode="decimal" data-field="rothBasis" value="${formatMoneyInputValue(account.rothBasis)}" placeholder="not entered">
+          </div>
+          <div class="derived">Optional. Roth IRA contributions (not earnings) can be withdrawn tax- and penalty-free at any age (IRC §408A(d)(4)) — affects the Analyze tab's Bridge check only, not the generated Monte Carlo widget.</div>
+        </div>` : ""}
         ${account.type === "debt" ? `
         <div class="field">
           <label>Interest rate</label>
@@ -504,6 +512,13 @@ function renderAccounts() {
         if (e.target.checked) runExclusive(() => patchAccount(account.id, { hsaCoverage: e.target.value }))
       })
     })
+    const rothBasisInput = row.querySelector("input[data-field='rothBasis']")
+    if (rothBasisInput) {
+      attachMoneyFormatting(rothBasisInput)
+      rothBasisInput.addEventListener("change", (e) => {
+        runExclusive(() => patchAccount(account.id, { rothBasis: parseMoneyInputCents(e.target.value) }))
+      })
+    }
     const mortgageRateInput = row.querySelector("input[data-field='mortgageInterestRate']")
     if (mortgageRateInput) {
       mortgageRateInput.addEventListener("change", (e) => {

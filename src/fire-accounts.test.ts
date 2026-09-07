@@ -439,6 +439,19 @@ describe("loadFireConfig", () => {
     expect(() => loadFireConfig("/fake/path")).toThrow("customReturnStdDev")
   })
 
+  it("accepts a real number rothBasis", () => {
+    const goodConfig = { version: 1, accounts: [{ match: "x", type: "roth-ira", rothBasis: 30000000 }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.accounts[0]).toMatchObject({ rothBasis: 30000000 })
+  })
+
+  it("throws on a negative rothBasis", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", type: "roth-ira", rothBasis: -100 }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("rothBasis")
+  })
+
   it("accepts a null allocationPreset", () => {
     const validConfig = fireConfig([{ match: "x", type: "debt", allocationPreset: null }])
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
@@ -517,6 +530,7 @@ describe("loadClassifiedAccounts", () => {
         mortgageMonthlyPayment: null,
         mortgageBalanceAsOfDate: null,
         mortgageBalanceAsOf: null,
+        rothBasis: null,
         source: "heuristic",
       },
     ])
@@ -755,6 +769,7 @@ describe("portfolioAccounts", () => {
       mortgageMonthlyPayment: null,
       mortgageBalanceAsOfDate: null,
       mortgageBalanceAsOf: null,
+      rothBasis: null,
       source: "heuristic",
       ...overrides,
     }
