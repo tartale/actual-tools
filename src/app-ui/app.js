@@ -271,7 +271,7 @@ function renderAccounts() {
         ? "No age restriction (IRC §72(t)(2)(A)(iv))"
         : "Always accessible"
       : `Accessible at ${account.accessAge}`
-    const ruleOf55Note = account.ruleOf55SeparationAge ? ` — Rule of 55 at ${account.ruleOf55SeparationAge}` : ""
+    const ruleOf55Note = account.ruleOf55SeparationAge ? ` — Rule of 55 at <span class="money">${account.ruleOf55SeparationAge}</span>` : ""
 
     const showContribution = typeInfo.contributionAllowed
     const contributionValue = formatMoneyInputValue(account.monthlyContribution)
@@ -666,9 +666,25 @@ document.querySelectorAll(".tab").forEach((tab) => {
 })
 
 // Privacy mode -- an Actual-style eye toggle that blurs dollar figures (anything wrapped in
-// moneySpan) without touching labels, ages, or percentages. Persisted per-browser in
-// localStorage, same as any other per-viewer display preference -- never sent to the server,
-// since it's not something to share across devices or people looking at the same instance.
+// moneySpan) without touching labels, ages, or percentages. Persisted per-browser via a cookie,
+// not localStorage -- this app's own port changes on every restart (the CLI's own default is an
+// OS-assigned ephemeral port, see app.ts), and localStorage is scoped to the full origin
+// (scheme+host+port), so it would reset every time the server restarts on a new port even though
+// nothing about the browser or the preference itself changed. A cookie's scope omits the port
+// (RFC 6265 -- unrelated services on different ports of the same host share cookies), so the same
+// "localhost" preference survives a restart. Still never sent anywhere else -- this server is the
+// only thing reading it, and only to decide the initial class on this same page.
+function getPrivacyCookie() {
+  return (
+    document.cookie
+      .split("; ")
+      .find((row) => row.startsWith("privacyMode="))
+      ?.split("=")[1] ?? null
+  )
+}
+function setPrivacyCookie(value) {
+  document.cookie = `privacyMode=${value}; path=/; max-age=31536000; samesite=lax`
+}
 function applyPrivacyMode(active) {
   document.body.classList.toggle("privacy", active)
   const btn = document.getElementById("privacyToggle")
@@ -678,14 +694,13 @@ document.getElementById("privacyToggle").addEventListener("click", () => {
   const active = !document.body.classList.contains("privacy")
   applyPrivacyMode(active)
   try {
-    localStorage.setItem("privacyMode", active ? "1" : "0")
+    setPrivacyCookie(active ? "1" : "0")
   } catch {
-    // Private browsing / storage disabled -- the toggle still works for this page view, it just
-    // won't be remembered next time.
+    // Cookies disabled -- the toggle still works for this page view, it just won't be remembered.
   }
 })
 try {
-  applyPrivacyMode(localStorage.getItem("privacyMode") === "1")
+  applyPrivacyMode(getPrivacyCookie() === "1")
 } catch {
   applyPrivacyMode(false)
 }

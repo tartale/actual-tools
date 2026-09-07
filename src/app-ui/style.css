@@ -102,6 +102,21 @@ body.privacy #pensionStartAge:focus, body.privacy #ssClaimAge:focus { filter: no
 /* Simulation settings are generic modeling assumptions, not personal financial data -- exempt
    from the .input-affix input blur rule above (id selectors win regardless of source order). */
 body.privacy #mcInflationMean, body.privacy #mcInflationStdDev, body.privacy #mcMinimumWithdrawal { filter: none; }
+/* The mortgage balance's "as of" date isn't wrapped in input-affix (it's a plain date input, not
+   a dollar/percent one) but is still a real financial detail -- blur it too. */
+body.privacy input[data-field="mortgageBalanceAsOfDate"] { filter: blur(6px); transition: filter 0.15s; }
+body.privacy input[data-field="mortgageBalanceAsOfDate"]:focus { filter: none; }
+/* Whether an account is set to "Max" contribution reveals a real financial choice -- blur the
+   toggle's own on/off appearance too, not just the dollar amount it resolves to. */
+body.privacy .toggle { filter: blur(6px); transition: filter 0.15s; }
+/* The age someone plans to separate from an employer (Rule of 55) is a personal choice, same
+   category as pension/SS timing -- blur the input, not just its own account-header note (already
+   wrapped in .money). */
+body.privacy input[data-field="ruleOf55SeparationAge"] { filter: blur(6px); transition: filter 0.15s; }
+body.privacy input[data-field="ruleOf55SeparationAge"]:focus { filter: none; }
+/* HSA coverage: blur which radio is filled in, but keep "Self-only"/"Family" themselves readable
+   -- only the input's own circle is targeted, not the label text next to it. */
+body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); }
 
 /* --- Sidebar --- */
 .rail { background: var(--sidebar-bg); padding: 18px 14px; display: flex; flex-direction: column; gap: 26px; }
