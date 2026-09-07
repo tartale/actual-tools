@@ -271,7 +271,11 @@ drives everything else about the account, and which fields even show up:
   directly instead of picking equity-100/80/60/40/cash. Actual's own
   "custom-mix" (a stocks/bonds/cash percentage split blended against
   historical return series) isn't supported — Custom here is a plain,
-  hand-typed mean/stdDev pair, not a three-way asset-mix editor.
+  hand-typed mean/stdDev pair, not a three-way asset-mix editor. **Expected
+  return/Volatility are always shown**, even without Custom selected —
+  disabled, displaying whatever the current preset implies, so you can see
+  the real numbers behind "equity-80" before deciding whether to override
+  them; pick Custom above to make them editable.
 - **Withdrawal tax rate** — every portfolio account also gets its own
   override for the flat effective tax rate applied to its withdrawals,
   shown alongside a placeholder naming the type's own rough default (e.g.

@@ -309,6 +309,8 @@ function renderAccounts() {
     const allocOptions = STATE.allocationPresets
       .map((preset) => `<option value="${preset.value}" ${preset.value === account.allocationPreset ? "selected" : ""}>${preset.value} — ${preset.label}</option>`)
       .join("")
+    const isCustomAllocation = account.allocationPreset === "custom"
+    const allocationLabel = account.allocationPreset != null ? (STATE.allocationPresets.find((preset) => preset.value === account.allocationPreset)?.label ?? account.allocationPreset) : ""
 
     const accessNote = account.accessAge === null
       ? account.type === "inherited-ira"
@@ -355,16 +357,17 @@ function renderAccounts() {
           <label>Allocation</label>
           <select data-field="allocationPreset">${allocOptions}</select>
         </div>
-        <div class="field ${typeInfo.isPortfolio && account.allocationPreset === "custom" ? "" : "hidden"}">
+        <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
           <label>Expected return</label>
           <div class="input-affix suffix-percent">
-            <input type="number" step="0.1" data-field="customReturnMean" value="${account.customReturnMean != null ? account.customReturnMean * 100 : ""}" placeholder="e.g. 6">
+            <input type="number" step="0.1" data-field="customReturnMean" value="${isCustomAllocation ? (account.customReturnMean != null ? account.customReturnMean * 100 : "") : (account.defaultReturnMean != null ? Math.round(account.defaultReturnMean * 1000) / 10 : "")}" placeholder="e.g. 6" ${isCustomAllocation ? "" : "disabled"}>
           </div>
+          ${!isCustomAllocation ? `<div class="derived">From the ${escapeHtml(allocationLabel)} preset — pick Custom above to set your own</div>` : ""}
         </div>
-        <div class="field ${typeInfo.isPortfolio && account.allocationPreset === "custom" ? "" : "hidden"}">
+        <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
           <label>Volatility</label>
           <div class="input-affix suffix-percent">
-            <input type="number" min="0" step="0.1" data-field="customReturnStdDev" value="${account.customReturnStdDev != null ? account.customReturnStdDev * 100 : ""}" placeholder="e.g. 12">
+            <input type="number" min="0" step="0.1" data-field="customReturnStdDev" value="${isCustomAllocation ? (account.customReturnStdDev != null ? account.customReturnStdDev * 100 : "") : (account.defaultReturnStdDev != null ? Math.round(account.defaultReturnStdDev * 1000) / 10 : "")}" placeholder="e.g. 12" ${isCustomAllocation ? "" : "disabled"}>
           </div>
         </div>
         <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
@@ -413,7 +416,7 @@ function renderAccounts() {
           ${isRuleOf55Active ? employerNote : ""}
         </div>` : ""}
         ${account.type === "hsa" ? `
-        <div class="field">
+        <div class="field wide">
           <label>Coverage</label>
           <div class="radio-row">
             <label><input type="radio" name="hsaCoverage-${account.id}" data-field="hsaCoverage" value="self" ${account.hsaCoverage !== "family" ? "checked" : ""}> Self-only</label>

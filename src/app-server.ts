@@ -40,7 +40,7 @@ import { loadIrsLimits } from "./irs-limits.ts"
 import { calculateMortgagePayoff } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
 import { checkDashboard, fetchLiveDashboardSettings, generateDashboard } from "./fire-generate.ts"
-import { WITHDRAWAL_TAX_RATES, monteCarloAssumptionsWithOverrides, pinnedMonteCarloFields, retirementIncomeStreams } from "./fire-dashboard.ts"
+import { ALLOCATION_PRESET_RETURNS, WITHDRAWAL_TAX_RATES, monteCarloAssumptionsWithOverrides, pinnedMonteCarloFields, retirementIncomeStreams } from "./fire-dashboard.ts"
 
 // A plain node:http server -- no new dependency, matching this repo's zero-runtime-deps
 // convention. Routes are namespaced under /api/retirement/ so a future /api/budget/... or
@@ -101,6 +101,11 @@ interface AccountState {
   // Only meaningful when allocationPreset is "custom"; null fields mean "not entered yet."
   customReturnMean: number | null
   customReturnStdDev: number | null
+  // What the CURRENT (non-custom) preset implies, so the UI can show real numbers instead of an
+  // empty box before you ever switch to Custom -- null when there's no preset to show one for
+  // (allocationPreset is null or already "custom").
+  defaultReturnMean: number | null
+  defaultReturnStdDev: number | null
   // The account's own override, or null if using the type's rough default (see
   // defaultWithdrawalTaxRate for what that default actually is, so the UI can show it as a
   // placeholder rather than an opaque "auto").
@@ -192,6 +197,7 @@ async function buildState(
           })
         : null
     const mortgagePayoffAge = mortgagePayoff && !("error" in mortgagePayoff) && currentAge !== null ? currentAge + Math.round(mortgagePayoff.monthsRemaining / 12) : null
+    const presetReturns = account.allocationPreset != null && account.allocationPreset !== "custom" ? ALLOCATION_PRESET_RETURNS[account.allocationPreset] : null
     return {
       id: account.id,
       name: account.name,
@@ -202,9 +208,11 @@ async function buildState(
       accessAge: account.accessAge,
       allocationPreset: account.allocationPreset,
       customReturnMean: account.customReturnMean,
+      customReturnStdDev: account.customReturnStdDev,
+      defaultReturnMean: presetReturns?.mean ?? null,
+      defaultReturnStdDev: presetReturns?.stdDev ?? null,
       customWithdrawalTaxRate: account.customWithdrawalTaxRate,
       defaultWithdrawalTaxRate: WITHDRAWAL_TAX_RATES[account.taxTreatment],
-      customReturnStdDev: account.customReturnStdDev,
       monthlyContribution: account.monthlyContribution,
       monthlyContributionIsMax: override?.monthlyContribution === "max",
       ruleOf55SeparationAge: account.ruleOf55SeparationAge,
