@@ -41,9 +41,14 @@ export type TaxTreatment = "tax-deferred" | "tax-free" | "taxable" | "none"
 export const TAX_TREATMENTS: readonly TaxTreatment[] = ["tax-deferred", "tax-free", "taxable", "none"]
 
 // Mirrors Actual's own MonteCarloAllocationPreset, minus "custom" -- we always generate a concrete
-// preset, never ask for hand-typed return/volatility numbers. See fire-dashboard.ts for the exact
-// mean/stdDev each preset implies (ALLOCATION_PRESET_RETURNS, vendored from Actual's own source).
-export type MonteCarloAllocationPreset = "equity-100" | "equity-80" | "equity-60" | "equity-40" | "cash"
+// preset, or a hand-typed "custom" expected return/volatility for an account whose real
+// investments don't match one of the fixed presets. Actual's own real type additionally has
+// "custom-mix" (a stocks/bonds/cash percentage split, blended against historical return series) --
+// deliberately not supported here; "custom" (direct mean/stdDev entry, matching customReturnMean/
+// customReturnStdDev below) covers what was actually asked for with one concrete pair of numbers,
+// not a three-way asset-mix editor. See fire-dashboard.ts for the exact mean/stdDev each
+// non-custom preset implies (ALLOCATION_PRESET_RETURNS, vendored from Actual's own source).
+export type MonteCarloAllocationPreset = "equity-100" | "equity-80" | "equity-60" | "equity-40" | "cash" | "custom"
 
 export const MONTE_CARLO_ALLOCATION_PRESETS: readonly MonteCarloAllocationPreset[] = [
   "equity-100",
@@ -51,6 +56,7 @@ export const MONTE_CARLO_ALLOCATION_PRESETS: readonly MonteCarloAllocationPreset
   "equity-60",
   "equity-40",
   "cash",
+  "custom",
 ]
 
 // Plain-language description of each preset's stock/bond mix, for display next to the preset name
@@ -61,6 +67,7 @@ export const MONTE_CARLO_ALLOCATION_PRESET_LABELS: Record<MonteCarloAllocationPr
   "equity-60": "60% stocks / 40% bonds",
   "equity-40": "40% stocks / 60% bonds",
   cash: "100% cash",
+  custom: "Custom return/volatility",
 }
 
 // Mirrors Actual's own MonteCarloWithdrawalStrategy/MonteCarloReturnModel (see fire-dashboard.ts's
@@ -260,6 +267,12 @@ export interface ClassifiedAccount {
   taxTreatment: TaxTreatment
   accessAge: number | null
   allocationPreset: MonteCarloAllocationPreset | null
+  // Only meaningful when allocationPreset is "custom" -- the account's own hand-entered expected
+  // return/volatility (decimal fractions, e.g. 0.07 for 7%) instead of one of the fixed presets'
+  // table values. Null otherwise, including for a "custom" account that hasn't set them yet (see
+  // buildPot's own guard for that incomplete-config case).
+  customReturnMean: number | null
+  customReturnStdDev: number | null
   source: ClassificationSource
   // A monthly contribution amount in cents, or null if none is configured. Already resolved --
   // a "max" override (see resolveMonthlyContributions) has been turned into a concrete number by
@@ -301,6 +314,9 @@ export interface FireAccountOverride {
   taxTreatment?: TaxTreatment
   accessAge?: number | null
   allocationPreset?: MonteCarloAllocationPreset | null
+  // See ClassifiedAccount's doc comment -- only meaningful when allocationPreset is "custom".
+  customReturnMean?: number | null
+  customReturnStdDev?: number | null
   // A sentinel, not a resolved amount -- see resolveMonthlyContributions. Stored as the literal
   // string so it re-resolves correctly as IRS limits change yearly and as the account owner
   // crosses the 50/60-63 age-tier boundaries, rather than going stale the moment it's set.
@@ -767,6 +783,8 @@ export function classifyAccounts(
         taxTreatment: isLegacy ? defaults.taxTreatment : (override.taxTreatment ?? defaults.taxTreatment),
         accessAge: isLegacy ? defaults.accessAge : (override.accessAge ?? defaults.accessAge),
         allocationPreset: override.allocationPreset ?? defaults.allocationPreset,
+        customReturnMean: override.customReturnMean ?? null,
+        customReturnStdDev: override.customReturnStdDev ?? null,
         monthlyContribution: resolvedContributions.get(override.match) ?? null,
         ruleOf55SeparationAge: override.ruleOf55SeparationAge ?? null,
         annualSalary: override.annualSalary ?? null,
@@ -786,6 +804,8 @@ export function classifyAccounts(
         ...identity,
         type: heuristicType,
         ...classifiedFieldsForType(heuristicType),
+        customReturnMean: null,
+        customReturnStdDev: null,
         monthlyContribution: null,
         ruleOf55SeparationAge: null,
         annualSalary: null,
@@ -803,6 +823,8 @@ export function classifyAccounts(
       ...identity,
       type: "other" as const,
       ...classifiedFieldsForType("other"),
+      customReturnMean: null,
+      customReturnStdDev: null,
       monthlyContribution: null,
       ruleOf55SeparationAge: null,
       annualSalary: null,
@@ -886,6 +908,12 @@ export function loadFireConfig(path: string): LoadedFireConfig {
         `Invalid config in ${path}: unknown allocationPreset "${override.allocationPreset}" for "${override.match}". ` +
           `Valid values: ${MONTE_CARLO_ALLOCATION_PRESETS.join(", ")}.`,
       )
+    }
+    if (override.customReturnMean != null && typeof override.customReturnMean !== "number") {
+      throw new Error(`Invalid config in ${path}: customReturnMean for "${override.match}" must be a number.`)
+    }
+    if (override.customReturnStdDev != null && (typeof override.customReturnStdDev !== "number" || override.customReturnStdDev < 0)) {
+      throw new Error(`Invalid config in ${path}: customReturnStdDev for "${override.match}" must be a non-negative number.`)
     }
     if (
       override.monthlyContribution !== undefined &&

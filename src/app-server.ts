@@ -96,6 +96,9 @@ interface AccountState {
   isPortfolio: boolean
   accessAge: number | null
   allocationPreset: MonteCarloAllocationPreset | null
+  // Only meaningful when allocationPreset is "custom"; null fields mean "not entered yet."
+  customReturnMean: number | null
+  customReturnStdDev: number | null
   monthlyContribution: number | null
   monthlyContributionIsMax: boolean
   ruleOf55SeparationAge: number | null
@@ -189,6 +192,8 @@ async function buildState(
       isPortfolio: isPortfolioCategory(account.category),
       accessAge: account.accessAge,
       allocationPreset: account.allocationPreset,
+      customReturnMean: account.customReturnMean,
+      customReturnStdDev: account.customReturnStdDev,
       monthlyContribution: account.monthlyContribution,
       monthlyContributionIsMax: override?.monthlyContribution === "max",
       ruleOf55SeparationAge: account.ruleOf55SeparationAge,
@@ -314,6 +319,26 @@ function applyAccountPatch(
       throw new Error(`Unknown allocationPreset "${JSON.stringify(patch.allocationPreset)}".`)
     }
     next.allocationPreset = patch.allocationPreset as MonteCarloAllocationPreset | null
+  }
+  if ("customReturnMean" in patch) {
+    const value = patch.customReturnMean
+    if (value === null) {
+      delete next.customReturnMean
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      next.customReturnMean = value
+    } else {
+      throw new Error("customReturnMean must be a number or null.")
+    }
+  }
+  if ("customReturnStdDev" in patch) {
+    const value = patch.customReturnStdDev
+    if (value === null) {
+      delete next.customReturnStdDev
+    } else if (typeof value === "number" && value >= 0) {
+      next.customReturnStdDev = value
+    } else {
+      throw new Error("customReturnStdDev must be a non-negative number or null.")
+    }
   }
   if ("monthlyContribution" in patch) {
     if (next.type === "inherited-ira") {

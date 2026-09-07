@@ -311,6 +311,18 @@ function renderAccounts() {
           <label>Allocation</label>
           <select data-field="allocationPreset">${allocOptions}</select>
         </div>
+        <div class="field ${typeInfo.isPortfolio && account.allocationPreset === "custom" ? "" : "hidden"}">
+          <label>Expected return</label>
+          <div class="input-affix suffix-percent">
+            <input type="number" step="0.1" data-field="customReturnMean" value="${account.customReturnMean != null ? account.customReturnMean * 100 : ""}" placeholder="e.g. 6">
+          </div>
+        </div>
+        <div class="field ${typeInfo.isPortfolio && account.allocationPreset === "custom" ? "" : "hidden"}">
+          <label>Volatility</label>
+          <div class="input-affix suffix-percent">
+            <input type="number" min="0" step="0.1" data-field="customReturnStdDev" value="${account.customReturnStdDev != null ? account.customReturnStdDev * 100 : ""}" placeholder="e.g. 12">
+          </div>
+        </div>
         <div class="field ${showContribution ? "" : "hidden"}">
           <label>Monthly contribution</label>
           <div class="contrib-row">
@@ -391,6 +403,20 @@ function renderAccounts() {
     const allocSelect = row.querySelector("select[data-field='allocationPreset']")
     if (allocSelect) {
       allocSelect.addEventListener("change", (e) => runExclusive(() => patchAccount(account.id, { allocationPreset: e.target.value })))
+    }
+    const customReturnInput = row.querySelector("input[data-field='customReturnMean']")
+    if (customReturnInput) {
+      customReturnInput.addEventListener("change", (e) => {
+        const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+        runExclusive(() => patchAccount(account.id, { customReturnMean: pct === null ? null : pct / 100 }))
+      })
+    }
+    const customVolatilityInput = row.querySelector("input[data-field='customReturnStdDev']")
+    if (customVolatilityInput) {
+      customVolatilityInput.addEventListener("change", (e) => {
+        const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+        runExclusive(() => patchAccount(account.id, { customReturnStdDev: pct === null ? null : pct / 100 }))
+      })
     }
     const contribInput = row.querySelector("input[data-field='monthlyContribution']")
     if (contribInput) {

@@ -30,6 +30,8 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     taxTreatment: "none",
     accessAge: null,
     allocationPreset: null,
+    customReturnMean: null,
+    customReturnStdDev: null,
     monthlyContribution: null,
     ruleOf55SeparationAge: null,
     annualSalary: null,
@@ -215,6 +217,21 @@ describe("buildPot", () => {
       const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", taxTreatment, allocationPreset: "equity-80" }))
       expect(pot.withdrawalTaxRate).toBe(expectedRate)
     }
+  })
+
+  it("uses the account's own customReturnMean/customReturnStdDev for a custom allocation", () => {
+    const pot = buildPot(
+      portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "custom", customReturnMean: 0.055, customReturnStdDev: 0.09 }),
+    )
+    expect(pot.allocationPreset).toBe("custom")
+    expect(pot.expectedReturnMean).toBe(0.055)
+    expect(pot.returnStdDev).toBe(0.09)
+  })
+
+  it("throws a clear error for a custom allocation with nothing entered yet", () => {
+    expect(() =>
+      buildPot(portfolioTestAccount({ id: "a1", name: "Brokerage", category: "investment-taxable", allocationPreset: "custom" })),
+    ).toThrow(/Brokerage.*custom allocation/)
   })
 })
 

@@ -46,6 +46,8 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     taxTreatment: "none",
     accessAge: null,
     allocationPreset: null,
+    customReturnMean: null,
+    customReturnStdDev: null,
     monthlyContribution: null,
     ruleOf55SeparationAge: null,
     annualSalary: null,
@@ -179,6 +181,18 @@ describe("toBridgeAccounts", () => {
     const accounts = [account({ id: "a1", category: "investment-taxable" })]
     const built = toBridgeAccounts(accounts, new Map(), new Map())
     expect(built[0]).toMatchObject({ balance: 0, annualContribution: 0, returnMean: 0 })
+  })
+
+  it("uses the account's own customReturnMean for a custom allocation", () => {
+    const accounts = [account({ id: "a1", category: "investment-taxable", allocationPreset: "custom", customReturnMean: 0.055 })]
+    const built = toBridgeAccounts(accounts, new Map(), new Map())
+    expect(built[0]).toMatchObject({ returnMean: 0.055 })
+  })
+
+  it("falls back to no growth (not a thrown error) for a custom allocation with nothing entered yet", () => {
+    const accounts = [account({ id: "a1", category: "investment-taxable", allocationPreset: "custom" })]
+    const built = toBridgeAccounts(accounts, new Map(), new Map())
+    expect(built[0]).toMatchObject({ returnMean: 0 })
   })
 })
 

@@ -225,7 +225,10 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
 
 // Function to build bridge inputs from classified accounts plus live balances and derived annual
 // contributions, keyed by account id. Non-portfolio accounts (debt/cash/other) are dropped, and an
-// account with no allocation preset contributes nothing to growth rather than silently assuming one.
+// account with no allocation preset (or a "custom" one with nothing entered yet) contributes
+// nothing to growth rather than silently assuming one or failing the whole analysis -- this is a
+// read-only Check pass, not the stricter Generate path (see buildPot/returnAssumptionsFor, which
+// throws on the same incomplete "custom" config since a dashboard genuinely can't be built without it).
 export function toBridgeAccounts(
   accounts: readonly ClassifiedAccount[],
   balances: ReadonlyMap<string, number>,
@@ -239,7 +242,12 @@ export function toBridgeAccounts(
       balance: balances.get(account.id) ?? 0,
       accessAge: effectiveAccessAge(account),
       annualContribution: annualContributions.get(account.id) ?? 0,
-      returnMean: account.allocationPreset === null ? 0 : ALLOCATION_PRESET_RETURNS[account.allocationPreset].mean,
+      returnMean:
+        account.allocationPreset === null
+          ? 0
+          : account.allocationPreset === "custom"
+            ? (account.customReturnMean ?? 0)
+            : ALLOCATION_PRESET_RETURNS[account.allocationPreset].mean,
       withdrawalTaxRate: WITHDRAWAL_TAX_RATES[account.taxTreatment],
     }))
 }

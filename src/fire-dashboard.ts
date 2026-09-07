@@ -276,15 +276,33 @@ export interface MonteCarloCardMeta {
   targetAge?: number
 }
 
-// Illustrative nominal annual return assumptions per allocation preset, vendored verbatim from
-// Actual's own ALLOCATION_PRESETS constant (monteCarloSimulation.ts) -- keep these in sync with
-// upstream if that table ever changes, since a stale copy here would misrepresent the pot's risk.
-export const ALLOCATION_PRESET_RETURNS: Record<MonteCarloAllocationPreset, { mean: number; stdDev: number }> = {
+// Illustrative nominal annual return assumptions per fixed allocation preset, vendored verbatim
+// from Actual's own ALLOCATION_PRESETS constant (monteCarloSimulation.ts) -- keep these in sync
+// with upstream if that table ever changes, since a stale copy here would misrepresent the pot's
+// risk. "custom" has no table entry -- its mean/stdDev come from the account's own
+// customReturnMean/customReturnStdDev instead (see returnAssumptionsFor).
+export const ALLOCATION_PRESET_RETURNS: Record<Exclude<MonteCarloAllocationPreset, "custom">, { mean: number; stdDev: number }> = {
   "equity-100": { mean: 0.07, stdDev: 0.15 },
   "equity-80": { mean: 0.065, stdDev: 0.12 },
   "equity-60": { mean: 0.06, stdDev: 0.1 },
   "equity-40": { mean: 0.05, stdDev: 0.075 },
   cash: { mean: 0.03, stdDev: 0.015 },
+}
+
+// Function to resolve one account's actual return/volatility assumption -- the fixed preset
+// table's entry, or (for "custom") the account's own hand-entered numbers. Throws for "custom"
+// with nothing entered yet, mirroring buildMonteCarloWidget's existing "no allocationPreset set"
+// guard for a null preset -- both are the same kind of incomplete-config error.
+export function returnAssumptionsFor(
+  account: Pick<ClassifiedAccount, "name" | "allocationPreset" | "customReturnMean" | "customReturnStdDev"> & { allocationPreset: MonteCarloAllocationPreset },
+): { mean: number; stdDev: number } {
+  if (account.allocationPreset !== "custom") {
+    return ALLOCATION_PRESET_RETURNS[account.allocationPreset]
+  }
+  if (account.customReturnMean == null || account.customReturnStdDev == null) {
+    throw new Error(`"${account.name}" is set to a custom allocation but has no return/volatility entered -- set both, or pick a preset instead.`)
+  }
+  return { mean: account.customReturnMean, stdDev: account.customReturnStdDev }
 }
 
 // Flat-model effective withdrawal tax rate per tax treatment. Deliberately rough, user-owned
@@ -317,7 +335,7 @@ export function effectiveAccessAge(account: Pick<ClassifiedAccount, "accessAge" 
 // fire-accounts.ts's ACCOUNT_TYPE_TRAITS), so a null here means an incomplete override; callers should
 // catch that before reaching this function (see buildMonteCarloWidget).
 export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteCarloAllocationPreset }): MonteCarloPotMeta {
-  const { mean, stdDev } = ALLOCATION_PRESET_RETURNS[account.allocationPreset]
+  const { mean, stdDev } = returnAssumptionsFor(account)
   return {
     id: account.id,
     name: account.name,
@@ -535,9 +553,7 @@ export function buildMonteCarloWidget(
   const eligibleAccounts = portfolioAccounts(accounts)
   const missingPreset = eligibleAccounts.find((account) => account.allocationPreset === null)
   if (missingPreset) {
-    throw new Error(
-      `"${missingPreset.name}" has no allocationPreset set -- run ./actual configure again to set one.`,
-    )
+    throw new Error(`"${missingPreset.name}" has no allocationPreset set -- pick one on the Configure tab first.`)
   }
 
   const pots = eligibleAccounts.map((account) => buildPot(account as ClassifiedAccount & { allocationPreset: MonteCarloAllocationPreset }))

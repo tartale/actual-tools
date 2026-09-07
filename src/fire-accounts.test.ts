@@ -420,6 +420,25 @@ describe("loadFireConfig", () => {
     expect(() => loadFireConfig("/fake/path")).toThrow('unknown allocationPreset "bogus"')
   })
 
+  it("accepts a custom allocation with a real number customReturnMean/customReturnStdDev", () => {
+    const goodConfig = { version: 1, accounts: [{ match: "x", type: "brokerage", allocationPreset: "custom", customReturnMean: 0.055, customReturnStdDev: 0.09 }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.accounts[0]).toMatchObject({ customReturnMean: 0.055, customReturnStdDev: 0.09 })
+  })
+
+  it("throws on a non-numeric customReturnMean", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", type: "brokerage", allocationPreset: "custom", customReturnMean: "high" }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("customReturnMean")
+  })
+
+  it("throws on a negative customReturnStdDev", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", type: "brokerage", allocationPreset: "custom", customReturnStdDev: -0.05 }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("customReturnStdDev")
+  })
+
   it("accepts a null allocationPreset", () => {
     const validConfig = fireConfig([{ match: "x", type: "debt", allocationPreset: null }])
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
@@ -486,6 +505,8 @@ describe("loadClassifiedAccounts", () => {
         taxTreatment: "tax-deferred",
         accessAge: 59,
         allocationPreset: "equity-80",
+        customReturnMean: null,
+        customReturnStdDev: null,
         monthlyContribution: null,
         ruleOf55SeparationAge: null,
         annualSalary: null,
@@ -722,6 +743,8 @@ describe("portfolioAccounts", () => {
       taxTreatment: "none",
       accessAge: null,
       allocationPreset: null,
+      customReturnMean: null,
+      customReturnStdDev: null,
       monthlyContribution: null,
       ruleOf55SeparationAge: null,
       annualSalary: null,

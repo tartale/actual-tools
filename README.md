@@ -261,7 +261,13 @@ drives everything else about the account, and which fields even show up:
   Roth IRA share another) — recomputed from your current age and
   `irs-limits.json` on every read, so it never goes stale as limits update
   each tax year or as you cross the 50 and 60–63 catch-up tiers. At most
-  one account per limit group can be **Max** at a time.
+  one account per limit group can be **Max** at a time. Allocation also has
+  a **Custom** option — for an account whose real holdings don't match one
+  of the fixed presets, enter your own expected return and volatility
+  directly instead of picking equity-100/80/60/40/cash. Actual's own
+  "custom-mix" (a stocks/bonds/cash percentage split blended against
+  historical return series) isn't supported — Custom here is a plain,
+  hand-typed mean/stdDev pair, not a three-way asset-mix editor.
 - **IRS contribution limit(s)** — shown inline once the type is known, with
   every age tier as its own line, e.g.:
   ```
