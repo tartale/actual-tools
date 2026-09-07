@@ -558,6 +558,7 @@ describe("loadClassifiedAccounts", () => {
         mortgageBalanceAsOf: null,
         rothBasis: null,
         customWithdrawalTaxRate: null,
+        withdrawalOrder: null,
         source: "heuristic",
       },
     ])
@@ -798,6 +799,7 @@ describe("portfolioAccounts", () => {
       mortgageBalanceAsOf: null,
       rothBasis: null,
       customWithdrawalTaxRate: null,
+      withdrawalOrder: null,
       source: "heuristic",
       ...overrides,
     }

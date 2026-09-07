@@ -207,9 +207,14 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .saved-flag.show { opacity: 1; }
 .error-flag { font-size: 10.5px; color: var(--fail); margin-top: 5px; }
 
+.reorder-hint { padding: 0 16px 10px; }
 .accounts { display: flex; flex-direction: column; }
 .account-row { border-bottom: 1px solid var(--line-soft); padding: 14px 16px; display: grid; grid-template-columns: 260px 1fr; gap: 24px; align-items: start; }
 .account-row:last-child { border-bottom: none; }
+.account-row.reorderable.dragging { opacity: 0.4; }
+.acct-id { display: flex; gap: 8px; align-items: flex-start; }
+.drag-handle { color: var(--ink-faint); font-size: 15px; line-height: 1.4; cursor: grab; user-select: none; flex: none; }
+.reorderable .drag-handle:active { cursor: grabbing; }
 .acct-id .name { font-weight: 500; font-size: 13px; color: var(--ink-strong); }
 .acct-id .balance { color: var(--ink-soft); font-size: 12px; margin-top: 2px; }
 .acct-id .cat-note { font-size: 11px; color: var(--ink-faint); margin-top: 6px; }

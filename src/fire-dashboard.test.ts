@@ -45,6 +45,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     mortgageBalanceAsOf: null,
     rothBasis: null,
     customWithdrawalTaxRate: null,
+    withdrawalOrder: null,
     source: "heuristic",
     ...overrides,
   }
@@ -186,27 +187,36 @@ function portfolioTestAccount(
 
 describe("buildPot", () => {
   it("links the pot to the account's live balance", () => {
-    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" }))
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" }), 65)
     expect(pot.accountId).toBe("a1")
   })
 
   it("sets expectedReturnMean/returnStdDev explicitly from the preset, not just the preset label", () => {
-    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" }))
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" }), 65)
     expect(pot.allocationPreset).toBe("equity-80")
     expect(pot.expectedReturnMean).toBe(ALLOCATION_PRESET_RETURNS["equity-80"].mean)
     expect(pot.returnStdDev).toBe(ALLOCATION_PRESET_RETURNS["equity-80"].stdDev)
   })
 
   it("carries the account's access age through unchanged", () => {
-    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "retirement-tax-deferred", accessAge: 59, allocationPreset: "equity-80" }))
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "retirement-tax-deferred", accessAge: 59, allocationPreset: "equity-80" }), 65)
     expect(pot.accessAge).toBe(59)
   })
 
   it("applies a qualifying Rule of 55 separation age to lower the pot's access age", () => {
     const pot = buildPot(
       portfolioTestAccount({ id: "a1", category: "retirement-tax-deferred", accessAge: 59, ruleOf55SeparationAge: 55, allocationPreset: "equity-80" }),
+      55,
     )
     expect(pot.accessAge).toBe(55)
+  })
+
+  it("does not apply a separation age that falls after this scenario's own retirement age", () => {
+    const pot = buildPot(
+      portfolioTestAccount({ id: "a1", category: "retirement-tax-deferred", accessAge: 59, ruleOf55SeparationAge: 55, allocationPreset: "equity-80" }),
+      52,
+    )
+    expect(pot.accessAge).toBe(59)
   })
 
   it("derives the withdrawal tax rate from tax treatment", () => {
@@ -217,7 +227,7 @@ describe("buildPot", () => {
       ["none", 0],
     ]
     for (const [taxTreatment, expectedRate] of cases) {
-      const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", taxTreatment, allocationPreset: "equity-80" }))
+      const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", taxTreatment, allocationPreset: "equity-80" }), 65)
       expect(pot.withdrawalTaxRate).toBe(expectedRate)
     }
   })
@@ -225,6 +235,7 @@ describe("buildPot", () => {
   it("uses the account's own customReturnMean/customReturnStdDev, overriding its preset's own defaults", () => {
     const pot = buildPot(
       portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-100", customReturnMean: 0.055, customReturnStdDev: 0.09 }),
+      65,
     )
     expect(pot.allocationPreset).toBe("equity-100")
     expect(pot.expectedReturnMean).toBe(0.055)
@@ -232,13 +243,13 @@ describe("buildPot", () => {
   })
 
   it("overrides only the field that's actually set, keeping the preset's own default for the other", () => {
-    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-100", customReturnMean: 0.055 }))
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", allocationPreset: "equity-100", customReturnMean: 0.055 }), 65)
     expect(pot.expectedReturnMean).toBe(0.055)
     expect(pot.returnStdDev).toBe(ALLOCATION_PRESET_RETURNS["equity-100"].stdDev)
   })
 
   it("uses the account's own customWithdrawalTaxRate over the type-wide default", () => {
-    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", taxTreatment: "tax-deferred", allocationPreset: "equity-80", customWithdrawalTaxRate: 0.3 }))
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", taxTreatment: "tax-deferred", allocationPreset: "equity-80", customWithdrawalTaxRate: 0.3 }), 65)
     expect(pot.withdrawalTaxRate).toBe(0.3)
   })
 })
@@ -256,23 +267,33 @@ describe("withdrawalTaxRateFor", () => {
 
 describe("effectiveAccessAge", () => {
   it("returns the plain accessAge when there's no separation age", () => {
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null })).toBe(59)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null }, 65)).toBe(59)
   })
 
-  it("overrides to the separation age when it qualifies (55+) and is earlier", () => {
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55 })).toBe(55)
+  it("overrides to the separation age when it qualifies (55+), is earlier, and is at or before this scenario's retirement age", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55 }, 55)).toBe(55)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55 }, 60)).toBe(55)
   })
 
   it("has no effect when the separation age is below 55", () => {
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 50 })).toBe(59)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 50 }, 65)).toBe(59)
   })
 
   it("takes the earlier of the two when the separation age is above the existing accessAge", () => {
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 62 })).toBe(59)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 62 }, 65)).toBe(59)
   })
 
   it("uses the separation age directly when accessAge is null", () => {
-    expect(effectiveAccessAge({ accessAge: null, ruleOf55SeparationAge: 56 })).toBe(56)
+    expect(effectiveAccessAge({ accessAge: null, ruleOf55SeparationAge: 56 }, 65)).toBe(56)
+  })
+
+  it("does not apply the boost when this scenario retires before the account's own separation age", () => {
+    // Retiring at 52 while still asserting employment (and thus separation) at this employer at 55
+    // is a contradiction -- this app models "retired" as "no longer working anywhere" -- so the
+    // normal accessAge stands for this scenario; a later scenario (e.g. retiring at 55 or 58) still
+    // gets the boost, since the two ages don't contradict there.
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55 }, 52)).toBe(59)
+    expect(effectiveAccessAge({ accessAge: null, ruleOf55SeparationAge: 56 }, 54)).toBe(null)
   })
 })
 
@@ -455,6 +476,21 @@ describe("buildMonteCarloWidget", () => {
   it("throws a clear error when a portfolio account has no allocationPreset set", () => {
     const incomplete = account({ id: "a3", category: "hsa", allocationPreset: null })
     expect(() => buildMonteCarloWidget(0, 6, [incomplete], 45, 45, 90, 500000, MONTE_CARLO_ASSUMPTIONS)).toThrow(/allocationPreset/)
+  })
+
+  it("orders pots by withdrawalOrder, not by input array order -- the order 'sequential' drains in", () => {
+    const first = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80", withdrawalOrder: 1 })
+    const second = account({ id: "a2", category: "hsa", allocationPreset: "equity-60", withdrawalOrder: 0 })
+    const widget = buildMonteCarloWidget(0, 6, [first, second], 45, 45, 90, 500000, MONTE_CARLO_ASSUMPTIONS)
+    expect(widget.meta?.pots?.map((pot) => pot.accountId)).toEqual(["a2", "a1"])
+  })
+
+  it("puts accounts with no explicit withdrawalOrder after every explicitly-ordered one, keeping their own relative order", () => {
+    const unordered1 = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" })
+    const ordered = account({ id: "a2", category: "hsa", allocationPreset: "equity-60", withdrawalOrder: 0 })
+    const unordered2 = account({ id: "a3", category: "investment-taxable", allocationPreset: "equity-40" })
+    const widget = buildMonteCarloWidget(0, 6, [unordered1, ordered, unordered2], 45, 45, 90, 500000, MONTE_CARLO_ASSUMPTIONS)
+    expect(widget.meta?.pots?.map((pot) => pot.accountId)).toEqual(["a2", "a1", "a3"])
   })
 })
 

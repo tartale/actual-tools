@@ -330,8 +330,16 @@ export function withdrawalTaxRateFor(account: Pick<ClassifiedAccount, "taxTreatm
 // separation age below 55 doesn't qualify at all, and the normal accessAge (59, or null) stands.
 // account.ruleOf55SeparationAge itself asserts eligibility (a real, currently-held employer plan,
 // never an IRA) -- see fire-accounts.ts's ClassifiedAccount for why there's no separate flag.
-export function effectiveAccessAge(account: Pick<ClassifiedAccount, "accessAge" | "ruleOf55SeparationAge">): number | null {
-  if (account.ruleOf55SeparationAge != null && account.ruleOf55SeparationAge >= 55) {
+//
+// retirementAge is this scenario's own retirement age (a plan can compare several at once -- see
+// buildMonteCarloWidgets), and matters because the boost only makes sense if separation happens at
+// or before it: this app's model treats "retired" as "no longer working anywhere," so a scenario
+// that retires at 52 can't also assume you're still employed at this account's employer until 55 --
+// that combination is contradictory, not just a later date. When separationAge is later than this
+// scenario's retirementAge, the boost is skipped and the normal accessAge stands for THIS scenario
+// only; a later retirementAge scenario where separationAge <= retirementAge still gets the boost.
+export function effectiveAccessAge(account: Pick<ClassifiedAccount, "accessAge" | "ruleOf55SeparationAge">, retirementAge: number): number | null {
+  if (account.ruleOf55SeparationAge != null && account.ruleOf55SeparationAge >= 55 && account.ruleOf55SeparationAge <= retirementAge) {
     return account.accessAge == null ? account.ruleOf55SeparationAge : Math.min(account.accessAge, account.ruleOf55SeparationAge)
   }
   return account.accessAge
@@ -340,8 +348,9 @@ export function effectiveAccessAge(account: Pick<ClassifiedAccount, "accessAge" 
 // Function to build one Monte Carlo pot from a portfolio account. Requires a non-null
 // allocationPreset -- every portfolio-category account gets one by default (see
 // fire-accounts.ts's ACCOUNT_TYPE_TRAITS), so a null here means an incomplete override; callers should
-// catch that before reaching this function (see buildMonteCarloWidget).
-export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteCarloAllocationPreset }): MonteCarloPotMeta {
+// catch that before reaching this function (see buildMonteCarloWidget). retirementAge is this
+// widget's own scenario -- see effectiveAccessAge for why the Rule of 55 boost needs it.
+export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteCarloAllocationPreset }, retirementAge: number): MonteCarloPotMeta {
   const { mean, stdDev } = returnAssumptionsFor(account)
   return {
     id: account.id,
@@ -350,7 +359,7 @@ export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteC
     allocationPreset: account.allocationPreset,
     expectedReturnMean: mean,
     returnStdDev: stdDev,
-    accessAge: effectiveAccessAge(account),
+    accessAge: effectiveAccessAge(account, retirementAge),
     withdrawalTaxRate: withdrawalTaxRateFor(account),
   }
 }
@@ -565,7 +574,18 @@ export function buildMonteCarloWidget(
     throw new Error(`"${missingPreset.name}" has no allocationPreset set -- pick one on the Configure tab first.`)
   }
 
-  const pots = eligibleAccounts.map((account) => buildPot(account as ClassifiedAccount & { allocationPreset: MonteCarloAllocationPreset }))
+  // Actual's own simulation engine drains pots strictly in the order the pots array lists them
+  // (used only by the "sequential" withdrawal strategy; harmless to apply regardless of which
+  // strategy is chosen, since every other strategy ignores array order entirely) -- see
+  // ClassifiedAccount's withdrawalOrder doc comment. Accounts with no explicit order keep their
+  // relative natural order and sort after every explicitly-ordered account.
+  const orderedAccounts = [...eligibleAccounts].sort((a, b) => {
+    if (a.withdrawalOrder == null && b.withdrawalOrder == null) return 0
+    if (a.withdrawalOrder == null) return 1
+    if (b.withdrawalOrder == null) return -1
+    return a.withdrawalOrder - b.withdrawalOrder
+  })
+  const pots = orderedAccounts.map((account) => buildPot(account as ClassifiedAccount & { allocationPreset: MonteCarloAllocationPreset }, retirementAge))
 
   return {
     type: "monte-carlo-card",

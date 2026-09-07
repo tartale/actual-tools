@@ -133,6 +133,10 @@ interface AccountState {
   mortgagePayoffAge: number | null
   // roth-ira only; null means "not entered." See ClassifiedAccount's doc comment.
   rothBasis: number | null
+  // Position in the "drain pots in order" withdrawal strategy; null means unset. See
+  // ClassifiedAccount's doc comment. The client only offers drag-to-reorder while the plan's
+  // withdrawal strategy is "sequential" -- reordering has no effect on any other strategy.
+  withdrawalOrder: number | null
 }
 
 // A balance never changes as a side effect of a config edit -- only Actual's own ledger changes
@@ -228,7 +232,18 @@ async function buildState(
       mortgagePayoff,
       mortgagePayoffAge,
       rothBasis: account.rothBasis,
+      withdrawalOrder: account.withdrawalOrder,
     }
+  })
+  // Sorted the same way buildMonteCarloWidget orders its pots (withdrawalOrder ascending, unset
+  // accounts keeping their natural order and sorting last) -- so the list the user drags to reorder
+  // already reflects the order that actually matters, whether or not "sequential" is the current
+  // withdrawal strategy.
+  accounts.sort((a, b) => {
+    if (a.withdrawalOrder == null && b.withdrawalOrder == null) return 0
+    if (a.withdrawalOrder == null) return 1
+    if (b.withdrawalOrder == null) return -1
+    return a.withdrawalOrder - b.withdrawalOrder
   })
 
   const accountTypes = Object.fromEntries(
@@ -443,6 +458,16 @@ function applyAccountPatch(
     }
     next.hsaCoverage = patch.hsaCoverage
   }
+  if ("withdrawalOrder" in patch) {
+    const value = patch.withdrawalOrder
+    if (value === null) {
+      next.withdrawalOrder = null
+    } else if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+      next.withdrawalOrder = value
+    } else {
+      throw new Error("withdrawalOrder must be a non-negative integer or null.")
+    }
+  }
 
   const accounts = [...fireConfig.accounts]
   if (index === -1) {
@@ -450,6 +475,30 @@ function applyAccountPatch(
   } else {
     accounts[index] = next
   }
+  writeFireConfig(configPath, { ...fireConfig, accounts })
+}
+
+// Function to persist a full drag-and-drop reorder in one write: every id in orderedIds gets
+// withdrawalOrder = its position (0, 1, 2, ...), upserting an override for any account that didn't
+// have one yet. Reusing applyAccountPatch per-id would work too, but would mean N separate reads/
+// writes of config.json for one drop -- a single combined write is both simpler and avoids any
+// chance of a torn intermediate order if a request landed mid-drag.
+function applyAccountOrder(fireConfig: FireConfig, configPath: string, orderedIds: readonly string[], openAccounts: readonly { id: string; name: string }[]): void {
+  const accounts = [...fireConfig.accounts]
+  orderedIds.forEach((accountId, position) => {
+    const openAccount = openAccounts.find((candidate) => candidate.id === accountId)
+    if (!openAccount) {
+      return
+    }
+    const index = overrideIndexFor(accounts, openAccount)
+    const existing: FireAccountOverride = index === -1 ? { match: openAccount.id, type: "other" } : (accounts[index] as FireAccountOverride)
+    const next: FireAccountOverride = { ...existing, withdrawalOrder: position }
+    if (index === -1) {
+      accounts.push(next)
+    } else {
+      accounts[index] = next
+    }
+  })
   writeFireConfig(configPath, { ...fireConfig, accounts })
 }
 
@@ -576,6 +625,21 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         return
       }
 
+      if (req.method === "PATCH" && path === "/api/retirement/accounts/order") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        if (!Array.isArray(body.orderedIds) || body.orderedIds.some((id) => typeof id !== "string")) {
+          sendJson(res, 400, { error: "orderedIds must be an array of account id strings." })
+          return
+        }
+        const { config: fireConfig } = loadFireConfig(configPath)
+        const rawAccounts = await fetchAllOpenAccounts(actualConfig)
+        applyAccountOrder(fireConfig, configPath, body.orderedIds as string[], rawAccounts)
+        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))
+        return
+      }
+
+      // NOTE: matched only after the more specific /accounts/order route above -- "order" would
+      // otherwise be captured here as an account id.
       const accountMatch = /^\/api\/retirement\/accounts\/([^/]+)$/.exec(path)
       if (req.method === "PATCH" && accountMatch) {
         const accountId = decodeURIComponent(accountMatch[1] as string)

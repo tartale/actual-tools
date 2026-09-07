@@ -9,6 +9,10 @@ let STATE = null
 // what ends up as "max" moments later. Ignoring a click while one chain is already running is
 // simpler and safer than trying to cancel/merge overlapping requests.
 let requestInFlight = false
+// The account row currently being dragged (see renderAccounts' drag handle wiring), tracked at
+// module scope since the list container's own dragover listener is wired once (below), not
+// re-wired on every render the way each row's dragstart/dragend listeners are.
+let draggingAccountRow = null
 
 function setBusy(busy) {
   requestInFlight = busy
@@ -109,6 +113,16 @@ async function patchPlan(partial, savedFlagId) {
 async function patchAccount(id, partial) {
   try {
     STATE = await api(`/api/retirement/accounts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(partial) })
+    clearError()
+    render()
+  } catch (error) {
+    showError(error.message)
+  }
+}
+
+async function reorderAccounts(orderedIds) {
+  try {
+    STATE = await api("/api/retirement/accounts/order", { method: "PATCH", body: JSON.stringify({ orderedIds }) })
     clearError()
     render()
   } catch (error) {
@@ -314,10 +328,18 @@ function renderAccounts() {
   list.innerHTML = ""
   const typeKeys = Object.keys(STATE.accountTypes)
 
+  // Pot drain order (see fire-dashboard.ts's buildMonteCarloWidget) only matters for "sequential"
+  // -- every other withdrawal strategy ignores it, so reordering is only offered while that's the
+  // plan's chosen strategy, rather than a control that's live but silently does nothing.
+  const reorderEnabled = STATE.dashboard.monteCarloWithdrawalStrategy === "sequential"
+  document.getElementById("reorderHint").hidden = !reorderEnabled
+
   STATE.accounts.forEach((account) => {
     const typeInfo = STATE.accountTypes[account.type]
     const row = document.createElement("div")
-    row.className = "account-row"
+    row.className = `account-row${reorderEnabled ? " reorderable" : ""}`
+    row.dataset.accountId = account.id
+    row.draggable = reorderEnabled
 
     const typeOptions = typeKeys
       .map((key) => `<option value="${key}" ${key === account.type ? "selected" : ""}>${STATE.accountTypes[key].label}</option>`)
@@ -359,9 +381,12 @@ function renderAccounts() {
 
     row.innerHTML = `
       <div class="acct-id">
-        <div class="name">${escapeHtml(account.name)}</div>
-        <div class="balance">${moneySpan(account.balance)}</div>
-        <div class="cat-note">${accessNote}${ruleOf55Note}</div>
+        ${reorderEnabled ? `<div class="drag-handle" title="Drag to change withdrawal order">⠿</div>` : ""}
+        <div class="acct-id-text">
+          <div class="name">${escapeHtml(account.name)}</div>
+          <div class="balance">${moneySpan(account.balance)}</div>
+          <div class="cat-note">${accessNote}${ruleOf55Note}</div>
+        </div>
       </div>
       <div class="acct-fields">
         <div class="field full">
@@ -598,8 +623,36 @@ function renderAccounts() {
       })
     }
 
+    if (reorderEnabled) {
+      row.addEventListener("dragstart", () => {
+        draggingAccountRow = row
+        row.classList.add("dragging")
+      })
+      row.addEventListener("dragend", () => {
+        row.classList.remove("dragging")
+        draggingAccountRow = null
+        const orderedIds = [...list.querySelectorAll(".account-row")].map((r) => r.dataset.accountId)
+        runExclusive(() => reorderAccounts(orderedIds))
+      })
+    }
+
     list.appendChild(row)
   })
+}
+
+// Function to find which row a dragged row should land BEFORE, based on vertical mouse position --
+// the standard vanilla-JS drag-reorder technique (compare against each row's own vertical midpoint
+// rather than tracking index math directly). Returns null to mean "at the end."
+function dragAfterElement(list, y) {
+  const rows = [...list.querySelectorAll(".account-row:not(.dragging)")]
+  return rows.reduce(
+    (closest, row) => {
+      const box = row.getBoundingClientRect()
+      const offset = y - box.top - box.height / 2
+      return offset < 0 && offset > closest.offset ? { offset, element: row } : closest
+    },
+    { offset: Number.NEGATIVE_INFINITY, element: null },
+  ).element
 }
 
 function escapeHtml(text) {
@@ -741,6 +794,20 @@ pensionAmountInput.addEventListener("change", (e) => {
 })
 document.getElementById("ssClaimAge").addEventListener("change", (e) => {
   runExclusive(() => patchPlan({ socialSecurityClaimingAge: e.target.value === "" ? null : parseInt(e.target.value, 10) }, "savedIncome"))
+})
+
+// Wired once, not per-render, since the container element itself is never recreated -- only its
+// children are (renderAccounts clears/rebuilds accountsList.innerHTML on every render).
+document.getElementById("accountsList").addEventListener("dragover", (e) => {
+  if (!draggingAccountRow) return
+  e.preventDefault()
+  const list = e.currentTarget
+  const afterElement = dragAfterElement(list, e.clientY)
+  if (afterElement == null) {
+    list.appendChild(draggingAccountRow)
+  } else if (afterElement !== draggingAccountRow) {
+    list.insertBefore(draggingAccountRow, afterElement)
+  }
 })
 
 document.getElementById("mcWithdrawalStrategy").addEventListener("change", (e) => {

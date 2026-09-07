@@ -297,13 +297,20 @@ drives everything else about the account, and which fields even show up:
   allocation-adjacent limit line appears for that type.
 - **Rule of 55** (IRC §72(t)(2)(A)(v)) — shown only for the two
   401(k)-family types, never for an IRA, since the exception can never
-  apply to one. A checkbox ("Active account with this employer") replaces
+  apply to one. A checkbox ("Account is active") replaces
   a bare "0 for not applicable" number field: checking it reveals the
   separation-age input (defaulting to 55, the exception's own floor);
   unchecking it clears the age entirely, rather than leaving a stray 0
   meaning the same thing as "never asked." When set, the account's
-  effective access age in the Monte Carlo widget drops to that age (or
-  stays at the normal one if that's earlier).
+  effective access age drops to that age (or stays at the normal one if
+  that's earlier) — but only in a retirement-age scenario where the
+  separation age is at or before the age you're retiring at in that
+  scenario. Retiring at 52 while this account's separation age is 55 is a
+  contradiction (this app treats "retired" as "no longer working
+  anywhere," so you can't still be employed at 55 in a scenario where
+  you've already fully retired at 52) — that scenario's own widget simply
+  keeps the account's normal access age instead; a later scenario on the
+  same plan (retiring at 55 or after) still gets the boost.
 - **Employer match** — also 401(k)-family only: annual salary, match rate,
   and the pay percentage it's capped at (e.g. 100% up to 4% of pay).
   Deliberately a flat two-number formula, not a tiered one (e.g. "100% on
@@ -317,6 +324,18 @@ drives everything else about the account, and which fields even show up:
 - **HSA coverage** — self-only or family, since the two have different IRS
   limits; the contribution-limit lines and a **Max** contribution both use
   whichever is selected.
+
+Whenever **withdrawal strategy** (Simulation settings) is set to "Drain
+pots in order," each portfolio account also gets a drag handle (⠿) on the
+left of its row — Actual's own simulation engine drains pots in exactly
+the order its `pots` array lists them, so this is the one place that
+array order matters, and the account list becomes the thing you drag to
+set it. Dropping a row persists the whole new order in one write
+(`PATCH /api/retirement/accounts/order`) so Generate always produces pots
+in the order you last arranged. The handle (and the list's drag behavior)
+only appears while "Drain pots in order" is selected — every other
+strategy (proportional, best-performer, target-mix) ignores pot order
+entirely, so there's nothing to drag for those.
 
 An **inherited/beneficiary IRA** also gets a real correctness fix: it has
 no early-withdrawal-penalty age restriction at all (IRC §72(t)(2)(A)(iv)),

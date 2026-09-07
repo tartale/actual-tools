@@ -256,6 +256,7 @@ export function toBridgeAccounts(
   accounts: readonly ClassifiedAccount[],
   balances: ReadonlyMap<string, number>,
   annualContributions: ReadonlyMap<string, number>,
+  retirementAge: number,
 ): BridgeAccount[] {
   return accounts.filter((account) => isPortfolioCategory(account.category)).flatMap((account) => {
     const balance = balances.get(account.id) ?? 0
@@ -281,7 +282,7 @@ export function toBridgeAccounts(
           id: `${account.id}-growth`,
           name: `${account.name} (growth)`,
           balance: growthPortion,
-          accessAge: effectiveAccessAge(account),
+          accessAge: effectiveAccessAge(account, retirementAge),
           annualContribution: 0,
           returnMean,
           withdrawalTaxRate,
@@ -294,7 +295,7 @@ export function toBridgeAccounts(
         id: account.id,
         name: account.name,
         balance,
-        accessAge: effectiveAccessAge(account),
+        accessAge: effectiveAccessAge(account, retirementAge),
         annualContribution: annualContributions.get(account.id) ?? 0,
         returnMean,
         withdrawalTaxRate,
@@ -307,12 +308,19 @@ export function toBridgeAccounts(
 // against what the current config would generate. A mismatch means the dashboard predates a
 // config change and hasn't been re-imported -- the drift that makes the generate/import/edit cycle
 // go wrong, and which nothing surfaces today.
+//
+// retirementAges is the full set of scenarios on the plan -- an account's Rule-of-55-adjusted
+// accessAge can legitimately differ from one retirement-age widget to the next (see
+// effectiveAccessAge), so "what's expected" is a set of ages, one per scenario, not a single value.
 export function detectPotDrift(
   metas: readonly MonteCarloCardMeta[],
   accounts: readonly ClassifiedAccount[],
+  retirementAges: readonly number[],
 ): Finding[] {
   const portfolio = accounts.filter((account) => isPortfolioCategory(account.category))
-  const expected = new Map(portfolio.map((account) => [account.id, effectiveAccessAge(account)]))
+  const expected = new Map(
+    portfolio.map((account) => [account.id, new Set(retirementAges.map((retirementAge) => effectiveAccessAge(account, retirementAge)))]),
+  )
 
   const live = new Map<string, Set<number | null>>()
   for (const meta of metas) {
@@ -337,12 +345,12 @@ export function detectPotDrift(
       })
       continue
     }
-    const want = expected.get(account.id) ?? null
-    const stale = [...seen].filter((age) => age !== want)
+    const want = expected.get(account.id) ?? new Set<number | null>([null])
+    const stale = [...seen].filter((age) => !want.has(age))
     if (stale.length > 0) {
       findings.push({
         level: "warn",
-        title: `${account.name}: dashboard has access age ${stale.map((age) => age ?? "none").join("/")}, config would generate ${want ?? "none"}.`,
+        title: `${account.name}: dashboard has access age ${stale.map((age) => age ?? "none").join("/")}, config would generate ${[...want].map((age) => age ?? "none").join("/")}.`,
         detail: ["The dashboard predates this config change; regenerate and re-import to apply it."],
       })
     }

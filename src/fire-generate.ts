@@ -328,9 +328,15 @@ export async function generateDashboard(
   const { annualSpend, basis: spendBasis } = spendResult
   const portfolioTotal = portfolioBalances.reduce((total, balance) => total + balance, 0)
 
+  // Reported against the latest configured retirement age -- effectiveAccessAge's own gate
+  // (separationAge <= retirementAge) only gets easier to satisfy as retirementAge grows, so if the
+  // boost doesn't apply there, it can't apply for any earlier scenario on this plan either. A
+  // summary line for a boost that only some scenarios benefit from is still worth surfacing; the
+  // per-scenario widgets themselves (buildMonteCarloWidget) are what actually enforce the cutoff.
+  const latestRetirementAge = Math.max(...options.retirementAges)
   const ruleOf55Boosts: RuleOf55Boost[] = []
   for (const account of accounts) {
-    const boosted = effectiveAccessAge(account)
+    const boosted = effectiveAccessAge(account, latestRetirementAge)
     if (boosted !== account.accessAge) {
       ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number })
     }
@@ -467,7 +473,7 @@ export async function checkDashboard(
           },
         ]
       : [
-          ...detectPotDrift(monteCarloMetas, accounts),
+          ...detectPotDrift(monteCarloMetas, accounts, options.retirementAges),
           ...detectCrossoverMismatch(crossoverMetas, accounts),
           ...detectMonteCarloSettingsDrift(monteCarloMetas, options.pinnedMonteCarloFields, options.monteCarloAssumptions),
           ...spendingPhaseDriftFindings,
@@ -481,10 +487,17 @@ export async function checkDashboard(
     portfolioIds.map(async (accountId): Promise<[string, number]> => [accountId, await fetchAccountBalance(actualConfig, accountId, BALANCE_SINCE_DATE)]),
   )
   const balances = new Map(balanceEntries)
-  const bridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount)
   const bridgeFindings = options.retirementAges.map((retirementAge) =>
     bridgeFinding(
-      simulateBridge(bridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams),
+      simulateBridge(
+        toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge),
+        options.currentAge,
+        retirementAge,
+        options.planToAge,
+        annualSpend,
+        inflationMean,
+        incomeStreams,
+      ),
       options.planToAge,
     ),
   )

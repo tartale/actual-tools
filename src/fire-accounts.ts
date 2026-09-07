@@ -320,6 +320,15 @@ export interface ClassifiedAccount {
   // an always-accessible and a locked portion; deliberately NOT threaded into the Monte Carlo
   // dashboard widget Actual itself simulates -- see toBridgeAccounts's own doc comment for why.
   rothBasis: number | null
+  // Where this account's pot sits in the "drain pots in order" (sequential) withdrawal strategy --
+  // Actual's own simulation engine drains pots in exactly the order the pots array lists them
+  // (monteCarloSimulation.ts's drainOrder), so this is the one thing that array order encodes.
+  // Null means "no explicit order set yet"; buildMonteCarloWidget falls back to each account's
+  // natural (Actual account list) order for anything left null, so setting this for a handful of
+  // accounts and leaving the rest alone still produces a sane, stable order. Meaningless for every
+  // other withdrawal strategy (proportional/best-performer/target-mix don't read pot order at
+  // all), which is why the UI only exposes drag-to-reorder while "sequential" is selected.
+  withdrawalOrder: number | null
 }
 
 // One user-supplied override. `match` is an account id OR an exact account name, mirroring how
@@ -370,6 +379,8 @@ export interface FireAccountOverride {
   mortgageBalanceAsOf?: number
   // See ClassifiedAccount's doc comment -- only meaningful for roth-ira.
   rothBasis?: number | null
+  // See ClassifiedAccount's doc comment -- only meaningful for the "sequential" withdrawal strategy.
+  withdrawalOrder?: number | null
 }
 
 // Which of the three SSA-statement reference ages (the ones the statement itself reports a
@@ -827,6 +838,7 @@ export function classifyAccounts(
         mortgageBalanceAsOfDate: override.mortgageBalanceAsOfDate ?? null,
         mortgageBalanceAsOf: override.mortgageBalanceAsOf ?? null,
         rothBasis: override.rothBasis ?? null,
+        withdrawalOrder: override.withdrawalOrder ?? null,
         source: "override" as const,
       }
     }
@@ -850,6 +862,7 @@ export function classifyAccounts(
         mortgageBalanceAsOfDate: null,
         mortgageBalanceAsOf: null,
         rothBasis: null,
+        withdrawalOrder: null,
         source: "heuristic" as const,
       }
     }
@@ -871,6 +884,7 @@ export function classifyAccounts(
       mortgageBalanceAsOfDate: null,
       mortgageBalanceAsOf: null,
       rothBasis: null,
+      withdrawalOrder: null,
       source: "default" as const,
     }
   })
@@ -966,6 +980,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     }
     if (override.ruleOf55SeparationAge != null && (typeof override.ruleOf55SeparationAge !== "number" || override.ruleOf55SeparationAge <= 0)) {
       throw new Error(`Invalid config in ${path}: ruleOf55SeparationAge for "${override.match}" must be a positive number.`)
+    }
+    if (override.withdrawalOrder != null && (typeof override.withdrawalOrder !== "number" || !Number.isInteger(override.withdrawalOrder) || override.withdrawalOrder < 0)) {
+      throw new Error(`Invalid config in ${path}: withdrawalOrder for "${override.match}" must be a non-negative integer.`)
     }
   }
 

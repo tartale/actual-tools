@@ -61,6 +61,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     mortgageBalanceAsOf: null,
     rothBasis: null,
     customWithdrawalTaxRate: null,
+    withdrawalOrder: null,
     source: "heuristic",
     ...overrides,
   }
@@ -175,26 +176,26 @@ describe("toBridgeAccounts", () => {
       account({ id: "a1", category: "retirement-tax-deferred", accessAge: 59, ruleOf55SeparationAge: 55, taxTreatment: "tax-deferred", allocationPreset: "equity-80" }),
       account({ id: "a2", category: "debt" }),
     ]
-    const built = toBridgeAccounts(accounts, new Map([["a1", 500]]), new Map([["a1", 1200]]))
+    const built = toBridgeAccounts(accounts, new Map([["a1", 500]]), new Map([["a1", 1200]]), 60)
     expect(built).toHaveLength(1)
     expect(built[0]).toMatchObject({ id: "a1", balance: 500, accessAge: 55, annualContribution: 1200, withdrawalTaxRate: 0.22 })
   })
 
   it("treats a missing balance or contribution as zero and a missing preset as no growth", () => {
     const accounts = [account({ id: "a1", category: "investment-taxable" })]
-    const built = toBridgeAccounts(accounts, new Map(), new Map())
+    const built = toBridgeAccounts(accounts, new Map(), new Map(), 65)
     expect(built[0]).toMatchObject({ balance: 0, annualContribution: 0, returnMean: 0 })
   })
 
   it("uses the account's own customReturnMean, overriding its preset's own default", () => {
     const accounts = [account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-100", customReturnMean: 0.055 })]
-    const built = toBridgeAccounts(accounts, new Map(), new Map())
+    const built = toBridgeAccounts(accounts, new Map(), new Map(), 65)
     expect(built[0]).toMatchObject({ returnMean: 0.055 })
   })
 
   it("uses the account's own customWithdrawalTaxRate over the type-wide default", () => {
     const accounts = [account({ id: "a1", category: "retirement-tax-deferred", taxTreatment: "tax-deferred", customWithdrawalTaxRate: 0.3 })]
-    const built = toBridgeAccounts(accounts, new Map(), new Map())
+    const built = toBridgeAccounts(accounts, new Map(), new Map(), 65)
     expect(built[0]).toMatchObject({ withdrawalTaxRate: 0.3 })
   })
 
@@ -202,7 +203,7 @@ describe("toBridgeAccounts", () => {
     const accounts = [
       account({ id: "a1", name: "Roth", category: "retirement-roth", type: "roth-ira", accessAge: 59, allocationPreset: "equity-80", rothBasis: 300 }),
     ]
-    const built = toBridgeAccounts(accounts, new Map([["a1", 1000]]), new Map([["a1", 120]]))
+    const built = toBridgeAccounts(accounts, new Map([["a1", 1000]]), new Map([["a1", 120]]), 65)
     expect(built).toHaveLength(2)
     const basis = built.find((b) => b.id === "a1-basis")
     const growth = built.find((b) => b.id === "a1-growth")
@@ -212,19 +213,19 @@ describe("toBridgeAccounts", () => {
 
   it("clamps a roth-ira's basis portion to the live balance when the market has dropped below it", () => {
     const accounts = [account({ id: "a1", category: "retirement-roth", type: "roth-ira", accessAge: 59, allocationPreset: "equity-80", rothBasis: 1000 })]
-    const built = toBridgeAccounts(accounts, new Map([["a1", 400]]), new Map())
+    const built = toBridgeAccounts(accounts, new Map([["a1", 400]]), new Map(), 65)
     expect(built.find((b) => b.id === "a1-basis")).toMatchObject({ balance: 400 })
     expect(built.find((b) => b.id === "a1-growth")).toMatchObject({ balance: 0 })
   })
 
   it("keeps the growth portion's normal access age (roth-ira is never Rule of 55 eligible)", () => {
     const accounts = [account({ id: "a1", category: "retirement-roth", type: "roth-ira", accessAge: 59, allocationPreset: "equity-80", rothBasis: 100 })]
-    const built = toBridgeAccounts(accounts, new Map([["a1", 500]]), new Map())
+    const built = toBridgeAccounts(accounts, new Map([["a1", 500]]), new Map(), 65)
     expect(built.find((b) => b.id === "a1-growth")).toMatchObject({ accessAge: 59 })
   })
 
   it("does not split a roth-ira with no basis entered, or any other account type", () => {
-    const noBasis = toBridgeAccounts([account({ id: "a1", category: "retirement-roth", type: "roth-ira", allocationPreset: "equity-80" })], new Map(), new Map())
+    const noBasis = toBridgeAccounts([account({ id: "a1", category: "retirement-roth", type: "roth-ira", allocationPreset: "equity-80" })], new Map(), new Map(), 65)
     expect(noBasis).toHaveLength(1)
     expect(noBasis[0]?.id).toBe("a1")
 
@@ -232,6 +233,7 @@ describe("toBridgeAccounts", () => {
       [account({ id: "a1", category: "retirement-tax-deferred", type: "traditional-ira", allocationPreset: "equity-80", rothBasis: 300 })],
       new Map(),
       new Map(),
+      65,
     )
     expect(traditional).toHaveLength(1)
   })
@@ -245,36 +247,46 @@ describe("detectPotDrift", () => {
   }
 
   it("flags a pot whose access age predates a config change", () => {
-    const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday])
+    const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday], [60])
     expect(findings).toHaveLength(1)
     expect(findings[0]?.level).toBe("warn")
     expect(findings[0]?.title).toContain("dashboard has access age 59, config would generate 55")
   })
 
   it("stays quiet when the dashboard already matches the config", () => {
-    expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 55 }])], [workday])).toEqual([])
+    expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 55 }])], [workday], [60])).toEqual([])
   })
 
   it("flags a portfolio account with no pot at all", () => {
-    const findings = detectPotDrift([meta([])], [workday])
+    const findings = detectPotDrift([meta([])], [workday], [60])
     expect(findings[0]?.title).toContain("has no pot in the dashboard")
   })
 
   it("flags a pot whose account is no longer part of the portfolio", () => {
     const cash = account({ id: "a2", name: "Checking", category: "cash" })
-    const findings = detectPotDrift([meta([{ accountId: "a2", accessAge: null }])], [cash])
+    const findings = detectPotDrift([meta([{ accountId: "a2", accessAge: null }])], [cash], [60])
     expect(findings[0]?.level).toBe("info")
     expect(findings[0]?.title).toContain("no longer a portfolio account")
   })
 
   it("reports one finding per account even when every scenario's widget repeats the pot", () => {
     const metas = [meta([{ accountId: "a1", accessAge: 59 }]), meta([{ accountId: "a1", accessAge: 59 }]), meta([{ accountId: "a1", accessAge: 59 }])]
-    expect(detectPotDrift(metas, [workday])).toHaveLength(1)
+    expect(detectPotDrift(metas, [workday], [60])).toHaveLength(1)
   })
 
   it("ignores pots with no linked account", () => {
     const orphan: MonteCarloCardMeta = { pots: [{ id: "p1", accountId: null, accessAge: 59 }] }
-    expect(detectPotDrift([orphan], [])).toEqual([])
+    expect(detectPotDrift([orphan], [], [60])).toEqual([])
+  })
+
+  it("expects a different access age per retirement-age scenario, not one flat value", () => {
+    // Retiring at 52 doesn't qualify for the Rule of 55 boost (see effectiveAccessAge); retiring at
+    // 58 does -- so a plan comparing both ages should expect EITHER 59 (the 52 scenario's widget)
+    // or 55 (the 58 scenario's widget) on this account's pot, not just one.
+    expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday], [52, 58])).toEqual([])
+    expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 55 }])], [workday], [52, 58])).toEqual([])
+    const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 50 }])], [workday], [52, 58])
+    expect(findings[0]?.title).toContain("dashboard has access age 50, config would generate 59/55")
   })
 })
 
