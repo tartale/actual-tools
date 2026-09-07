@@ -1,27 +1,18 @@
 #!/usr/bin/env node
 
 import {
-  HISTORY_MONTHS,
-  computeBalanceBudget,
-  computeHistoricalBudget,
   confirmViaTty,
-  fetchCategoryGroups,
-  fetchPreviousBudgeted,
-  findIncomeFilterMatches,
   formatCategoryLine,
   formatError,
   formatUsd,
-  getCachedMonthCategories,
-  groupNameById,
   isAction,
   loadConfigFromEnv,
-  monthRange,
   parseDollarAmount,
-  patchCategoryBudget,
-  shouldUpdateCategory,
   validateMonthFormat,
 } from "./actual-helpers.ts"
-import type { Action, CategoryMonth } from "./actual-helpers.ts"
+import type { Action } from "./actual-helpers.ts"
+import { setBudgetValues } from "./budget-tools.ts"
+import type { BudgetLineResult } from "./budget-tools.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
 
@@ -135,81 +126,34 @@ function parseArguments(argv: readonly string[]): Options {
   return { action, startMonth, endMonth, categories, interactive, dryRun }
 }
 
-// Function to compute the budgeted amount a given action (or literal dollar amount) wants for a category
-async function computeNewBudget(
-  config: ReturnType<typeof loadConfigFromEnv>,
-  action: Action | number,
-  category: CategoryMonth,
-  month: string,
-  monthCache: Map<string, CategoryMonth[]>,
-): Promise<number> {
-  if (typeof action === "number") {
-    return action
-  }
-  if (action === "balance") {
-    return computeBalanceBudget(category)
-  }
-  if (action === "previous") {
-    return fetchPreviousBudgeted(config, category.id, month, monthCache)
-  }
-  return computeHistoricalBudget(config, category.id, month, HISTORY_MONTHS[action], monthCache)
+// Function to print one result line in this CLI's own status-first format, matching exactly what
+// the pre-refactor inline loop printed for each case.
+function printLine(line: BudgetLineResult): void {
+  const label =
+    line.status === "unchanged" ? "Update not needed" : line.status === "would-update" ? "Would update" : line.status === "skipped" ? "Update skipped" : "Update applied"
+  const displayedBudgeted = line.status === "unchanged" || line.status === "skipped" ? line.oldBudgeted : line.newBudgeted
+  console.log(formatCategoryLine(line.month, label, displayedBudgeted, line.balance, line.categoryName))
 }
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2))
   const config = loadConfigFromEnv()
 
-  let groupNames = new Map<string, string>()
-  if (options.categories.length > 0) {
-    const groups = await fetchCategoryGroups(config)
-    const incomeFilters = findIncomeFilterMatches(options.categories, groups)
-    if (incomeFilters.length > 0) {
-      throw new Error(
-        `-c matched an income category or group, which is never a valid update target: ${incomeFilters.join(", ")}`,
-      )
+  const monthResults = await setBudgetValues(config, {
+    action: options.action,
+    startMonth: options.startMonth,
+    endMonth: options.endMonth,
+    categories: options.categories,
+    dryRun: options.dryRun,
+    confirm: options.interactive
+      ? async (line) => confirmViaTty(`Confirm update for month ${line.month}, category ${line.categoryName}, new value ${formatUsd(line.newBudgeted)}? [y/N] `)
+      : undefined,
+  })
+
+  for (const { month, lines } of monthResults) {
+    for (const line of lines) {
+      printLine(line)
     }
-    groupNames = groupNameById(groups)
-  }
-
-  const monthCache = new Map<string, CategoryMonth[]>()
-
-  for (const month of monthRange(options.startMonth, options.endMonth)) {
-    const categories = await getCachedMonthCategories(config, month, monthCache)
-
-    for (const category of categories) {
-      if (!shouldUpdateCategory(category, options.categories, groupNames)) {
-        continue
-      }
-      // The balance action has nothing to zero out when the month saw no activity at all.
-      if (options.action === "balance" && category.spent === 0 && category.balance === 0) {
-        continue
-      }
-
-      const newBudgeted = await computeNewBudget(config, options.action, category, month, monthCache)
-      if (newBudgeted === category.budgeted) {
-        console.log(formatCategoryLine(month, "Update not needed", category.budgeted, category.balance, category.name))
-        continue
-      }
-
-      if (options.dryRun) {
-        console.log(formatCategoryLine(month, "Would update", newBudgeted, category.balance, category.name))
-        continue
-      }
-
-      if (options.interactive) {
-        const confirmed = await confirmViaTty(
-          `Confirm update for month ${month}, category ${category.name}, new value ${formatUsd(newBudgeted)}? [y/N] `,
-        )
-        if (!confirmed) {
-          console.log(formatCategoryLine(month, "Update skipped", category.budgeted, category.balance, category.name))
-          continue
-        }
-      }
-
-      console.log(formatCategoryLine(month, "Update applied", newBudgeted, category.balance, category.name))
-      await patchCategoryBudget(config, month, category.id, newBudgeted)
-    }
-
     console.log(`All categories updated for month ${month}.`)
   }
 

@@ -5,8 +5,9 @@ import { readFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { extname, join } from "node:path"
 
-import { ageFromBirthDate, fetchAccountBalance, fetchAllOpenAccounts, formatError } from "./actual-helpers.ts"
-import type { ActualConfig } from "./actual-helpers.ts"
+import { ACTIONS, ageFromBirthDate, fetchAccountBalance, fetchAllOpenAccounts, fetchCategoryGroups, formatError, isAction, parseDollarAmount, validateMonthFormat } from "./actual-helpers.ts"
+import type { Action, ActualConfig } from "./actual-helpers.ts"
+import { findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import {
   ACCOUNT_TYPES,
   ACCOUNT_TYPE_TRAITS,
@@ -298,6 +299,48 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body)
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(json) })
   res.end(json)
+}
+
+// Function to parse a /api/budget/... request's action field -- one of the named actions, or a
+// plain dollar-amount string (e.g. "249.99"), same two forms the CLI's own positional ACTION
+// argument accepts (see set-budget.ts's parseArguments).
+function parseBudgetAction(value: unknown): Action | number {
+  if (typeof value !== "string") {
+    throw new Error("action is required.")
+  }
+  if (isAction(value)) {
+    return value
+  }
+  const amount = parseDollarAmount(value)
+  if (amount === null) {
+    throw new Error(`Unknown action "${value}". Use one of ${ACTIONS.join(", ")}, or a plain dollar amount.`)
+  }
+  return amount
+}
+
+function parseBudgetCategories(value: unknown): string[] {
+  if (value === undefined || value === null) {
+    return []
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new Error("categories must be an array of strings.")
+  }
+  return value as string[]
+}
+
+function parseBudgetMonth(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} is required.`)
+  }
+  validateMonthFormat(value)
+  return value
+}
+
+// Defaults to dry-run/safe -- only an explicit `dryRun: false` in the request body ever writes
+// anything, matching every other risky action in this app (Generate/Check, the Rule of 55
+// checkbox, ...) never firing on an assumed default.
+function parseDryRun(value: unknown): boolean {
+  return value !== false
 }
 
 // Function to require the dashboard config a generate/check run needs, throwing the same clear
@@ -704,6 +747,54 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
 
       if (req.method === "GET" && path === "/api/retirement/live-settings") {
         sendJson(res, 200, await fetchLiveDashboardSettings(actualConfig))
+        return
+      }
+
+      if (req.method === "GET" && path === "/api/budget/context") {
+        const groups = await fetchCategoryGroups(actualConfig)
+        // Income categories/groups are never a valid set-values/anomalies target (see
+        // findIncomeFilterMatches in actual-helpers.ts) -- excluded here so the picker can't even
+        // offer one, rather than letting the request round-trip into a thrown error.
+        const categoryGroups = groups
+          .filter((group) => !group.is_income)
+          .map((group) => ({ ...group, categories: group.categories.filter((category) => !category.is_income) }))
+        sendJson(res, 200, { categoryGroups })
+        return
+      }
+
+      if (req.method === "POST" && path === "/api/budget/set-values") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const startMonth = parseBudgetMonth(body.startMonth, "startMonth")
+        const months = await setBudgetValues(actualConfig, {
+          action: parseBudgetAction(body.action),
+          startMonth,
+          endMonth: parseBudgetMonth(body.endMonth ?? startMonth, "endMonth"),
+          categories: parseBudgetCategories(body.categories),
+          dryRun: parseDryRun(body.dryRun),
+        })
+        sendJson(res, 200, { months })
+        return
+      }
+
+      if (req.method === "POST" && path === "/api/budget/anomalies") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const startMonth = parseBudgetMonth(body.startMonth, "startMonth")
+        const findings = await findAnomalies(actualConfig, {
+          categories: parseBudgetCategories(body.categories),
+          startMonth,
+          endMonth: parseBudgetMonth(body.endMonth ?? startMonth, "endMonth"),
+        })
+        sendJson(res, 200, { findings })
+        return
+      }
+
+      if (req.method === "POST" && path === "/api/budget/anomalies/tag") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const startMonth = parseBudgetMonth(body.startMonth, "startMonth")
+        const endMonth = parseBudgetMonth(body.endMonth ?? startMonth, "endMonth")
+        const findings = await findAnomalies(actualConfig, { categories: parseBudgetCategories(body.categories), startMonth, endMonth })
+        const tagResults = await tagAnomalyFindings(actualConfig, findings, startMonth, parseDryRun(body.dryRun))
+        sendJson(res, 200, { findings, tagResults })
         return
       }
 

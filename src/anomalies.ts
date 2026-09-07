@@ -1,30 +1,10 @@
 #!/usr/bin/env node
 
-import {
-  addMonths,
-  addTagToNotes,
-  fetchAllTransactionsSince,
-  fetchCategoryGroups,
-  fetchHistoricalSpent,
-  findIncomeFilterMatches,
-  formatError,
-  formatUsd,
-  getCachedMonthCategories,
-  groupNameById,
-  loadConfigFromEnv,
-  monthRange,
-  patchTransactionNotes,
-  shouldUpdateCategory,
-  validateMonthFormat,
-} from "./actual-helpers.ts"
-import type { ActualConfig, CategoryMonth, Transaction } from "./actual-helpers.ts"
-import { detectAnomaly } from "./anomaly-detect.ts"
-import type { AnomalyDirection } from "./anomaly-detect.ts"
+import { formatError, formatUsd, loadConfigFromEnv, validateMonthFormat } from "./actual-helpers.ts"
+import { findAnomalies, tagAnomalyFindings } from "./budget-tools.ts"
+import type { AnomalyFinding, TagResult } from "./budget-tools.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
-
-// How many trailing months of history back a category/month or a transaction is judged against.
-const HISTORY_MONTHS = 12
 
 interface Options {
   categories: string[]
@@ -121,118 +101,31 @@ function parseArguments(argv: readonly string[]): Options {
   return { categories, tag, dryRun, startMonth, endMonth }
 }
 
-interface Finding {
-  month: string
-  category: CategoryMonth
-  direction: AnomalyDirection
-  medianSpent: number
-}
-
 // Function to format one anomaly line, matching the status-first style of the other tools
-function formatAnomalyLine(month: string, direction: AnomalyDirection, spentCents: number, typicalCents: number, name: string): string {
-  const status = (direction === "high" ? "Anomaly (high)" : "Anomaly (low)").padEnd(18)
-  const spentCol = formatUsd(spentCents).padEnd(11)
-  const typicalCol = formatUsd(typicalCents).padEnd(11)
-  return `${status}; month: ${month}; spent = ${spentCol}; typical = ${typicalCol}; name: ${name}`
+function formatAnomalyLine(finding: AnomalyFinding): string {
+  const status = (finding.direction === "high" ? "Anomaly (high)" : "Anomaly (low)").padEnd(18)
+  const spentCol = formatUsd(finding.spentCents).padEnd(11)
+  const typicalCol = formatUsd(finding.typicalCents).padEnd(11)
+  return `${status}; month: ${finding.month}; spent = ${spentCol}; typical = ${typicalCol}; name: ${finding.category.name}`
 }
 
-// Function to check one category/month for a spending anomaly against its own trailing history
-async function checkCategoryMonth(
-  config: ActualConfig,
-  category: CategoryMonth,
-  month: string,
-  monthCache: Map<string, CategoryMonth[]>,
-): Promise<Finding | null> {
-  const historicalSpent = await fetchHistoricalSpent(config, category.id, month, HISTORY_MONTHS, monthCache)
-  // Spent is negative for outflows; the detector works in positive "amount spent" terms so
-  // "high" reads as "spent more than usual" and "low" as "spent less than usual".
-  const result = detectAnomaly(
-    -category.spent,
-    historicalSpent.map((spent) => -spent),
-  )
-  if (!result.isAnomaly || !result.direction) {
-    return null
+// Function to print one tag result line, matching the pre-refactor inline loop's own format
+function printTagResult(result: TagResult): void {
+  if (result.status === "no-transactions") {
+    console.log(`  No transactions found for ${result.categoryName} in ${result.month}; nothing to tag.`)
+    return
   }
-  return { month, category, direction: result.direction, medianSpent: -result.median }
-}
-
-// Function to pick which transaction(s) in a flagged category/month get tagged: any transaction
-// that is itself an outlier (in the same direction) against that category's own historical
-// transaction sizes, or -- if none is individually anomalous -- the single largest transaction in
-// that category/month, so a flagged month is never left with nothing to point at.
-function findTransactionsToTag(finding: Finding, allTransactions: readonly Transaction[]): Transaction[] {
-  const { month, category, direction } = finding
-  const monthTransactions = allTransactions.filter((t) => t.category === category.id && t.date.startsWith(month))
-  if (monthTransactions.length === 0) {
-    return []
-  }
-
-  const historicalAmounts = allTransactions
-    .filter((t) => t.category === category.id && t.date < `${month}-01`)
-    .map((t) => -t.amount)
-
-  const outliers = monthTransactions.filter((t) => {
-    const result = detectAnomaly(-t.amount, historicalAmounts)
-    return result.isAnomaly && result.direction === direction
-  })
-  if (outliers.length > 0) {
-    return outliers
-  }
-
-  return [monthTransactions.reduce((largest, t) => (Math.abs(t.amount) > Math.abs(largest.amount) ? t : largest))]
-}
-
-// Function to apply (or, in dry-run mode, report) the anomaly tag on the given transactions
-async function tagTransactions(
-  config: ActualConfig,
-  transactions: readonly Transaction[],
-  direction: AnomalyDirection,
-  dryRun: boolean,
-): Promise<void> {
-  const tag = `#anomaly-${direction}`
-  for (const transaction of transactions) {
-    const newNotes = addTagToNotes(transaction.notes, tag)
-    const payee = transaction.imported_payee ?? "unknown payee"
-    if (newNotes === transaction.notes) {
-      console.log(`  Already tagged   ; ${transaction.date}; ${formatUsd(transaction.amount)}; ${payee}`)
-      continue
-    }
-    if (dryRun) {
-      console.log(`  Would tag        ; ${transaction.date}; ${formatUsd(transaction.amount)}; ${payee}`)
-      continue
-    }
-    await patchTransactionNotes(config, transaction.id, newNotes)
-    console.log(`  Tagged           ; ${transaction.date}; ${formatUsd(transaction.amount)}; ${payee}`)
-  }
+  const label = result.status === "already-tagged" ? "Already tagged" : result.status === "would-tag" ? "Would tag" : "Tagged"
+  console.log(`  ${label.padEnd(17)}; ${result.date}; ${formatUsd(result.amount as number)}; ${result.payee}`)
 }
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2))
   const config = loadConfigFromEnv()
 
-  const groups = await fetchCategoryGroups(config)
-  const incomeFilters = findIncomeFilterMatches(options.categories, groups)
-  if (incomeFilters.length > 0) {
-    throw new Error(`-c matched an income category or group, which is never a valid target: ${incomeFilters.join(", ")}`)
-  }
-  const groupNames = groupNameById(groups)
-
-  const months = monthRange(options.startMonth, options.endMonth)
-  const monthCache = new Map<string, CategoryMonth[]>()
-  const findings: Finding[] = []
-
-  for (const month of months) {
-    const categories = await getCachedMonthCategories(config, month, monthCache)
-    for (const category of categories) {
-      if (!shouldUpdateCategory(category, options.categories, groupNames)) {
-        continue
-      }
-      const finding = await checkCategoryMonth(config, category, month, monthCache)
-      if (finding) {
-        findings.push(finding)
-        console.log(formatAnomalyLine(finding.month, finding.direction, finding.category.spent, finding.medianSpent, finding.category.name))
-      }
-    }
+  const findings = await findAnomalies(config, { categories: options.categories, startMonth: options.startMonth, endMonth: options.endMonth })
+  for (const finding of findings) {
+    console.log(formatAnomalyLine(finding))
   }
 
   if (findings.length === 0) {
@@ -241,17 +134,9 @@ async function main(): Promise<void> {
   }
 
   if (options.tag) {
-    const earliestMonth = months.reduce((earliest, month) => (month < earliest ? month : earliest))
-    const sinceDate = `${addMonths(earliestMonth, -HISTORY_MONTHS)}-01`
-    const allTransactions = await fetchAllTransactionsSince(config, sinceDate)
-
-    for (const finding of findings) {
-      const toTag = findTransactionsToTag(finding, allTransactions)
-      if (toTag.length === 0) {
-        console.log(`  No transactions found for ${finding.category.name} in ${finding.month}; nothing to tag.`)
-        continue
-      }
-      await tagTransactions(config, toTag, finding.direction, options.dryRun)
+    const tagResults = await tagAnomalyFindings(config, findings, options.startMonth, options.dryRun)
+    for (const result of tagResults) {
+      printTagResult(result)
     }
   }
 }

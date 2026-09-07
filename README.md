@@ -30,7 +30,9 @@ Every task in this repo runs through one dispatcher, from any directory:
 
 ## `./actual budget set-values`
 
-Sets category budgets for a month, or an inclusive range of months.
+Sets category budgets for a month, or an inclusive range of months. Also
+available as a web form with a live preview — see `./actual app`'s
+**Budget** section below.
 
 ```
 ./actual budget set-values [-c CATEGORY]... [-i] [-n] ACTION yyyy-mm [yyyy-mm]
@@ -80,7 +82,8 @@ This replaces the earlier `balance-to-zero.sh`, whose behaviour is now the
 ## `./actual budget anomalies`
 
 Flags categories whose spending in a month deviates sharply from that
-category's own trailing 12-month history.
+category's own trailing 12-month history. Also available as a web form —
+see `./actual app`'s **Budget** section below.
 
 ```
 ./actual budget anomalies -c CATEGORY [-c CATEGORY]... [-t] [-n] yyyy-mm [yyyy-mm]
@@ -147,12 +150,15 @@ pairs, especially with `-n` first, before trusting a large `--since` window.
 
 ## `./actual app`
 
-The start of a local **companion app** for a self-hosted Actual Budget
-instance — one small web page, run alongside Actual, for the things a
-terminal interview does badly: retirement/FIRE configuration and dashboard
-health today; bulk budget edits and spending analysis (currently
-`./actual budget set-values`/`anomalies`) in later phases. Replaces the old
-`./actual configure` and `./actual reports fire`.
+A local **companion app** for a self-hosted Actual Budget instance — one
+small web page, run alongside Actual, for the things a terminal interview
+or a one-shot CLI command does badly: bulk budget edits and spending
+analysis with a live preview (**Budget**, below — the web equivalent of
+`./actual budget set-values`/`anomalies`, which stay available too for
+scripting/automation), and retirement/FIRE configuration and dashboard
+health (**Retirement**, further below — replaces the old
+`./actual configure`/`./actual reports fire` entirely). **Transactions**
+is a placeholder for now.
 
 ```
 ./actual app [-f PATH] [-i PATH] [-o PATH] [-p N] [--no-open]
@@ -227,6 +233,41 @@ quiet until you reload it by hand.
 `--watch` is skipped automatically for `-h`/`--help` (it would otherwise
 keep the process alive waiting for a file change even after printing the
 help text and "exiting").
+
+### Budget
+
+The web equivalent of `./actual budget set-values`/`anomalies` — same
+underlying logic (`src/budget-tools.ts`, shared with both CLIs so there's
+one implementation, not two drifting apart), with a live preview and a
+category picker instead of `-c NAME` flags and a positional action
+argument. Both tabs share one category multi-select control per action,
+built from every non-income category group (income is never a valid
+target for either tool, exactly as the CLI has always enforced) — leave
+nothing selected to mean "every category" on **Set Values** (matching the
+CLI's own unfiltered-sweep default), but **Anomalies requires picking at
+least one**, since checking literally every category by default would be
+noisy rather than useful.
+
+**Set Values**: pick an **action** (the same five as the CLI --
+`balance`/`spent`/`spent-3`/`spent-12`/`previous` -- or **Custom amount**
+for a flat dollar figure), a month range, and categories, then
+**Preview** — always a dry run, computing what every matching category's
+new budgeted amount would be without writing anything. **Apply changes**
+(disabled until a Preview has run at least once) re-runs the identical
+request for real. Every line shows its status (unchanged/would
+update/updated) and the old → new amounts, grouped by month.
+
+**Anomalies**: pick a month range and at least one category, then **Find
+anomalies** — always read-only, using the same robust (median-based)
+outlier test as the CLI (`src/anomaly-detect.ts`) against each category's
+own trailing 12-month history. Any month flagged this way unlocks a second
+card, **Tag flagged transactions**: prepends a `#anomaly-high`/
+`#anomaly-low` tag to the note of whichever transaction(s) in that month
+are themselves responsible (or, if none stands out individually, the
+single largest transaction that month) — defaults to **dry run** (a
+checkbox, checked by default) so the first click always previews which
+transactions would be tagged before a second, unchecked click actually
+writes the notes.
 
 ### Retirement — Configure tab
 

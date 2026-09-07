@@ -15,9 +15,9 @@
         <div class="subline">Companion for Actual Budget</div>
       </div>
       <nav class="sections">
-        <div class="section-item active">Retirement</div>
-        <div class="section-item disabled">Budget <span class="soon">Planned</span></div>
+        <div class="section-item" data-section="budget">Budget</div>
         <div class="section-item disabled">Transactions <span class="soon">Planned</span></div>
+        <div class="section-item active" data-section="retirement">Retirement</div>
       </nav>
       <div class="rail-foot">
         Changes save automatically. Nothing here changes Actual itself until you choose to import a downloaded dashboard.
@@ -25,6 +25,9 @@
     </aside>
 
     <main>
+      <div class="top-error" id="topError" hidden></div>
+
+      <div class="page active" id="page-retirement">
       <div class="page-head">
         <div>
           <h1>Retirement</h1>
@@ -38,8 +41,6 @@
           </svg>
         </button>
       </div>
-
-      <div class="top-error" id="topError" hidden></div>
 
       <div class="walkthrough" id="walkthrough" hidden>
         <button type="button" class="walkthrough-dismiss" id="walkthroughDismiss" title="Dismiss" aria-label="Dismiss this walkthrough">×</button>
@@ -238,6 +239,112 @@
             <div class="empty-note">Open this tab to run the analysis.</div>
           </div>
         </div>
+      </div>
+      </div>
+
+      <div class="page" id="page-budget">
+      <div class="page-head">
+        <div>
+          <h1>Budget</h1>
+          <p>Bulk-set category budgets against a formula or a flat amount, and flag months whose spending deviates sharply from that category's own history.</p>
+        </div>
+      </div>
+
+      <div class="tabs">
+        <button type="button" class="tab active" data-budget-tab="set-values">Set Values</button>
+        <button type="button" class="tab" data-budget-tab="anomalies">Anomalies</button>
+      </div>
+
+      <!-- SET VALUES -->
+      <div class="panel active" id="budget-panel-set-values">
+        <div class="card">
+          <div class="card-head">
+            <h2>Set category budgets</h2>
+          </div>
+          <div class="card-body">
+            <div class="plan-grid">
+              <div class="field">
+                <label for="budgetAction">Action</label>
+                <select id="budgetAction">
+                  <option value="balance">Zero out this month's balance</option>
+                  <option value="spent">Match last month's actual spending</option>
+                  <option value="spent-3">Match average spending, last 3 months</option>
+                  <option value="spent-12">Match average spending, last 12 months</option>
+                  <option value="previous">Match last month's budgeted amount</option>
+                  <option value="custom">Custom amount…</option>
+                </select>
+              </div>
+              <div class="field" id="budgetCustomAmountField" hidden>
+                <label for="budgetCustomAmount">Amount</label>
+                <div class="input-affix prefix-dollar">
+                  <input type="text" inputmode="decimal" id="budgetCustomAmount" placeholder="0.00">
+                </div>
+              </div>
+              <div class="field">
+                <label for="budgetStartMonth">Start month</label>
+                <input type="month" id="budgetStartMonth">
+              </div>
+              <div class="field">
+                <label for="budgetEndMonth">End month</label>
+                <input type="month" id="budgetEndMonth">
+              </div>
+            </div>
+            <div class="field full">
+              <label for="budgetCategories">Categories</label>
+              <select id="budgetCategories" multiple size="8"></select>
+              <div class="derived">Leave nothing selected to include every category. Ctrl/Cmd-click (or shift-click) to select more than one.</div>
+            </div>
+            <div class="generate-row">
+              <button type="button" class="btn secondary" id="previewSetValuesBtn">Preview</button>
+              <button type="button" class="btn" id="applySetValuesBtn" disabled>Apply changes</button>
+            </div>
+          </div>
+          <div id="setValuesResult"></div>
+        </div>
+      </div>
+
+      <!-- ANOMALIES -->
+      <div class="panel" id="budget-panel-anomalies">
+        <div class="card">
+          <div class="card-head">
+            <h2>Find spending anomalies</h2>
+          </div>
+          <div class="card-body">
+            <div class="plan-grid">
+              <div class="field">
+                <label for="anomalyStartMonth">Start month</label>
+                <input type="month" id="anomalyStartMonth">
+              </div>
+              <div class="field">
+                <label for="anomalyEndMonth">End month</label>
+                <input type="month" id="anomalyEndMonth">
+              </div>
+            </div>
+            <div class="field full">
+              <label for="anomalyCategories">Categories</label>
+              <select id="anomalyCategories" multiple size="8"></select>
+              <div class="derived">Required — pick one or more categories or category groups to check.</div>
+            </div>
+            <div class="generate-row">
+              <button type="button" class="btn" id="findAnomaliesBtn">Find anomalies</button>
+            </div>
+          </div>
+          <div id="anomaliesResult"></div>
+        </div>
+
+        <div class="card" id="tagCard" hidden>
+          <div class="card-head">
+            <h2>Tag flagged transactions</h2>
+          </div>
+          <div class="card-body">
+            <label class="checkbox-label"><input type="checkbox" id="tagDryRun" checked> Dry run (preview only — don't write tags yet)</label>
+            <div class="generate-row">
+              <button type="button" class="btn" id="tagAnomaliesBtn">Tag flagged transactions</button>
+            </div>
+          </div>
+          <div id="tagResult"></div>
+        </div>
+      </div>
       </div>
     </main>
   </div>

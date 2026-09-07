@@ -53,6 +53,9 @@ function mockActualFetch(fixture: FetchFixture) {
     if (txMatch) return jsonResponse({ data: fixture.transactionsByAccount?.[txMatch[1] as string] ?? [] })
     if (/\/months\/[^/]+\/categories$/.test(u.pathname)) return jsonResponse({ data: fixture.monthCategories ?? [] })
     if (/\/run-query$/.test(u.pathname)) return jsonResponse({ data: fixture.dashboardRows ?? [] })
+    if (init?.method === "PATCH" && (/\/months\/[^/]+\/categories\/[^/]+$/.test(u.pathname) || /\/transactions\/[^/]+$/.test(u.pathname))) {
+      return jsonResponse({})
+    }
     throw new Error(`Unhandled fetch in test: ${u.pathname}`)
   })
 }
@@ -287,6 +290,87 @@ describe("GET /api/retirement/live-settings", () => {
     const res = await fetch(`${url}api/retirement/live-settings`)
     expect(res.status).toBe(200)
     expect(await readJson<{ crossover: unknown; monteCarlo: unknown }>(res)).toEqual({ crossover: null, monteCarlo: null })
+  })
+})
+
+describe("GET /api/budget/context", () => {
+  it("excludes income categories/groups from the picker entirely", async () => {
+    const url = await boot({
+      categoryGroups: [
+        { id: "g1", name: "Everyday", is_income: false, hidden: false, categories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] },
+        { id: "g2", name: "Income", is_income: true, hidden: false, categories: [{ id: "c2", name: "Paycheck", is_income: true, hidden: false, group_id: "g2" }] },
+      ],
+    })
+    const res = await fetch(`${url}api/budget/context`)
+    expect(res.status).toBe(200)
+    const body = await readJson<{ categoryGroups: { id: string; categories: { id: string }[] }[] }>(res)
+    expect(body.categoryGroups.map((g) => g.id)).toEqual(["g1"])
+    expect(body.categoryGroups[0]?.categories.map((c) => c.id)).toEqual(["c1"])
+  })
+})
+
+describe("POST /api/budget/set-values", () => {
+  it("previews a change without writing when dryRun isn't explicitly false", async () => {
+    const url = await boot({
+      monthCategories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: 0, balance: 0, carryover: false }],
+    })
+    const res = await fetch(`${url}api/budget/set-values`, {
+      method: "POST",
+      body: JSON.stringify({ action: "250", startMonth: "2026-01" }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<{ months: { month: string; lines: { status: string; newBudgeted: number }[] }[] }>(res)
+    expect(body.months[0]?.lines[0]).toMatchObject({ status: "would-update", newBudgeted: 25000 })
+  })
+
+  it("applies a change when dryRun is explicitly false", async () => {
+    const url = await boot({
+      monthCategories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: 0, balance: 0, carryover: false }],
+    })
+    const res = await fetch(`${url}api/budget/set-values`, {
+      method: "POST",
+      body: JSON.stringify({ action: "250", startMonth: "2026-01", dryRun: false }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<{ months: { lines: { status: string }[] }[] }>(res)
+    expect(body.months[0]?.lines[0]?.status).toBe("updated")
+  })
+
+  it("rejects an unknown action", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/budget/set-values`, { method: "POST", body: JSON.stringify({ action: "not-a-real-action", startMonth: "2026-01" }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("rejects a category filter that matches an income category", async () => {
+    const url = await boot({
+      categoryGroups: [{ id: "g1", name: "Income", is_income: true, hidden: false, categories: [] }],
+    })
+    const res = await fetch(`${url}api/budget/set-values`, {
+      method: "POST",
+      body: JSON.stringify({ action: "balance", startMonth: "2026-01", categories: ["Income"] }),
+    })
+    expect(res.status).toBe(400)
+  })
+})
+
+describe("POST /api/budget/anomalies", () => {
+  it("finds nothing when every month's spend is identical to its own history", async () => {
+    const url = await boot({
+      monthCategories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false }],
+    })
+    const res = await fetch(`${url}api/budget/anomalies`, {
+      method: "POST",
+      body: JSON.stringify({ categories: ["c1"], startMonth: "2026-01" }),
+    })
+    expect(res.status).toBe(200)
+    expect(await readJson<{ findings: unknown[] }>(res)).toEqual({ findings: [] })
+  })
+
+  it("requires at least one category", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/budget/anomalies`, { method: "POST", body: JSON.stringify({ categories: [], startMonth: "2026-01" }) })
+    expect(res.status).toBe(400)
   })
 })
 

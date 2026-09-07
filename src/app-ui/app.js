@@ -11,6 +11,14 @@ let STATE = null
 // file), so the first render could land before STATE existed and show nothing as pinned until a
 // manual refresh re-ran loadLiveSettings after STATE was already populated.
 let LIVE_SETTINGS = null
+// Category groups for the Budget section's two category pickers -- fetched once, lazily, the
+// first time the Budget nav item is opened (not on initial page load, since Retirement is still
+// the default landing section and most sessions never touch Budget at all).
+let BUDGET_CATEGORY_GROUPS = null
+// The category/month-range a "Find anomalies" run just used, so "Tag flagged transactions" can
+// re-run the exact same query server-side (see runTagAnomalies) without the client having to
+// round-trip full Finding objects (each carrying a full CategoryMonth) back to the server.
+let lastAnomalyQuery = null
 // A single in-flight guard for every mutating action -- a "Max" toggle is really two sequential
 // requests (clear a sibling, then set this one), and without a lock, an impatient second click
 // during that window could interleave a second pair of requests, so the account you clicked isn't
@@ -896,6 +904,201 @@ document.querySelectorAll(".tab").forEach((tab) => {
     if (tab.dataset.tab === "analyze") runCheck()
   })
 })
+
+// --- Section switching (the sidebar's Budget/Transactions/Retirement nav) ---
+
+document.querySelectorAll(".section-item[data-section]").forEach((item) => {
+  item.addEventListener("click", () => {
+    document.querySelectorAll(".section-item[data-section]").forEach((i) => i.classList.remove("active"))
+    document.querySelectorAll(".page").forEach((p) => p.classList.remove("active"))
+    item.classList.add("active")
+    document.getElementById("page-" + item.dataset.section).classList.add("active")
+    if (item.dataset.section === "budget") {
+      loadBudgetContext()
+    }
+  })
+})
+
+// --- Budget section ---
+
+// Budget's own Set Values/Anomalies tabs, wired separately from the Retirement tab handler above
+// (distinct data-budget-tab attribute and budget-panel-* ids, scoped to #page-budget's own .panel
+// elements) so the two pages' tab state never interferes with each other.
+document.querySelectorAll("[data-budget-tab]").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("[data-budget-tab]").forEach((t) => t.classList.remove("active"))
+    document.querySelectorAll("#page-budget .panel").forEach((p) => p.classList.remove("active"))
+    tab.classList.add("active")
+    document.getElementById("budget-panel-" + tab.dataset.budgetTab).classList.add("active")
+  })
+})
+
+function currentMonthValue() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+}
+;["budgetStartMonth", "budgetEndMonth", "anomalyStartMonth", "anomalyEndMonth"].forEach((id) => {
+  document.getElementById(id).value = currentMonthValue()
+})
+
+// Function to fetch and cache the category groups both Budget pickers share -- lazy (only once
+// Budget is actually opened) since most sessions never touch this section at all.
+async function loadBudgetContext() {
+  if (BUDGET_CATEGORY_GROUPS) {
+    return
+  }
+  try {
+    const body = await api("/api/budget/context")
+    BUDGET_CATEGORY_GROUPS = body.categoryGroups
+    renderCategoryOptions(document.getElementById("budgetCategories"))
+    renderCategoryOptions(document.getElementById("anomalyCategories"))
+  } catch (error) {
+    showError(error.message)
+  }
+}
+
+function renderCategoryOptions(select) {
+  select.innerHTML = (BUDGET_CATEGORY_GROUPS ?? [])
+    .map(
+      (group) =>
+        `<optgroup label="${escapeHtml(group.name)}">${group.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}</optgroup>`,
+    )
+    .join("")
+}
+
+function selectedValues(select) {
+  return [...select.selectedOptions].map((option) => option.value)
+}
+
+document.getElementById("budgetAction").addEventListener("change", (e) => {
+  document.getElementById("budgetCustomAmountField").hidden = e.target.value !== "custom"
+})
+
+// Function to run (preview or apply) a set-values request -- the same request either way, just
+// dryRun flipped; a fresh Preview is required before Apply becomes clickable (see the button's
+// default `disabled` in index.html), so a real write is never the very first thing a click does.
+async function runSetValues(dryRun) {
+  const startMonth = document.getElementById("budgetStartMonth").value
+  if (!startMonth) {
+    showError("Pick a start month first.")
+    return
+  }
+  const action = document.getElementById("budgetAction").value === "custom" ? document.getElementById("budgetCustomAmount").value : document.getElementById("budgetAction").value
+  const body = {
+    action,
+    startMonth,
+    endMonth: document.getElementById("budgetEndMonth").value || startMonth,
+    categories: selectedValues(document.getElementById("budgetCategories")),
+    dryRun,
+  }
+  try {
+    const res = await api("/api/budget/set-values", { method: "POST", body: JSON.stringify(body) })
+    clearError()
+    renderSetValuesResult(res.months)
+    document.getElementById("applySetValuesBtn").disabled = false
+  } catch (error) {
+    showError(error.message)
+  }
+}
+
+function renderSetValuesResult(months) {
+  const container = document.getElementById("setValuesResult")
+  const lines = months.flatMap((month) => month.lines)
+  if (lines.length === 0) {
+    container.innerHTML = `<div class="empty-note">No matching categories in this range.</div>`
+    return
+  }
+  container.innerHTML = lines
+    .map((line) => {
+      const chip = line.status === "updated" ? "ok" : line.status === "would-update" ? "warn" : "info"
+      const label = line.status === "would-update" ? "would update" : line.status
+      const amountText =
+        line.status === "unchanged" || line.status === "skipped" ? moneySpan(line.oldBudgeted) : `${moneySpan(line.oldBudgeted)} → ${moneySpan(line.newBudgeted)}`
+      return `<div class="finding"><span class="chip ${chip}">${escapeHtml(label)}</span><div><div class="title">${escapeHtml(line.month)} — ${escapeHtml(line.categoryName)}</div><div class="detail">${amountText} · balance ${moneySpan(line.balance)}</div></div></div>`
+    })
+    .join("")
+}
+
+document.getElementById("previewSetValuesBtn").addEventListener("click", () => runExclusive(() => runSetValues(true)))
+document.getElementById("applySetValuesBtn").addEventListener("click", () => runExclusive(() => runSetValues(false)))
+
+// Function to run "Find anomalies" -- always read-only, so no dryRun concept here at all; only
+// the tag step (below) writes anything.
+async function runFindAnomalies() {
+  const startMonth = document.getElementById("anomalyStartMonth").value
+  const categories = selectedValues(document.getElementById("anomalyCategories"))
+  if (!startMonth) {
+    showError("Pick a start month first.")
+    return
+  }
+  if (categories.length === 0) {
+    showError("Pick at least one category to check.")
+    return
+  }
+  const endMonth = document.getElementById("anomalyEndMonth").value || startMonth
+  try {
+    const res = await api("/api/budget/anomalies", { method: "POST", body: JSON.stringify({ categories, startMonth, endMonth }) })
+    clearError()
+    renderAnomalyFindings(res.findings)
+    lastAnomalyQuery = { categories, startMonth, endMonth }
+    document.getElementById("tagCard").hidden = res.findings.length === 0
+    document.getElementById("tagResult").innerHTML = ""
+  } catch (error) {
+    showError(error.message)
+  }
+}
+
+function renderAnomalyFindings(findings) {
+  const container = document.getElementById("anomaliesResult")
+  if (findings.length === 0) {
+    container.innerHTML = `<div class="empty-note">No anomalies found.</div>`
+    return
+  }
+  container.innerHTML = findings
+    .map((finding) => {
+      const chip = finding.direction === "high" ? "warn" : "info"
+      return `<div class="finding"><span class="chip ${chip}">${escapeHtml(finding.direction)}</span><div><div class="title">${escapeHtml(finding.month)} — ${escapeHtml(finding.category.name)}</div><div class="detail">Spent ${moneySpan(finding.spentCents)} · typical ${moneySpan(finding.typicalCents)}</div></div></div>`
+    })
+    .join("")
+}
+
+// Function to tag (or, dry-run, preview tagging) the transaction(s) behind the last "Find
+// anomalies" run -- re-runs that exact same query server-side rather than round-tripping the
+// findings themselves back up, see lastAnomalyQuery's own doc comment.
+async function runTagAnomalies() {
+  if (!lastAnomalyQuery) {
+    return
+  }
+  const dryRun = document.getElementById("tagDryRun").checked
+  try {
+    const res = await api("/api/budget/anomalies/tag", { method: "POST", body: JSON.stringify({ ...lastAnomalyQuery, dryRun }) })
+    clearError()
+    renderTagResults(res.tagResults)
+  } catch (error) {
+    showError(error.message)
+  }
+}
+
+function renderTagResults(results) {
+  const container = document.getElementById("tagResult")
+  if (results.length === 0) {
+    container.innerHTML = `<div class="empty-note">Nothing to tag.</div>`
+    return
+  }
+  container.innerHTML = results
+    .map((result) => {
+      if (result.status === "no-transactions") {
+        return `<div class="finding"><span class="chip info">none</span><div><div class="title">${escapeHtml(result.month)} — ${escapeHtml(result.categoryName)}</div><div class="detail">No transactions found to tag.</div></div></div>`
+      }
+      const chip = result.status === "tagged" ? "ok" : result.status === "would-tag" ? "warn" : "info"
+      const label = result.status === "would-tag" ? "would tag" : result.status === "already-tagged" ? "already tagged" : "tagged"
+      return `<div class="finding"><span class="chip ${chip}">${escapeHtml(label)}</span><div><div class="title">${escapeHtml(result.date)} — ${escapeHtml(result.payee)}</div><div class="detail">${moneySpan(result.amount)} · ${escapeHtml(result.categoryName)}, ${escapeHtml(result.month)}</div></div></div>`
+    })
+    .join("")
+}
+
+document.getElementById("findAnomaliesBtn").addEventListener("click", () => runExclusive(runFindAnomalies))
+document.getElementById("tagAnomaliesBtn").addEventListener("click", () => runExclusive(runTagAnomalies))
 
 // Small per-browser preferences (privacy mode, whether the getting-started walkthrough has been
 // dismissed) are persisted via a cookie, not localStorage -- this app's own port changes on every

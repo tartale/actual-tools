@@ -130,15 +130,18 @@ body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); accent-color: 
 .wordmark .tag { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent-selected); border: 1px solid var(--sidebar-hover); padding: 1px 5px; border-radius: var(--radius-sm); }
 .subline { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
 nav.sections { display: flex; flex-direction: column; gap: 1px; }
-.section-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 9px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); }
+.section-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 9px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); cursor: pointer; }
+.section-item:hover:not(.active):not(.disabled) { background: var(--sidebar-hover); }
 .section-item.active { background: var(--accent-selected-bg); color: var(--accent-selected); }
-.section-item.disabled { color: #627d98; }
+.section-item.disabled { color: #627d98; cursor: default; }
 .section-item .soon { font-size: 9px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--sidebar-hover); padding: 1px 4px; border-radius: 3px; }
 .rail-foot { margin-top: auto; font-size: 11px; color: var(--ink-faint); border-top: 1px solid var(--sidebar-hover); padding-top: 12px; }
 .rail-foot code { font-family: 'Inter', sans-serif; background: var(--sidebar-hover); padding: 1px 4px; border-radius: 3px; font-size: 10.5px; color: var(--ink); }
 
 /* --- Main --- */
 main { padding: 26px 40px 56px; max-width: 1360px; }
+.page { display: none; }
+.page.active { display: block; }
 .page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 20px; }
 h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color: var(--ink-strong); text-wrap: balance; }
 .page-head p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12.5px; max-width: 48ch; }
