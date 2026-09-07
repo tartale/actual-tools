@@ -446,10 +446,15 @@ editing in the app. Two things get checked:
 
 - **Drift** — a widget's stored access ages against what your current
   config would generate, accounts the crossover counts that the
-  simulation doesn't model (or vice versa), and any **Simulation
-  settings** field you've pinned that isn't live on every Monte Carlo
-  widget yet. Any of these usually means the dashboard predates a config
-  change and needs re-importing.
+  simulation doesn't model (or vice versa), any **Simulation settings**
+  field you've pinned that isn't live on every Monte Carlo widget yet, and
+  whether each widget's actual **spending/contribution figures** still
+  match what Generate would produce right now for that same retirement
+  age — this is what catches a narrowed crossover category selection, a
+  new pension/Social Security number, a debt nearing payoff, or a changed
+  contribution amount, none of which the checks above cover on their own.
+  Any of these usually means the dashboard predates a config change and
+  needs re-importing.
 - **Bridge** — for each retirement age, whether the accounts you can
   actually reach at that age fund every year until the locked ones open
   up. This projects forward at each allocation's mean return with no

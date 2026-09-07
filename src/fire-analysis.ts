@@ -442,3 +442,46 @@ export function detectCrossoverMismatch(
   }
   return findings
 }
+
+// Function to compare each live Monte Carlo widget's spendingPhases/contributions -- fields only
+// ever refreshed when Generate actually runs -- against what a fresh generate would produce right
+// now for the matching retirement-age scenario, matched by name (the same deterministic key
+// mergeGeneratedDashboard already uses for merging, so this needs no separate age-parsing logic).
+// This is what actually catches real data changing out from under an already-imported dashboard --
+// a narrowed crossover category selection, a new pension/Social Security figure, a debt nearing
+// payoff, or a changed account contribution -- none of which detectPotDrift (access ages) or
+// detectCrossoverMismatch (which accounts/categories are counted, not how much they add up to)
+// would ever flag. A scenario with nothing live yet is skipped here -- detectPotDrift's own "no pot
+// in the dashboard" finding already covers that case.
+export function detectSpendingPhaseDrift(
+  freshWidgets: readonly { meta: { name?: string; spendingPhases?: unknown; contributions?: unknown } | null }[],
+  liveMetas: readonly MonteCarloCardMeta[],
+): Finding[] {
+  const liveByName = new Map(liveMetas.filter((meta) => typeof meta.name === "string").map((meta) => [meta.name as string, meta]))
+  const findings: Finding[] = []
+  for (const widget of freshWidgets) {
+    const name = widget.meta?.name
+    if (typeof name !== "string") {
+      continue
+    }
+    const live = liveByName.get(name)
+    if (!live) {
+      continue
+    }
+    if (JSON.stringify(widget.meta?.spendingPhases ?? null) !== JSON.stringify(live.spendingPhases ?? null)) {
+      findings.push({
+        level: "warn",
+        title: `"${name}" spending no longer matches what Generate would produce.`,
+        detail: ["A crossover category selection, pension/Social Security figure, or debt payoff has changed since the last export. Regenerate and re-import to apply it."],
+      })
+    }
+    if (JSON.stringify(widget.meta?.contributions ?? null) !== JSON.stringify(live.contributions ?? null)) {
+      findings.push({
+        level: "warn",
+        title: `"${name}" contributions no longer match what Generate would produce.`,
+        detail: ["An account's monthly contribution has changed since the last export. Regenerate and re-import to apply it."],
+      })
+    }
+  }
+  return findings
+}

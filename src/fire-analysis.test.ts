@@ -6,6 +6,7 @@ import {
   detectCrossoverMismatch,
   detectMonteCarloSettingsDrift,
   detectPotDrift,
+  detectSpendingPhaseDrift,
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
@@ -348,6 +349,59 @@ describe("detectCrossoverMismatch", () => {
 
   it("says nothing when there is no crossover widget to compare against", () => {
     expect(detectCrossoverMismatch([], [portfolio])).toEqual([])
+  })
+})
+
+describe("detectSpendingPhaseDrift", () => {
+  function freshWidget(name: string, spendingPhases: unknown, contributions: unknown = []) {
+    return { meta: { name, spendingPhases, contributions } }
+  }
+  function liveMeta(name: string, spendingPhases: unknown, contributions: unknown = []): MonteCarloCardMeta {
+    return { name, spendingPhases, contributions } as MonteCarloCardMeta
+  }
+
+  it("stays quiet when the live widget already matches what generate would produce", () => {
+    const phases = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 100000 }]
+    const findings = detectSpendingPhaseDrift([freshWidget("Monte Carlo", phases)], [liveMeta("Monte Carlo", phases)])
+    expect(findings).toEqual([])
+  })
+
+  it("flags spending drift when the live widget's phases no longer match a fresh generate", () => {
+    const fresh = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 150000 }]
+    const stale = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 100000 }]
+    const findings = detectSpendingPhaseDrift([freshWidget("Monte Carlo", fresh)], [liveMeta("Monte Carlo", stale)])
+    expect(findings).toHaveLength(1)
+    expect(findings[0]?.title).toContain("Monte Carlo")
+    expect(findings[0]?.title).toContain("spending")
+  })
+
+  it("flags contribution drift separately from spending drift", () => {
+    const phases = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 100000 }]
+    const freshContributions = [{ id: "contribution-a1", annualAmount: 600000 }]
+    const staleContributions = [{ id: "contribution-a1", annualAmount: 500000 }]
+    const findings = detectSpendingPhaseDrift(
+      [freshWidget("Monte Carlo", phases, freshContributions)],
+      [liveMeta("Monte Carlo", phases, staleContributions)],
+    )
+    expect(findings).toHaveLength(1)
+    expect(findings[0]?.title).toContain("contributions")
+  })
+
+  it("matches widgets by name, so one stale scenario doesn't flag another", () => {
+    const phases55 = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 100000 }]
+    const phases59Fresh = [{ id: "retirement-spending", fromAge: 59, annualWithdrawal: 150000 }]
+    const phases59Stale = [{ id: "retirement-spending", fromAge: 59, annualWithdrawal: 90000 }]
+    const findings = detectSpendingPhaseDrift(
+      [freshWidget("Monte Carlo — Retire at 55", phases55), freshWidget("Monte Carlo — Retire at 59", phases59Fresh)],
+      [liveMeta("Monte Carlo — Retire at 55", phases55), liveMeta("Monte Carlo — Retire at 59", phases59Stale)],
+    )
+    expect(findings).toHaveLength(1)
+    expect(findings[0]?.title).toContain("Retire at 59")
+  })
+
+  it("skips a scenario with nothing live yet, rather than flagging it as drift", () => {
+    const findings = detectSpendingPhaseDrift([freshWidget("Monte Carlo — Retire at 62", [{ annualWithdrawal: 100000 }])], [])
+    expect(findings).toEqual([])
   })
 })
 

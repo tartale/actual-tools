@@ -28,6 +28,7 @@ import {
   detectCrossoverMismatch,
   detectMonteCarloSettingsDrift,
   detectPotDrift,
+  detectSpendingPhaseDrift,
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
@@ -438,6 +439,24 @@ export async function checkDashboard(
     spendBasis = derived.basis
   }
 
+  const incomeStreams = [...options.incomeStreams, ...debtPayoffIncomeStreams(accounts, options.currentAge)]
+
+  // Real data (a narrowed crossover category selection, a pension/Social Security figure, a debt
+  // nearing payoff, a changed contribution) can drift out from under an already-imported dashboard
+  // the instant it changes, since nothing pushes it there automatically -- comparing the live
+  // widgets against what Generate would produce for these exact same inputs RIGHT NOW is what
+  // actually catches that. Never lets an incomplete "custom" allocation (see
+  // returnAssumptionsFor's own throw) fail this whole read-only analysis -- Generate is where that
+  // needs to be a hard stop, not Check.
+  let spendingPhaseDriftFindings: Finding[] = []
+  try {
+    const freshWidgets = buildMonteCarloWidgets(0, 6, accounts, options.currentAge, options.retirementAges, options.planToAge, annualSpend, options.monteCarloAssumptions, incomeStreams)
+    spendingPhaseDriftFindings = detectSpendingPhaseDrift(freshWidgets, monteCarloMetas)
+  } catch {
+    // Leave it empty -- the other drift checks below still run, and Generate will surface the
+    // same incomplete-config error clearly if the person tries it.
+  }
+
   const driftFindings: Finding[] =
     monteCarloMetas.length === 0
       ? [
@@ -451,6 +470,7 @@ export async function checkDashboard(
           ...detectPotDrift(monteCarloMetas, accounts),
           ...detectCrossoverMismatch(crossoverMetas, accounts),
           ...detectMonteCarloSettingsDrift(monteCarloMetas, options.pinnedMonteCarloFields, options.monteCarloAssumptions),
+          ...spendingPhaseDriftFindings,
         ]
 
   // Prefer the inflation the live dashboard is actually simulating with; fall back only when
@@ -462,7 +482,6 @@ export async function checkDashboard(
   )
   const balances = new Map(balanceEntries)
   const bridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount)
-  const incomeStreams = [...options.incomeStreams, ...debtPayoffIncomeStreams(accounts, options.currentAge)]
   const bridgeFindings = options.retirementAges.map((retirementAge) =>
     bridgeFinding(
       simulateBridge(bridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams),
