@@ -1,5 +1,5 @@
 import { portfolioAccounts } from "./fire-accounts.ts"
-import type { ClassifiedAccount, DashboardConfig, MonteCarloAllocationPreset, MonteCarloReturnModel, MonteCarloWithdrawalStrategy, TaxTreatment } from "./fire-accounts.ts"
+import type { ClassifiedAccount, DashboardConfig, MonteCarloAllocationPreset, MonteCarloReturnModel, MonteCarloTaxModel, MonteCarloWithdrawalStrategy, TaxTreatment } from "./fire-accounts.ts"
 
 // Builds an Actual-native dashboard JSON (net worth, spending, and a FIRE crossover projection)
 // from classified accounts and expense categories. Pure -- no API calls, no file I/O.
@@ -211,10 +211,10 @@ export interface MonteCarloSpendingPhaseMeta {
   annualWithdrawal?: number
 }
 
-// MonteCarloWithdrawalStrategy/MonteCarloReturnModel now live in fire-accounts.ts (imported above)
-// -- DashboardConfig there needs them for the once-for-every-age-comparison settings a person can
-// pin in this app (see monteCarloSettingsOverride below), same reasoning as MonteCarloAllocationPreset.
-export type MonteCarloTaxModel = "flat" | "bands"
+// MonteCarloWithdrawalStrategy/MonteCarloReturnModel/MonteCarloTaxModel now live in
+// fire-accounts.ts (imported above) -- DashboardConfig there needs them for the
+// once-for-every-age-comparison settings a person can pin in this app (see
+// monteCarloSettingsOverride below), same reasoning as MonteCarloAllocationPreset.
 export type MonteCarloWithdrawalRuleType = "none" | "guardrails" | "ratcheting" | "floor-ceiling" | "boundaries"
 
 // Parameters for every rule type are kept side by side (all optional) so switching between rules
@@ -316,6 +316,14 @@ export const WITHDRAWAL_TAX_RATES: Record<TaxTreatment, number> = {
   none: 0,
 }
 
+// Function to resolve one account's effective withdrawal tax rate -- its own hand-entered
+// customWithdrawalTaxRate override, if set, otherwise the type-wide rough estimate above. Shared
+// by buildPot (the generated Monte Carlo widget) and fire-analysis.ts's toBridgeAccounts (the
+// Bridge check) so both read the exact same rate for a given account.
+export function withdrawalTaxRateFor(account: Pick<ClassifiedAccount, "taxTreatment" | "customWithdrawalTaxRate">): number {
+  return account.customWithdrawalTaxRate ?? WITHDRAWAL_TAX_RATES[account.taxTreatment]
+}
+
 // Function to compute a pot's effective access age, applying Rule of 55 when it's earlier than the
 // category default. IRS Code Sec. 72(t)(2)(A)(v): separating from an employer during or after the
 // calendar year you turn 55 lets you withdraw penalty-free from THAT employer's own 401(k)/403(b)
@@ -344,7 +352,7 @@ export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteC
     expectedReturnMean: mean,
     returnStdDev: stdDev,
     accessAge: effectiveAccessAge(account),
-    withdrawalTaxRate: WITHDRAWAL_TAX_RATES[account.taxTreatment],
+    withdrawalTaxRate: withdrawalTaxRateFor(account),
   }
 }
 
@@ -476,6 +484,7 @@ export const DEFAULT_MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
 const PINNABLE_MONTE_CARLO_FIELDS: ReadonlyArray<{ dashboardField: keyof DashboardConfig; metaField: keyof MonteCarloCardMeta }> = [
   { dashboardField: "monteCarloWithdrawalStrategy", metaField: "withdrawalStrategy" },
   { dashboardField: "monteCarloReturnModel", metaField: "returnModel" },
+  { dashboardField: "monteCarloTaxModel", metaField: "taxModel" },
   { dashboardField: "monteCarloInflationMean", metaField: "inflationMean" },
   { dashboardField: "monteCarloInflationStdDev", metaField: "inflationStdDev" },
   { dashboardField: "monteCarloMinimumWithdrawal", metaField: "minimumWithdrawal" },
@@ -491,6 +500,7 @@ export function monteCarloAssumptionsWithOverrides(dashboard: DashboardConfig): 
     ...DEFAULT_MONTE_CARLO_ASSUMPTIONS,
     withdrawalStrategy: dashboard.monteCarloWithdrawalStrategy ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.withdrawalStrategy,
     returnModel: dashboard.monteCarloReturnModel ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.returnModel,
+    taxModel: dashboard.monteCarloTaxModel ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.taxModel,
     inflationMean: dashboard.monteCarloInflationMean ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.inflationMean,
     inflationStdDev: dashboard.monteCarloInflationStdDev ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.inflationStdDev,
     minimumWithdrawal: dashboard.monteCarloMinimumWithdrawal ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.minimumWithdrawal,

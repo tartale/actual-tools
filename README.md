@@ -221,27 +221,31 @@ figure on the page (an Actual-style privacy toggle) — handy before
 sharing a screen; it's a per-browser display preference, not saved to
 `config.json`.
 
-**Owned by the Actual dashboard** (below Plan, its own Refresh button):
-a read-only snapshot of whatever's actually live on your imported "FIRE"
-page right now — safe withdrawal rate, tax model, withdrawal strategy,
+**Configured in the Actual Dashboard** (below Plan, its own Refresh
+button): a read-only snapshot of whatever's actually live on your
+imported "FIRE" page right now, split into its own **Crossover** and
+**Simulation** sections (safe withdrawal rate/projection type/estimated
+return for the former; withdrawal strategy, tax model, withdrawal rule,
 inflation, and everything else this app deliberately doesn't let you edit
-directly (see "Regenerating preserves customizations" below). A field
-also set in **Simulation settings** is marked "pinned by you" — if its
-live value here doesn't match what you configured, Analyze → Check will
-flag it as needing a regenerate/re-import.
+directly for the latter — see "Regenerating preserves customizations"
+below). A field also set in **Simulation settings** shows a small purple
+arrow next to its label — if its live value here doesn't match what you
+configured, Analyze → Check will flag it as needing a regenerate/re-import.
 
-**Simulation settings** (optional): withdrawal strategy, return model,
-inflation (mean/std dev), minimum withdrawal, and simulation count.
-Unlike every other Monte Carlo assumption, these can be set once here
-instead of inside Actual's own per-widget UI — worth doing specifically
-because comparing multiple retirement ages generates one independently-
-named widget per age, and tuning one inside Actual never reaches its
-siblings. A field left blank here keeps today's behavior (preserved
+**Simulation settings** (optional): withdrawal strategy, return model, tax
+model, inflation (mean/std dev), minimum withdrawal, and simulation
+count. Unlike every other Monte Carlo assumption, these can be set once
+here instead of inside Actual's own per-widget UI — worth doing
+specifically because comparing multiple retirement ages generates one
+independently-named widget per age, and tuning one inside Actual never
+reaches its siblings. A field left blank here keeps today's behavior (preserved
 per-widget from whatever's live/local); a field set here is pinned to
 that value on every regenerate, overriding whatever each widget
 independently drifted to. Withdrawal rule (guardrails, ratcheting, ...)
-and tax bands stay Actual-UI-only for now — each has its own multi-field
-shape that didn't fit this pass.
+and the tax bands list themselves stay Actual-UI-only for now — each has
+its own multi-field shape that didn't fit this pass; the flat/bands
+*choice* is pinnable like everything else here, it's just the band
+thresholds/rates you'd still set inside Actual.
 
 **Accounts**: every open account, each with an **account type** — not just
 a coarse category, but a concrete kind (Traditional 401(k)/403(b)/457/TSP,
@@ -268,6 +272,13 @@ drives everything else about the account, and which fields even show up:
   "custom-mix" (a stocks/bonds/cash percentage split blended against
   historical return series) isn't supported — Custom here is a plain,
   hand-typed mean/stdDev pair, not a three-way asset-mix editor.
+- **Withdrawal tax rate** — every portfolio account also gets its own
+  override for the flat effective tax rate applied to its withdrawals,
+  shown alongside a placeholder naming the type's own rough default (e.g.
+  "auto (22%)" for a tax-deferred account). The defaults
+  (`WITHDRAWAL_TAX_RATES` in `fire-dashboard.ts`) are deliberately rough,
+  marginal-bracket-style estimates — this lets you replace one with your
+  own number, on a specific account, without changing its tax treatment.
 - **IRS contribution limit(s)** — shown inline once the type is known, with
   every age tier as its own line, e.g.:
   ```

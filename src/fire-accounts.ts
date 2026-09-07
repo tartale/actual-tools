@@ -84,6 +84,12 @@ export const MONTE_CARLO_WITHDRAWAL_STRATEGIES: readonly MonteCarloWithdrawalStr
 export type MonteCarloReturnModel = "normal" | "historical-bootstrap" | "historical-sequence"
 export const MONTE_CARLO_RETURN_MODELS: readonly MonteCarloReturnModel[] = ["normal", "historical-bootstrap", "historical-sequence"]
 
+// Same reasoning as above -- taxBands (the "bands" model's own open-ended list) stays
+// Actual-UI-only, but the flat/bands choice itself is a single enum, no different from
+// withdrawalStrategy/returnModel, so it's just as pinnable.
+export type MonteCarloTaxModel = "flat" | "bands"
+export const MONTE_CARLO_TAX_MODELS: readonly MonteCarloTaxModel[] = ["flat", "bands"]
+
 // The IRS contribution-limit pool an account type draws from, if any. Both employer-plan and IRA
 // limits are shared across every account of that kind (not per-account) -- see
 // resolveMonthlyContributions for how a "max" contribution splits a shared pool. HSA's limit is
@@ -273,6 +279,12 @@ export interface ClassifiedAccount {
   // buildPot's own guard for that incomplete-config case).
   customReturnMean: number | null
   customReturnStdDev: number | null
+  // Overrides WITHDRAWAL_TAX_RATES[taxTreatment]'s rough, type-wide estimate (fire-dashboard.ts's
+  // own doc comment already calls these "deliberately rough, user-owned estimates... you own the
+  // number") with a number specific to this account, e.g. because you know your real marginal
+  // bracket differs from the flat 22% assumed for every tax-deferred account. Null means "use the
+  // type's rough estimate," same as every other optional per-account override.
+  customWithdrawalTaxRate: number | null
   source: ClassificationSource
   // A monthly contribution amount in cents, or null if none is configured. Already resolved --
   // a "max" override (see resolveMonthlyContributions) has been turned into a concrete number by
@@ -326,6 +338,8 @@ export interface FireAccountOverride {
   // See ClassifiedAccount's doc comment -- only meaningful when allocationPreset is "custom".
   customReturnMean?: number | null
   customReturnStdDev?: number | null
+  // See ClassifiedAccount's doc comment.
+  customWithdrawalTaxRate?: number | null
   // A sentinel, not a resolved amount -- see resolveMonthlyContributions. Stored as the literal
   // string so it re-resolves correctly as IRS limits change yearly and as the account owner
   // crosses the 50/60-63 age-tier boundaries, rather than going stale the moment it's set.
@@ -384,10 +398,11 @@ export interface DashboardConfig {
   // them. Setting any of these here makes it the pinned, always-regenerated value for every
   // widget (see fire-dashboard.ts's mergeMonteCarloMeta pinnedFields), overriding whatever that
   // widget's own live/local settings say; leaving a field null keeps today's behavior (preserved
-  // per-widget from Actual). withdrawalRule and taxModel/taxBands stay Actual-UI-only -- see
+  // per-widget from Actual). withdrawalRule and taxBands stay Actual-UI-only -- see
   // MonteCarloWithdrawalStrategy's doc comment above for why.
   monteCarloWithdrawalStrategy: MonteCarloWithdrawalStrategy | null
   monteCarloReturnModel: MonteCarloReturnModel | null
+  monteCarloTaxModel: MonteCarloTaxModel | null
   // Decimal fractions (0.03 = 3%), matching every other rate in this file.
   monteCarloInflationMean: number | null
   monteCarloInflationStdDev: number | null
@@ -418,6 +433,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   socialSecurityMonthlyAt70: null,
   monteCarloWithdrawalStrategy: null,
   monteCarloReturnModel: null,
+  monteCarloTaxModel: null,
   monteCarloInflationMean: null,
   monteCarloInflationStdDev: null,
   monteCarloMinimumWithdrawal: null,
@@ -796,6 +812,7 @@ export function classifyAccounts(
         allocationPreset: override.allocationPreset ?? defaults.allocationPreset,
         customReturnMean: override.customReturnMean ?? null,
         customReturnStdDev: override.customReturnStdDev ?? null,
+        customWithdrawalTaxRate: override.customWithdrawalTaxRate ?? null,
         monthlyContribution: resolvedContributions.get(override.match) ?? null,
         ruleOf55SeparationAge: override.ruleOf55SeparationAge ?? null,
         annualSalary: override.annualSalary ?? null,
@@ -818,6 +835,7 @@ export function classifyAccounts(
         ...classifiedFieldsForType(heuristicType),
         customReturnMean: null,
         customReturnStdDev: null,
+        customWithdrawalTaxRate: null,
         monthlyContribution: null,
         ruleOf55SeparationAge: null,
         annualSalary: null,
@@ -838,6 +856,7 @@ export function classifyAccounts(
       ...classifiedFieldsForType("other"),
       customReturnMean: null,
       customReturnStdDev: null,
+      customWithdrawalTaxRate: null,
       monthlyContribution: null,
       ruleOf55SeparationAge: null,
       annualSalary: null,
@@ -932,6 +951,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     if (override.rothBasis != null && (typeof override.rothBasis !== "number" || override.rothBasis < 0)) {
       throw new Error(`Invalid config in ${path}: rothBasis for "${override.match}" must be a non-negative number.`)
     }
+    if (override.customWithdrawalTaxRate != null && (typeof override.customWithdrawalTaxRate !== "number" || override.customWithdrawalTaxRate < 0)) {
+      throw new Error(`Invalid config in ${path}: customWithdrawalTaxRate for "${override.match}" must be a non-negative number.`)
+    }
     if (
       override.monthlyContribution !== undefined &&
       override.monthlyContribution !== "max" &&
@@ -979,6 +1001,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.monteCarloReturnModel != null && !MONTE_CARLO_RETURN_MODELS.includes(dashboardSource.monteCarloReturnModel)) {
     throw new Error(`Invalid config in ${path}: dashboard.monteCarloReturnModel must be one of ${MONTE_CARLO_RETURN_MODELS.join(", ")}, or null.`)
   }
+  if (dashboardSource.monteCarloTaxModel != null && !MONTE_CARLO_TAX_MODELS.includes(dashboardSource.monteCarloTaxModel)) {
+    throw new Error(`Invalid config in ${path}: dashboard.monteCarloTaxModel must be one of ${MONTE_CARLO_TAX_MODELS.join(", ")}, or null.`)
+  }
   for (const field of ["monteCarloInflationMean", "monteCarloInflationStdDev"] as const) {
     const value = dashboardSource[field]
     if (value != null && (typeof value !== "number" || value < 0)) {
@@ -1007,6 +1032,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       socialSecurityMonthlyAt70: dashboardSource.socialSecurityMonthlyAt70 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt70,
       monteCarloWithdrawalStrategy: dashboardSource.monteCarloWithdrawalStrategy ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalStrategy,
       monteCarloReturnModel: dashboardSource.monteCarloReturnModel ?? DEFAULT_DASHBOARD_CONFIG.monteCarloReturnModel,
+      monteCarloTaxModel: dashboardSource.monteCarloTaxModel ?? DEFAULT_DASHBOARD_CONFIG.monteCarloTaxModel,
       monteCarloInflationMean: dashboardSource.monteCarloInflationMean ?? DEFAULT_DASHBOARD_CONFIG.monteCarloInflationMean,
       monteCarloInflationStdDev: dashboardSource.monteCarloInflationStdDev ?? DEFAULT_DASHBOARD_CONFIG.monteCarloInflationStdDev,
       monteCarloMinimumWithdrawal: dashboardSource.monteCarloMinimumWithdrawal ?? DEFAULT_DASHBOARD_CONFIG.monteCarloMinimumWithdrawal,

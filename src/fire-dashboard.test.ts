@@ -16,6 +16,7 @@ import {
   portfolioAccountIds,
   retirementIncomeStreams,
   totalMonthlyContribution,
+  withdrawalTaxRateFor,
 } from "./fire-dashboard.ts"
 import type { CrossoverAssumptions, ExistingDashboard, MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { ClassifiedAccount, DashboardConfig } from "./fire-accounts.ts"
@@ -43,6 +44,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     mortgageBalanceAsOfDate: null,
     mortgageBalanceAsOf: null,
     rothBasis: null,
+    customWithdrawalTaxRate: null,
     source: "heuristic",
     ...overrides,
   }
@@ -234,6 +236,22 @@ describe("buildPot", () => {
       buildPot(portfolioTestAccount({ id: "a1", name: "Brokerage", category: "investment-taxable", allocationPreset: "custom" })),
     ).toThrow(/Brokerage.*custom allocation/)
   })
+
+  it("uses the account's own customWithdrawalTaxRate over the type-wide default", () => {
+    const pot = buildPot(portfolioTestAccount({ id: "a1", category: "investment-taxable", taxTreatment: "tax-deferred", allocationPreset: "equity-80", customWithdrawalTaxRate: 0.3 }))
+    expect(pot.withdrawalTaxRate).toBe(0.3)
+  })
+})
+
+describe("withdrawalTaxRateFor", () => {
+  it("falls back to the type-wide default when no override is set", () => {
+    expect(withdrawalTaxRateFor({ taxTreatment: "tax-deferred", customWithdrawalTaxRate: null })).toBe(0.22)
+  })
+
+  it("uses the override, including an explicit 0, over the default", () => {
+    expect(withdrawalTaxRateFor({ taxTreatment: "tax-deferred", customWithdrawalTaxRate: 0.3 })).toBe(0.3)
+    expect(withdrawalTaxRateFor({ taxTreatment: "tax-deferred", customWithdrawalTaxRate: 0 })).toBe(0)
+  })
 })
 
 describe("effectiveAccessAge", () => {
@@ -362,6 +380,10 @@ describe("monteCarloAssumptionsWithOverrides", () => {
     expect(overridden.returnModel).toBe(MONTE_CARLO_ASSUMPTIONS.returnModel)
     expect(overridden.simulationCount).toBe(MONTE_CARLO_ASSUMPTIONS.simulationCount)
   })
+
+  it("layers a pinned taxModel over the default", () => {
+    expect(monteCarloAssumptionsWithOverrides({ ...DEFAULT_DASHBOARD_CONFIG, monteCarloTaxModel: "bands" }).taxModel).toBe("bands")
+  })
 })
 
 describe("pinnedMonteCarloFields", () => {
@@ -376,6 +398,10 @@ describe("pinnedMonteCarloFields", () => {
       monteCarloSimulationCount: 10000,
     })
     expect(pinned).toEqual(new Set(["withdrawalStrategy", "simulationCount"]))
+  })
+
+  it("pins taxModel the same way as every other Simulation setting", () => {
+    expect(pinnedMonteCarloFields({ ...DEFAULT_DASHBOARD_CONFIG, monteCarloTaxModel: "bands" })).toEqual(new Set(["taxModel"]))
   })
 })
 

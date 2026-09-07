@@ -12,6 +12,7 @@ import {
   MONTE_CARLO_ALLOCATION_PRESETS,
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
   MONTE_CARLO_RETURN_MODELS,
+  MONTE_CARLO_TAX_MODELS,
   MONTE_CARLO_WITHDRAWAL_STRATEGIES,
   classifyAccounts,
   contributionLimitLines,
@@ -32,13 +33,14 @@ import type {
   FireConfig,
   MonteCarloAllocationPreset,
   MonteCarloReturnModel,
+  MonteCarloTaxModel,
   MonteCarloWithdrawalStrategy,
 } from "./fire-accounts.ts"
 import { loadIrsLimits } from "./irs-limits.ts"
 import { calculateMortgagePayoff } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
 import { checkDashboard, fetchLiveDashboardSettings, generateDashboard } from "./fire-generate.ts"
-import { monteCarloAssumptionsWithOverrides, pinnedMonteCarloFields, retirementIncomeStreams } from "./fire-dashboard.ts"
+import { WITHDRAWAL_TAX_RATES, monteCarloAssumptionsWithOverrides, pinnedMonteCarloFields, retirementIncomeStreams } from "./fire-dashboard.ts"
 
 // A plain node:http server -- no new dependency, matching this repo's zero-runtime-deps
 // convention. Routes are namespaced under /api/retirement/ so a future /api/budget/... or
@@ -99,6 +101,11 @@ interface AccountState {
   // Only meaningful when allocationPreset is "custom"; null fields mean "not entered yet."
   customReturnMean: number | null
   customReturnStdDev: number | null
+  // The account's own override, or null if using the type's rough default (see
+  // defaultWithdrawalTaxRate for what that default actually is, so the UI can show it as a
+  // placeholder rather than an opaque "auto").
+  customWithdrawalTaxRate: number | null
+  defaultWithdrawalTaxRate: number
   monthlyContribution: number | null
   monthlyContributionIsMax: boolean
   ruleOf55SeparationAge: number | null
@@ -195,6 +202,8 @@ async function buildState(
       accessAge: account.accessAge,
       allocationPreset: account.allocationPreset,
       customReturnMean: account.customReturnMean,
+      customWithdrawalTaxRate: account.customWithdrawalTaxRate,
+      defaultWithdrawalTaxRate: WITHDRAWAL_TAX_RATES[account.taxTreatment],
       customReturnStdDev: account.customReturnStdDev,
       monthlyContribution: account.monthlyContribution,
       monthlyContributionIsMax: override?.monthlyContribution === "max",
@@ -341,6 +350,16 @@ function applyAccountPatch(
       next.customReturnStdDev = value
     } else {
       throw new Error("customReturnStdDev must be a non-negative number or null.")
+    }
+  }
+  if ("customWithdrawalTaxRate" in patch) {
+    const value = patch.customWithdrawalTaxRate
+    if (value === null) {
+      delete next.customWithdrawalTaxRate
+    } else if (typeof value === "number" && value >= 0) {
+      next.customWithdrawalTaxRate = value
+    } else {
+      throw new Error("customWithdrawalTaxRate must be a non-negative number or null.")
     }
   }
   if ("monthlyContribution" in patch) {
@@ -515,6 +534,12 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             throw new Error(`monteCarloReturnModel must be one of ${MONTE_CARLO_RETURN_MODELS.join(", ")}, or null.`)
           }
           dashboard.monteCarloReturnModel = body.monteCarloReturnModel as MonteCarloReturnModel | null
+        }
+        if ("monteCarloTaxModel" in body) {
+          if (body.monteCarloTaxModel !== null && !MONTE_CARLO_TAX_MODELS.includes(body.monteCarloTaxModel as MonteCarloTaxModel)) {
+            throw new Error(`monteCarloTaxModel must be one of ${MONTE_CARLO_TAX_MODELS.join(", ")}, or null.`)
+          }
+          dashboard.monteCarloTaxModel = body.monteCarloTaxModel as MonteCarloTaxModel | null
         }
         for (const field of ["monteCarloInflationMean", "monteCarloInflationStdDev"] as const) {
           if (field in body) {

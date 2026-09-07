@@ -185,6 +185,7 @@ function renderSimSettings() {
   }
   setIfIdle("mcWithdrawalStrategy", d.monteCarloWithdrawalStrategy ?? "")
   setIfIdle("mcReturnModel", d.monteCarloReturnModel ?? "")
+  setIfIdle("mcTaxModel", d.monteCarloTaxModel ?? "")
   setIfIdle("mcInflationMean", d.monteCarloInflationMean == null ? "" : Math.round(d.monteCarloInflationMean * 1000) / 10)
   setIfIdle("mcInflationStdDev", d.monteCarloInflationStdDev == null ? "" : Math.round(d.monteCarloInflationStdDev * 1000) / 10)
   setIfIdle("mcMinimumWithdrawal", formatMoneyInputValue(d.monteCarloMinimumWithdrawal))
@@ -232,7 +233,10 @@ function renderLiveSettings(settings) {
   const row = (label, value, pinnedField, isMoney) => {
     const isPinned = pinnedField && pinned[pinnedField] != null
     const valueHtml = isMoney ? moneySpan(value) : escapeHtml(String(value))
-    return `<div class="kv"><span class="k">${escapeHtml(label)}${isPinned ? " (pinned by you)" : ""}</span><span class="v${isPinned ? " pinned" : ""}">${valueHtml}</span></div>`
+    const pinArrow = isPinned
+      ? `<svg class="pin-arrow" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-label="Pinned by you" title="Pinned by you"><path d="M12 4v14M6 13l6 6 6-6"/></svg>`
+      : ""
+    return `<div class="kv"><span class="k">${escapeHtml(label)}${pinArrow}</span><span class="v${isPinned ? " pinned" : ""}">${valueHtml}</span></div>`
   }
   const sections = []
   if (settings.crossover) {
@@ -255,7 +259,7 @@ function renderLiveSettings(settings) {
         row("Withdrawal strategy", (m.withdrawalStrategy && WITHDRAWAL_STRATEGY_LABELS[m.withdrawalStrategy]) ?? m.withdrawalStrategy ?? "—", "monteCarloWithdrawalStrategy"),
         row("Return model", (m.returnModel && RETURN_MODEL_LABELS[m.returnModel]) ?? m.returnModel ?? "—", "monteCarloReturnModel"),
         row("Withdrawal rule", WITHDRAWAL_RULE_LABELS[m.withdrawalRuleType] ?? m.withdrawalRuleType),
-        row("Tax model", TAX_MODEL_LABELS[m.taxModel] ?? m.taxModel),
+        row("Tax model", TAX_MODEL_LABELS[m.taxModel] ?? m.taxModel, "monteCarloTaxModel"),
         row("Inflation (mean)", `${Math.round((m.inflationMean ?? 0) * 1000) / 10}%`, "monteCarloInflationMean"),
         row("Inflation (std dev)", `${Math.round(m.inflationStdDev * 1000) / 10}%`, "monteCarloInflationStdDev"),
         row("Minimum withdrawal", usd(m.minimumWithdrawal), "monteCarloMinimumWithdrawal"),
@@ -363,6 +367,12 @@ function renderAccounts() {
             <input type="number" min="0" step="0.1" data-field="customReturnStdDev" value="${account.customReturnStdDev != null ? account.customReturnStdDev * 100 : ""}" placeholder="e.g. 12">
           </div>
         </div>
+        <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
+          <label>Withdrawal tax rate</label>
+          <div class="input-affix suffix-percent">
+            <input type="number" min="0" step="0.5" data-field="customWithdrawalTaxRate" value="${account.customWithdrawalTaxRate != null ? account.customWithdrawalTaxRate * 100 : ""}" placeholder="auto (${Math.round(account.defaultWithdrawalTaxRate * 100)}%)">
+          </div>
+        </div>
         <div class="field ${showContribution ? "" : "hidden"}">
           <label>Monthly contribution</label>
           <div class="contrib-row">
@@ -376,7 +386,7 @@ function renderAccounts() {
         ${typeInfo.ruleOf55Eligible ? `
         <div class="employer-block ${isRuleOf55Active ? "" : "inactive"}">
           <div class="field full">
-            <label class="checkbox-label"><input type="checkbox" data-field="ruleOf55Active" ${isRuleOf55Active ? "checked" : ""}> Active account with this employer</label>
+            <label class="checkbox-label"><input type="checkbox" data-field="ruleOf55Active" ${isRuleOf55Active ? "checked" : ""}> Account is active</label>
           </div>
           <div class="field">
             <label>Age you'll separate from this employer</label>
@@ -464,6 +474,13 @@ function renderAccounts() {
       customVolatilityInput.addEventListener("change", (e) => {
         const pct = e.target.value === "" ? null : parseFloat(e.target.value)
         runExclusive(() => patchAccount(account.id, { customReturnStdDev: pct === null ? null : pct / 100 }))
+      })
+    }
+    const customTaxRateInput = row.querySelector("input[data-field='customWithdrawalTaxRate']")
+    if (customTaxRateInput) {
+      customTaxRateInput.addEventListener("change", (e) => {
+        const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+        runExclusive(() => patchAccount(account.id, { customWithdrawalTaxRate: pct === null ? null : pct / 100 }))
       })
     }
     const contribInput = row.querySelector("input[data-field='monthlyContribution']")
@@ -656,7 +673,7 @@ async function runGenerate() {
       <div class="line">Expense categories (${r.expenseCategoryCount}): spend ${moneySpan(r.annualSpend)}/yr${r.spendBasis ? ` (from your crossover widget's own selection: ${escapeHtml(r.spendBasis)})` : " (trailing 12 months, every category — no live crossover selection to narrow it yet)"}</div>
       ${boostLines}
       ${debtPayoffLines}
-      <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span> (${r.widgetTypes.length} widgets: ${r.widgetTypes.join(", ")}).${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>
+      <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span>.${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>
       <div class="import-steps">
         Import it into Actual:
         <ol>
@@ -713,6 +730,9 @@ document.getElementById("mcWithdrawalStrategy").addEventListener("change", (e) =
 })
 document.getElementById("mcReturnModel").addEventListener("change", (e) => {
   runExclusive(() => patchPlan({ monteCarloReturnModel: e.target.value === "" ? null : e.target.value }, "savedSimSettings"))
+})
+document.getElementById("mcTaxModel").addEventListener("change", (e) => {
+  runExclusive(() => patchPlan({ monteCarloTaxModel: e.target.value === "" ? null : e.target.value }, "savedSimSettings"))
 })
 document.getElementById("mcInflationMean").addEventListener("change", (e) => {
   const pct = e.target.value === "" ? null : parseFloat(e.target.value)

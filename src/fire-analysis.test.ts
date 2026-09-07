@@ -59,6 +59,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     mortgageBalanceAsOfDate: null,
     mortgageBalanceAsOf: null,
     rothBasis: null,
+    customWithdrawalTaxRate: null,
     source: "heuristic",
     ...overrides,
   }
@@ -190,6 +191,12 @@ describe("toBridgeAccounts", () => {
     expect(built[0]).toMatchObject({ returnMean: 0.055 })
   })
 
+  it("uses the account's own customWithdrawalTaxRate over the type-wide default", () => {
+    const accounts = [account({ id: "a1", category: "retirement-tax-deferred", taxTreatment: "tax-deferred", customWithdrawalTaxRate: 0.3 })]
+    const built = toBridgeAccounts(accounts, new Map(), new Map())
+    expect(built[0]).toMatchObject({ withdrawalTaxRate: 0.3 })
+  })
+
   it("falls back to no growth (not a thrown error) for a custom allocation with nothing entered yet", () => {
     const accounts = [account({ id: "a1", category: "investment-taxable", allocationPreset: "custom" })]
     const built = toBridgeAccounts(accounts, new Map(), new Map())
@@ -301,6 +308,13 @@ describe("detectMonteCarloSettingsDrift", () => {
     const findings = detectMonteCarloSettingsDrift([matching, stale], new Set(["withdrawalStrategy"]), MONTE_CARLO_ASSUMPTIONS)
     expect(findings).toHaveLength(1)
     expect(findings[0]?.title).toContain("1 of 2")
+  })
+
+  it("checks taxModel the same way as every other pinnable field", () => {
+    const stale: MonteCarloCardMeta = { taxModel: "flat" }
+    const findings = detectMonteCarloSettingsDrift([stale], new Set(["taxModel"]), { ...MONTE_CARLO_ASSUMPTIONS, taxModel: "bands" })
+    expect(findings).toHaveLength(1)
+    expect(findings[0]?.title).toContain("taxModel")
   })
 
   it("ignores an unpinned field even when it visibly differs from the default assumptions", () => {

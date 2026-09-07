@@ -1,7 +1,7 @@
 import { addMonthsToDate, formatUsd } from "./actual-helpers.ts"
 import { isPortfolioCategory } from "./fire-accounts.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
-import { ALLOCATION_PRESET_RETURNS, WITHDRAWAL_TAX_RATES, effectiveAccessAge } from "./fire-dashboard.ts"
+import { ALLOCATION_PRESET_RETURNS, effectiveAccessAge, withdrawalTaxRateFor } from "./fire-dashboard.ts"
 import type { CrossoverCardMeta, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 
 export type FindingLevel = "fail" | "warn" | "info" | "ok"
@@ -261,7 +261,7 @@ export function toBridgeAccounts(
   return accounts.filter((account) => isPortfolioCategory(account.category)).flatMap((account) => {
     const balance = balances.get(account.id) ?? 0
     const returnMean = bridgeReturnMean(account)
-    const withdrawalTaxRate = WITHDRAWAL_TAX_RATES[account.taxTreatment]
+    const withdrawalTaxRate = withdrawalTaxRateFor(account)
 
     if (account.type === "roth-ira" && account.rothBasis != null && account.rothBasis > 0) {
       // Clamped, not just subtracted -- a market drop since the contributions were made can leave
@@ -368,6 +368,7 @@ export function detectPotDrift(
 const PINNABLE_FIELD_VALUES: ReadonlyArray<keyof MonteCarloAssumptions> = [
   "withdrawalStrategy",
   "returnModel",
+  "taxModel",
   "inflationMean",
   "inflationStdDev",
   "minimumWithdrawal",

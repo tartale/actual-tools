@@ -452,6 +452,32 @@ describe("loadFireConfig", () => {
     expect(() => loadFireConfig("/fake/path")).toThrow("rothBasis")
   })
 
+  it("accepts an explicit 0 customWithdrawalTaxRate", () => {
+    const goodConfig = { version: 1, accounts: [{ match: "x", type: "brokerage", customWithdrawalTaxRate: 0 }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.accounts[0]).toMatchObject({ customWithdrawalTaxRate: 0 })
+  })
+
+  it("throws on a negative customWithdrawalTaxRate", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", type: "brokerage", customWithdrawalTaxRate: -0.1 }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("customWithdrawalTaxRate")
+  })
+
+  it("accepts a real monteCarloTaxModel value", () => {
+    const goodConfig = { version: 1, accounts: [], dashboard: { monteCarloTaxModel: "bands" } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.monteCarloTaxModel).toBe("bands")
+  })
+
+  it("throws on an unrecognized monteCarloTaxModel value", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { monteCarloTaxModel: "progressive" } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("monteCarloTaxModel")
+  })
+
   it("accepts a null allocationPreset", () => {
     const validConfig = fireConfig([{ match: "x", type: "debt", allocationPreset: null }])
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
@@ -531,6 +557,7 @@ describe("loadClassifiedAccounts", () => {
         mortgageBalanceAsOfDate: null,
         mortgageBalanceAsOf: null,
         rothBasis: null,
+        customWithdrawalTaxRate: null,
         source: "heuristic",
       },
     ])
@@ -770,6 +797,7 @@ describe("portfolioAccounts", () => {
       mortgageBalanceAsOfDate: null,
       mortgageBalanceAsOf: null,
       rothBasis: null,
+      customWithdrawalTaxRate: null,
       source: "heuristic",
       ...overrides,
     }
