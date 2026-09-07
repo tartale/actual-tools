@@ -166,7 +166,9 @@ health today; bulk budget edits and spending analysis (currently
 - `-o`, `--output PATH` — filename the "Generate dashboard" action's
   browser download suggests, and the server-side copy it also keeps
   (default: `fire-dashboard.json`).
-- `-p`, `--port N` — run on this fixed port instead of an OS-assigned one.
+- `-p`, `--port N` — run on this port (default: `4247`, a fixed port
+  rather than an OS-assigned one — see "hot-reload" below for why). Pass
+  `0` to go back to an OS-assigned ephemeral port instead.
 - `--no-open` — don't try to open the page in a browser automatically, just
   print the URL. Useful over SSH or in a container with no browser to open.
 
@@ -175,9 +177,9 @@ bound to every network interface rather than just loopback, and prints
 its URL:
 
 ```
-Runway is running at http://localhost:54321/
+Runway is running at http://localhost:4247/
 Also reachable from another device on your network at:
-  http://192.168.1.23:54321/
+  http://192.168.1.23:4247/
 (no login is required -- only share these on a network you trust)
 Press Ctrl+C to stop.
 ```
@@ -205,15 +207,26 @@ while that's happening. If it does ultimately fail, the error banner gets
 a clearer message plus a **Retry** button, rather than requiring a full
 page reload.
 
-The page also hot-reloads: it polls a per-process id
-(`GET /api/dev/build-id`) every 1.5s and reloads itself the moment that id
-changes. `app.js`/`style.css`/`index.html` are re-read from disk on every
-request already, so an edit to those takes effect on the next reload
-regardless; the id changing is specifically what catches a **server
-restart** (needed for a change to `app-server.ts` or any `fire-*.ts`
-module) — a tab left open across one refreshes itself automatically
-instead of continuing to show a stale page against a server that's since
-moved on.
+`./actual app` also hot-reloads end to end, with no manual stop/restart
+needed for a source change: `./actual`'s dispatcher runs it under node's
+own `--watch` flag, which restarts the process automatically the moment
+any file it imports changes (`app-server.ts`, any `fire-*.ts` module —
+`app.js`/`style.css`/`index.html` are re-read from disk on every request
+already, so those never even need a restart). The page itself polls a
+per-process id (`GET /api/dev/build-id`) every 1.5s and reloads itself the
+moment that id changes, which is what a restart produces — so a tab left
+open picks up the change on its own within a couple of seconds of saving
+a file, without you doing anything in the browser or the terminal.
+**This is exactly why the default port is now fixed** (`4247`, not an
+OS-assigned one): the restarted process has to land back on the same
+port for the open tab to find it again. Passing `-p 0` for the old
+ephemeral behavior means a restart moves to an unpredictable new port,
+which breaks this — the tab has no way to discover it and just goes
+quiet until you reload it by hand.
+
+`--watch` is skipped automatically for `-h`/`--help` (it would otherwise
+keep the process alive waiting for a file change even after printing the
+help text and "exiting").
 
 ### Retirement — Configure tab
 

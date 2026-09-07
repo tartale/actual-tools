@@ -132,6 +132,23 @@ function commandTransactions() {
   esac
 }
 
+# Function to launch the local companion app, restarting it automatically whenever a source file
+# it imports changes (node's own --watch flag) -- so editing app-server.ts/fire-*.ts/etc. never
+# needs a manual stop/restart; the page's own hot-reload (a per-process build id polled by the
+# browser -- see app-server.ts/app.js) picks up each restart and reloads any tab left open on it.
+# Skipped for -h/--help: --watch keeps node alive waiting for the next file change even after the
+# script itself calls process.exit(), which would otherwise turn `./actual app --help` into a
+# command that never returns.
+function commandApp() {
+  local arg
+  for arg in "$@"; do
+    if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
+      exec ./src/app.ts "$@"
+    fi
+  done
+  exec node --watch ./src/app.ts "$@"
+}
+
 # Main function
 function main() {
   local command="${1:-}"
@@ -146,7 +163,7 @@ function main() {
     test) commandTest "$@" ;;
     budget) commandBudget "$@" ;;
     transactions) commandTransactions "$@" ;;
-    app) exec ./src/app.ts "$@" ;;
+    app) commandApp "$@" ;;
     -h|--help|help) usage 0 ;;
     *)
       echo "Unknown command: ${command}" >&2

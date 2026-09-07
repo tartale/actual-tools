@@ -18,6 +18,13 @@ import type { HelpPage } from "./cli-format.ts"
 // executable in this repo already uses.
 
 const DEFAULT_OUTPUT_PATH = "fire-dashboard.json"
+// A fixed default, not an OS-assigned ephemeral one -- the page's own hot-reload (see
+// app-server.ts's buildId) has a browser tab poll this same server across a restart, which only
+// works if the restart lands on the same port. `./actual`'s dispatcher runs this under `node
+// --watch` precisely so a source edit restarts the server automatically; an ephemeral port would
+// silently break that combination (the tab would keep polling a now-dead port forever). Pass
+// `-p 0` to opt back into the old OS-assigned behavior if you'd rather have that.
+const DEFAULT_PORT = 4247
 const uiDir = join(dirname(fileURLToPath(import.meta.url)), "app-ui")
 
 interface Options {
@@ -45,7 +52,7 @@ const HELP_PAGE: HelpPage = {
           description: `Path to the IRS contribution limits reference file (default: ${DEFAULT_IRS_LIMITS_PATH}). Missing is fine, just skips that context.`,
         },
         { name: "-o, --output PATH", description: `Where the "Generate dashboard" action writes the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
-        { name: "-p, --port N", description: "Run on this fixed port instead of an OS-assigned one." },
+        { name: "-p, --port N", description: `Run on this port (default: ${DEFAULT_PORT}). Pass 0 for an OS-assigned ephemeral port instead -- note this breaks the page's hot-reload across a restart, since it won't land back on the same port.` },
         { name: "--no-open", description: "Don't try to open the page in a browser automatically -- just print the URL." },
         { name: "-h, --help", description: "Show this message and exit." },
       ],
@@ -62,7 +69,7 @@ function parseArguments(argv: readonly string[]): Options {
   let configPath = DEFAULT_CONFIG_PATH
   let irsLimitsPath = DEFAULT_IRS_LIMITS_PATH
   let outputPath = DEFAULT_OUTPUT_PATH
-  let port = 0
+  let port = DEFAULT_PORT
   let open = true
 
   for (let i = 0; i < argv.length; i++) {
@@ -85,7 +92,7 @@ function parseArguments(argv: readonly string[]): Options {
     } else if (arg === "-p" || arg === "--port") {
       const value = argv[i + 1]
       const parsed = value === undefined ? NaN : Number(value)
-      if (!Number.isInteger(parsed) || parsed <= 0) usage("Missing or invalid argument for --port")
+      if (!Number.isInteger(parsed) || parsed < 0) usage("Missing or invalid argument for --port")
       port = parsed
       i++
     } else if (arg === "--no-open") {
