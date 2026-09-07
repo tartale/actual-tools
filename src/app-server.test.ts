@@ -215,6 +215,55 @@ describe("POST /api/retirement/generate", () => {
     expect(body.portfolioAccountCount).toBe(1)
     expect(body.portfolioTotal).toBe(500000)
     expect(body.widgetTypes).toContain("crossover-card")
+    expect(body.spendBasis).toBeNull() // no live crossover selection yet -- used the plain fallback
+  })
+
+  it("uses the live crossover widget's own narrower category selection for spend, not every category", async () => {
+    // "cat-a" is the crossover's own (narrower) selection; "cat-b" (a one-time/irregular category
+    // someone unchecked in Actual) only shows up in the full category list -- generate must not
+    // silently fall back to counting it just because it technically exists.
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      categoryGroups: [
+        {
+          id: "g1",
+          name: "Group",
+          is_income: false,
+          hidden: false,
+          categories: [
+            { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" },
+            { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1" },
+          ],
+        },
+      ],
+      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
+      monthCategories: [
+        { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false },
+        { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -100000, balance: 0, carryover: false },
+      ],
+      dashboardRows: [
+        {
+          id: "page1",
+          name: "FIRE",
+          dashboard_page_id: "page1",
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-a"], incomeAccountIds: [] },
+        },
+      ],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
+    expect(res.status).toBe(200)
+    const body = await readJson<GenerateResult>(res)
+    expect(body.expenseCategoryCount).toBe(2) // both categories exist in the budget...
+    expect(body.annualSpend).toBe(120000) // ...but spend only counts the crossover's own selection (10000 x 12)
+    expect(body.spendBasis).toContain("1 categories")
   })
 })
 

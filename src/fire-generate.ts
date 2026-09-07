@@ -272,6 +272,11 @@ export interface GenerateResult {
   // this tool wrote, used only when the live page isn't found or reachable); "none" means nothing
   // to preserve, i.e. this is effectively a first-time generation.
   mergeSource: "live" | "local" | "none"
+  // Null when no live crossover widget's own selection could be used, i.e. annualSpend came from
+  // this tool's own fallback (every non-income/non-hidden category, trailing 12 months) instead --
+  // see generateDashboard's own doc comment on why the fallback is a poor substitute for a
+  // narrowed selection once one exists.
+  spendBasis: string | null
   // The generated dashboard, pre-serialized -- lets a caller (the web UI) hand it straight to the
   // browser as a download, without a second round trip to re-read what was just written.
   dashboardJson: string
@@ -299,10 +304,27 @@ export async function generateDashboard(
     throw new Error("No non-income, non-hidden categories found -- the crossover widget requires at least one expense category.")
   }
 
-  const [annualSpend, portfolioBalances] = await Promise.all([
-    trailingAnnualSpend(actualConfig, expenseCategoryIds),
+  const liveExisting = await fetchLiveExistingDashboard(actualConfig)
+  const localExisting = loadExistingDashboard(options.outputPath)
+  const existing = liveExisting ?? localExisting
+  const mergeSource: GenerateResult["mergeSource"] = liveExisting ? "live" : localExisting ? "local" : "none"
+
+  // Prefer the live crossover widget's own selection and date range for annual spend, same as
+  // checkDashboard already does via spendFromCrossover -- this tool's own "every non-income,
+  // non-hidden category, trailing 12 months" default exists only for a page that doesn't exist
+  // yet. Once a person has narrowed the crossover's own checklist (excluding one-time trip
+  // categories, a dependent's separate expenses, ...), falling back to the broader default here
+  // would inflate the Monte Carlo widget's spend well past what the crossover itself targets --
+  // exactly the mismatch a person comparing the two widgets would notice.
+  const liveCrossoverMeta = liveExisting?.widgets.find((widget) => widget.type === "crossover-card")?.meta as CrossoverCardMeta | undefined
+  const hasLiveCrossoverSelection = liveCrossoverMeta != null && (liveCrossoverMeta.expenseCategoryIds ?? []).length > 0
+  const [spendResult, portfolioBalances] = await Promise.all([
+    hasLiveCrossoverSelection
+      ? spendFromCrossover(actualConfig, liveCrossoverMeta)
+      : trailingAnnualSpend(actualConfig, expenseCategoryIds).then((total) => ({ annualSpend: total, basis: null })),
     Promise.all(portfolioIds.map((accountId) => fetchAccountBalance(actualConfig, accountId, BALANCE_SINCE_DATE))),
   ])
+  const { annualSpend, basis: spendBasis } = spendResult
   const portfolioTotal = portfolioBalances.reduce((total, balance) => total + balance, 0)
 
   const ruleOf55Boosts: RuleOf55Boost[] = []
@@ -336,11 +358,6 @@ export async function generateDashboard(
     ),
   )
 
-  const liveExisting = await fetchLiveExistingDashboard(actualConfig)
-  const localExisting = loadExistingDashboard(options.outputPath)
-  const existing = liveExisting ?? localExisting
-  const mergeSource: GenerateResult["mergeSource"] = liveExisting ? "live" : localExisting ? "local" : "none"
-
   const dashboard = mergeGeneratedDashboard(generated, existing, options.pinnedMonteCarloFields)
   const dashboardJson = `${JSON.stringify(dashboard, null, 2)}\n`
   writeFileSync(options.outputPath, dashboardJson)
@@ -355,6 +372,7 @@ export async function generateDashboard(
     outputPath: options.outputPath,
     widgetTypes: dashboard.widgets.map((widget) => widget.type),
     mergeSource,
+    spendBasis,
     dashboardJson,
   }
 }

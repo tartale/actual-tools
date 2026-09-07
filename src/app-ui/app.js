@@ -572,7 +572,7 @@ async function runGenerate() {
       .join("")
     result.innerHTML = `
       <div class="line">Portfolio accounts (${r.portfolioAccountCount}): current total ${moneySpan(r.portfolioTotal)}</div>
-      <div class="line">Expense categories (${r.expenseCategoryCount}): trailing 12-month spend ${moneySpan(r.annualSpend)}/yr</div>
+      <div class="line">Expense categories (${r.expenseCategoryCount}): spend ${moneySpan(r.annualSpend)}/yr${r.spendBasis ? ` (from your crossover widget's own selection: ${escapeHtml(r.spendBasis)})` : " (trailing 12 months, every category — no live crossover selection to narrow it yet)"}</div>
       ${boostLines}
       ${debtPayoffLines}
       <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span> (${r.widgetTypes.length} widgets: ${r.widgetTypes.join(", ")}).${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>

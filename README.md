@@ -338,6 +338,19 @@ you're running it locally. Refuses to run without a birth date, at least
 one retirement age, and at least one account classified into the
 portfolio.
 
+**The Monte Carlo widget's spend figure matches whatever the live crossover
+widget's own category selection says**, once one exists — not a separate
+"every non-income, non-hidden category, trailing 12 months" calculation of
+its own. If you've narrowed the crossover's checklist (excluding one-time
+trip categories, a dependent's separate expenses, ...), Generate uses that
+same narrower selection and date range, so the two widgets' spend figures
+stay consistent with each other. The broader "every category, trailing 12
+months" figure is only a first-generation fallback, before any crossover
+selection exists to read back. A residual difference from the crossover
+widget's *own displayed number* can still remain — its projection type
+(Hampel/median/mean) applies its own statistical smoothing on top of the
+same trailing data, which this app doesn't reproduce.
+
 **This does not talk to Actual's dashboard feature directly for writing**
 — there's no API for that (confirmed against both `@actual-app/api` and
 this repo's REST wrapper). Instead it writes a JSON file in Actual's own
