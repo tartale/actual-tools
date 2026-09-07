@@ -196,6 +196,16 @@ question order to work through; edit whatever you want, whenever you want.
 Press Ctrl+C in the terminal when you're done; it's a plain foreground
 process, not a background daemon.
 
+The page also hot-reloads: it polls a per-process id
+(`GET /api/dev/build-id`) every 1.5s and reloads itself the moment that id
+changes. `app.js`/`style.css`/`index.html` are re-read from disk on every
+request already, so an edit to those takes effect on the next reload
+regardless; the id changing is specifically what catches a **server
+restart** (needed for a change to `app-server.ts` or any `fire-*.ts`
+module) — a tab left open across one refreshes itself automatically
+instead of continuing to show a stale page against a server that's since
+moved on.
+
 ### Retirement — Configure tab
 
 **Plan**: birth date, one or more retirement ages to compare (space- or

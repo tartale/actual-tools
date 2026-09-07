@@ -3,6 +3,14 @@
 // /api/retirement/state returns and PATCH/POST the endpoints when something changes.
 
 let STATE = null
+// The last-fetched GET /api/retirement/live-settings response, cached here so render() (called
+// after every STATE-changing action, including the initial page load) can always re-render the
+// "Configured in the Actual Dashboard" panel from it -- fixes a real load-order race where that
+// panel's pinned-field highlighting depends on STATE.dashboard, but loadState() and
+// loadLiveSettings() fire concurrently on startup with no guaranteed order (see the bottom of this
+// file), so the first render could land before STATE existed and show nothing as pinned until a
+// manual refresh re-ran loadLiveSettings after STATE was already populated.
+let LIVE_SETTINGS = null
 // A single in-flight guard for every mutating action -- a "Max" toggle is really two sequential
 // requests (clear a sibling, then set this one), and without a lock, an impatient second click
 // during that window could interleave a second pair of requests, so the account you clicked isn't
@@ -144,6 +152,9 @@ function render() {
   renderIncome()
   renderSimSettings()
   renderAccounts()
+  // Re-renders from the cached response rather than refetching -- also keeps pinned-field
+  // highlighting current after a Simulation setting is pinned/unpinned, not just at load.
+  if (LIVE_SETTINGS) renderLiveSettings(LIVE_SETTINGS)
 }
 
 function renderSummary() {
@@ -306,7 +317,8 @@ async function loadLiveSettings() {
   const btn = document.getElementById("refreshLiveSettingsBtn")
   btn.disabled = true
   try {
-    renderLiveSettings(await api("/api/retirement/live-settings"))
+    LIVE_SETTINGS = await api("/api/retirement/live-settings")
+    renderLiveSettings(LIVE_SETTINGS)
   } catch (error) {
     document.getElementById("liveSettings").innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
   } finally {
@@ -893,3 +905,26 @@ try {
 
 loadState()
 loadLiveSettings()
+
+// Hot-reload: poll the server's per-process build id (see startAppServer in app-server.ts) and
+// reload the page the moment it changes -- static files (app.js/style.css/index.html) are already
+// re-read from disk on every request, so no restart is needed for those, but a server-code change
+// (app-server.ts, fire-*.ts) needs a new process, and this catches exactly that: a tab left open
+// across a restart refreshes itself instead of showing stale, disconnected UI. The first
+// successful poll only records a baseline (a page load's own request already reflects the running
+// process, so there's nothing to reload yet); a failed poll (mid-restart, briefly unreachable) is
+// silently skipped rather than treated as a change, and gets caught up once the new process answers.
+let hotReloadBuildId = null
+setInterval(async () => {
+  let body
+  try {
+    body = await api("/api/dev/build-id")
+  } catch {
+    return
+  }
+  if (hotReloadBuildId === null) {
+    hotReloadBuildId = body.buildId
+  } else if (body.buildId !== hotReloadBuildId) {
+    location.reload()
+  }
+}, 1500)

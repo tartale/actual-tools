@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { readFileSync } from "node:fs"
@@ -507,6 +508,13 @@ function applyAccountOrder(fireConfig: FireConfig, configPath: string, orderedId
 export async function startAppServer(options: AppServerOptions): Promise<RunningServer> {
   const { actualConfig, configPath, irsLimitsPath, outputPath, uiDir } = options
 
+  // A fresh id per process start -- the page polls this (see app.js's hot-reload polling) and
+  // reloads itself the moment it changes, so restarting the server (e.g. after an edit to server
+  // code, which static files alone can't hot-swap -- sendFile below already re-reads those from
+  // disk on every request, no restart needed for those) auto-refreshes any tab left open on it,
+  // instead of the developer having to remember to hit refresh by hand.
+  const buildId = randomUUID()
+
   const server = createServer((req, res) => {
     void handleRequest(req, res)
   })
@@ -522,6 +530,10 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       }
       if (req.method === "GET" && (path === "/app.js" || path === "/style.css")) {
         sendFile(res, join(uiDir, path.slice(1)))
+        return
+      }
+      if (req.method === "GET" && path === "/api/dev/build-id") {
+        sendJson(res, 200, { buildId })
         return
       }
 
