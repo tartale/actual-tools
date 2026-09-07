@@ -291,6 +291,16 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .top-error { background: var(--fail-soft); color: var(--fail); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 16px; font-size: 12.5px; }
 .top-error[hidden] { display: none; }
 
+.walkthrough { position: relative; background: var(--accent-selected-bg); border: 1px solid var(--accent); border-radius: var(--radius-md); padding: 16px 40px 16px 18px; margin-bottom: 16px; font-size: 12.5px; color: var(--ink-soft); }
+.walkthrough[hidden] { display: none; }
+.walkthrough h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--ink-strong); }
+.walkthrough p { margin: 6px 0; }
+.walkthrough ol { margin: 8px 0; padding-left: 20px; }
+.walkthrough li { margin-bottom: 6px; }
+.walkthrough strong { color: var(--ink-strong); font-weight: 600; }
+.walkthrough-dismiss { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border: none; background: transparent; color: var(--ink-faint); font-size: 16px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
+.walkthrough-dismiss:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
   .rail { flex-direction: row; overflow-x: auto; }

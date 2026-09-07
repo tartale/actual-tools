@@ -255,6 +255,23 @@ const PINNED_FIELD_TO_INPUT_ID = {
   monteCarloSimulationCount: "mcSimulationCount",
 }
 
+// Shows the "Getting started" walkthrough while there's nothing imported into Actual yet to show
+// under "Configured in the Actual Dashboard" -- driven off the same live-settings fetch that panel
+// already uses, so it appears/disappears in step with reality rather than tracking its own separate
+// state. Suppressed once the user dismisses it (a cookie, see getCookie/setCookie's own doc
+// comment), even if they haven't imported anything -- someone who already knows the flow shouldn't
+// have to keep re-dismissing it on every load.
+function updateWalkthrough(hasLiveDashboard) {
+  const el = document.getElementById("walkthrough")
+  let dismissed = false
+  try {
+    dismissed = getCookie("walkthroughDismissed") === "1"
+  } catch {
+    // Cookies disabled -- fall back to always showing it until a live dashboard appears.
+  }
+  el.hidden = hasLiveDashboard || dismissed
+}
+
 // Renders the read-only "Configured in the Actual Dashboard" panel from GET /api/retirement/live-settings
 // -- fetched separately from the main state (see loadLiveSettings) since it's its own live ActualQL
 // read and isn't needed on every keystroke the way account balances are. Split into Crossover and
@@ -262,7 +279,9 @@ const PINNED_FIELD_TO_INPUT_ID = {
 // could otherwise read as belonging to either widget.
 function renderLiveSettings(settings) {
   const container = document.getElementById("liveSettings")
-  if (!settings || (!settings.crossover && !settings.monteCarlo)) {
+  const hasLiveDashboard = Boolean(settings && (settings.crossover || settings.monteCarlo))
+  updateWalkthrough(hasLiveDashboard)
+  if (!hasLiveDashboard) {
     container.innerHTML = `<div class="empty-note">No live FIRE dashboard found yet — generate and import one first.</div>`
     return
   }
@@ -863,42 +882,53 @@ document.querySelectorAll(".tab").forEach((tab) => {
   })
 })
 
-// Privacy mode -- an Actual-style eye toggle that blurs dollar figures (anything wrapped in
-// moneySpan) without touching labels, ages, or percentages. Persisted per-browser via a cookie,
-// not localStorage -- this app's own port changes on every restart (the CLI's own default is an
-// OS-assigned ephemeral port, see app.ts), and localStorage is scoped to the full origin
-// (scheme+host+port), so it would reset every time the server restarts on a new port even though
-// nothing about the browser or the preference itself changed. A cookie's scope omits the port
-// (RFC 6265 -- unrelated services on different ports of the same host share cookies), so the same
-// "localhost" preference survives a restart. Still never sent anywhere else -- this server is the
-// only thing reading it, and only to decide the initial class on this same page.
-function getPrivacyCookie() {
+// Small per-browser preferences (privacy mode, whether the getting-started walkthrough has been
+// dismissed) are persisted via a cookie, not localStorage -- this app's own port changes on every
+// restart (the CLI's own default is an OS-assigned ephemeral port, see app.ts), and localStorage is
+// scoped to the full origin (scheme+host+port), so it would reset every time the server restarts on
+// a new port even though nothing about the browser or the preference itself changed. A cookie's
+// scope omits the port (RFC 6265 -- unrelated services on different ports of the same host share
+// cookies), so the same "localhost" preference survives a restart. Still never sent anywhere else --
+// this server is the only thing reading it, and only to decide the initial state on this same page.
+function getCookie(name) {
   return (
     document.cookie
       .split("; ")
-      .find((row) => row.startsWith("privacyMode="))
+      .find((row) => row.startsWith(`${name}=`))
       ?.split("=")[1] ?? null
   )
 }
-function setPrivacyCookie(value) {
-  document.cookie = `privacyMode=${value}; path=/; max-age=31536000; samesite=lax`
+function setCookie(name, value) {
+  document.cookie = `${name}=${value}; path=/; max-age=31536000; samesite=lax`
 }
+
+// Privacy mode -- an Actual-style eye toggle that blurs dollar figures (anything wrapped in
+// moneySpan) without touching labels, ages, or percentages.
 function applyPrivacyMode(active) {
   document.body.classList.toggle("privacy", active)
   const btn = document.getElementById("privacyToggle")
   if (btn) btn.setAttribute("aria-pressed", String(active))
 }
+document.getElementById("walkthroughDismiss").addEventListener("click", () => {
+  document.getElementById("walkthrough").hidden = true
+  try {
+    setCookie("walkthroughDismissed", "1")
+  } catch {
+    // Cookies disabled -- stays dismissed for this page view only, reappears on the next load.
+  }
+})
+
 document.getElementById("privacyToggle").addEventListener("click", () => {
   const active = !document.body.classList.contains("privacy")
   applyPrivacyMode(active)
   try {
-    setPrivacyCookie(active ? "1" : "0")
+    setCookie("privacyMode", active ? "1" : "0")
   } catch {
     // Cookies disabled -- the toggle still works for this page view, it just won't be remembered.
   }
 })
 try {
-  applyPrivacyMode(getPrivacyCookie() === "1")
+  applyPrivacyMode(getCookie("privacyMode") === "1")
 } catch {
   applyPrivacyMode(false)
 }

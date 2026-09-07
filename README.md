@@ -208,6 +208,16 @@ moved on.
 
 ### Retirement — Configure tab
 
+The first time you open the page with nothing imported into Actual yet, a
+**"Getting started"** banner walks through the three steps end to end
+(fill in Plan/Accounts here → Analyze tab → Download dashboard → import it
+into Actual via Reports → new page → "…" menu → Import). It appears
+automatically whenever no live FIRE dashboard is found (the same check
+"Configured in the Actual Dashboard" below already makes) and disappears
+on its own the moment one is — or dismiss it with the × any time before
+that; the dismissal is a per-browser cookie, so it stays dismissed across
+restarts without needing a live dashboard to hide it permanently.
+
 **Plan**: birth date, one or more retirement ages to compare (space- or
 comma-separated), and the age to assume the plan needs to last to (a
 conservative default, not a lifespan estimate).
