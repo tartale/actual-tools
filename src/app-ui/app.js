@@ -191,9 +191,37 @@ function renderSimSettings() {
   setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
 }
 
+// Plain-language labels matching Actual's own Monte Carlo/Crossover config UI copy verbatim
+// (MonteCarloConfiguration.tsx, MonteCarloWithdrawalRuleConfiguration.tsx,
+// MonteCarloTaxConfiguration.tsx, Crossover.tsx) -- used both for the Simulation settings
+// dropdown option text (see index.html) and for the read-only values shown in "Configured in the
+// Actual Dashboard" below, so the same setting always reads the same way in both places.
+const WITHDRAWAL_STRATEGY_LABELS = {
+  proportional: "Split proportionally across pots",
+  sequential: "Drain pots in order",
+  "best-performer": "Spend from the best performer first",
+  "target-mix": "Keep pots at their target mix",
+}
+const RETURN_MODEL_LABELS = {
+  normal: "Random (normal distribution)",
+  "historical-bootstrap": "Historical returns, shuffled",
+  "historical-sequence": "Historical sequences (replay)",
+}
+const WITHDRAWAL_RULE_LABELS = {
+  none: "None (fixed withdrawals)",
+  guardrails: "Guardrails (Guyton-Klinger)",
+  ratcheting: "Ratcheting (Kitces)",
+  "floor-ceiling": "Floor & ceiling (Bengen)",
+  boundaries: "Boundaries",
+}
+const TAX_MODEL_LABELS = { flat: "Flat rate per pot", bands: "Tax bands (progressive)" }
+const PROJECTION_TYPE_LABELS = { hampel: "Hampel Filtered Median", median: "Median", mean: "Mean" }
+
 // Renders the read-only "Configured in the Actual Dashboard" panel from GET /api/retirement/live-settings
 // -- fetched separately from the main state (see loadLiveSettings) since it's its own live ActualQL
-// read and isn't needed on every keystroke the way account balances are.
+// read and isn't needed on every keystroke the way account balances are. Split into Crossover and
+// Simulation sections since several field names/values (minimum withdrawal, return-ish figures)
+// could otherwise read as belonging to either widget.
 function renderLiveSettings(settings) {
   const container = document.getElementById("liveSettings")
   if (!settings || (!settings.crossover && !settings.monteCarlo)) {
@@ -206,26 +234,38 @@ function renderLiveSettings(settings) {
     const valueHtml = isMoney ? moneySpan(value) : escapeHtml(String(value))
     return `<div class="kv"><span class="k">${escapeHtml(label)}${isPinned ? " (pinned by you)" : ""}</span><span class="v${isPinned ? " pinned" : ""}">${valueHtml}</span></div>`
   }
-  const rows = []
+  const sections = []
   if (settings.crossover) {
     const c = settings.crossover
-    rows.push(row("Safe withdrawal rate", `${Math.round(c.safeWithdrawalRate * 1000) / 10}%`))
-    rows.push(row("Estimated return", c.estimatedReturn == null ? "auto" : `${Math.round(c.estimatedReturn * 1000) / 10}%`))
-    rows.push(row("Projection type", c.projectionType))
-    rows.push(row("Expense adjustment", `${Math.round(c.expenseAdjustmentFactor * 100)}%`))
+    sections.push({
+      label: "Crossover",
+      rows: [
+        row("Safe withdrawal rate", `${Math.round(c.safeWithdrawalRate * 1000) / 10}%`),
+        row("Estimated return", c.estimatedReturn == null ? "auto" : `${Math.round(c.estimatedReturn * 1000) / 10}%`),
+        row("Projection type", PROJECTION_TYPE_LABELS[c.projectionType] ?? c.projectionType),
+        row("Expense adjustment", `${Math.round(c.expenseAdjustmentFactor * 100)}%`),
+      ],
+    })
   }
   if (settings.monteCarlo) {
     const m = settings.monteCarlo
-    rows.push(row("Withdrawal strategy", m.withdrawalStrategy ?? "—", "monteCarloWithdrawalStrategy"))
-    rows.push(row("Return model", m.returnModel ?? "—", "monteCarloReturnModel"))
-    rows.push(row("Withdrawal rule", m.withdrawalRuleType))
-    rows.push(row("Tax model", m.taxModel))
-    rows.push(row("Inflation (mean)", `${Math.round((m.inflationMean ?? 0) * 1000) / 10}%`, "monteCarloInflationMean"))
-    rows.push(row("Inflation (std dev)", `${Math.round(m.inflationStdDev * 1000) / 10}%`, "monteCarloInflationStdDev"))
-    rows.push(row("Minimum withdrawal", usd(m.minimumWithdrawal), "monteCarloMinimumWithdrawal"))
-    rows.push(row("Simulation count", m.simulationCount.toLocaleString(), "monteCarloSimulationCount"))
+    sections.push({
+      label: "Simulation",
+      rows: [
+        row("Withdrawal strategy", (m.withdrawalStrategy && WITHDRAWAL_STRATEGY_LABELS[m.withdrawalStrategy]) ?? m.withdrawalStrategy ?? "—", "monteCarloWithdrawalStrategy"),
+        row("Return model", (m.returnModel && RETURN_MODEL_LABELS[m.returnModel]) ?? m.returnModel ?? "—", "monteCarloReturnModel"),
+        row("Withdrawal rule", WITHDRAWAL_RULE_LABELS[m.withdrawalRuleType] ?? m.withdrawalRuleType),
+        row("Tax model", TAX_MODEL_LABELS[m.taxModel] ?? m.taxModel),
+        row("Inflation (mean)", `${Math.round((m.inflationMean ?? 0) * 1000) / 10}%`, "monteCarloInflationMean"),
+        row("Inflation (std dev)", `${Math.round(m.inflationStdDev * 1000) / 10}%`, "monteCarloInflationStdDev"),
+        row("Minimum withdrawal", usd(m.minimumWithdrawal), "monteCarloMinimumWithdrawal"),
+        row("Simulation count", m.simulationCount.toLocaleString(), "monteCarloSimulationCount"),
+      ],
+    })
   }
-  container.innerHTML = `<div class="kv-grid">${rows.join("")}</div>`
+  container.innerHTML = sections
+    .map((section) => `<div class="income-label">${escapeHtml(section.label)}</div><div class="kv-grid">${section.rows.join("")}</div>`)
+    .join("")
 }
 
 async function loadLiveSettings() {

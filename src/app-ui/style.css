@@ -228,6 +228,7 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .live-settings-body { border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 10px; }
 .live-settings-body h3 { font-size: 12px; font-weight: 500; margin: 0; color: var(--ink-strong); }
 .kv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 20px; }
+#liveSettings .kv-grid + .income-label { margin-top: 14px; }
 .kv-grid .kv { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px dashed var(--line-soft); font-size: 12px; }
 .kv-grid .kv .k { color: var(--ink-soft); }
 .kv-grid .kv .v { color: var(--ink); font-weight: 500; }
