@@ -1,0 +1,17 @@
+{
+  // Its own program purely so the DOM types these tests need stay out of everything else. The
+  // callbacks handed to page.evaluate run inside the browser, so they reference document/window --
+  // but the rest of this repo is Node-only, and adding "dom" to the root lib would let server code
+  // reference browser globals and still compile. Kept as a nested tsconfig.json rather than a
+  // differently-named file at the root so both tsc and eslint's project service find it the
+  // ordinary way, by walking up from the file.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // dom.iterable too, since these callbacks spread NodeLists.
+    "lib": ["es2023", "dom", "dom.iterable"]
+  },
+  // The root config excludes this directory (it is checked here instead); that exclude would be
+  // inherited and would leave this program with no inputs at all, so it is reset.
+  "include": ["."],
+  "exclude": []
+}

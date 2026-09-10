@@ -17,7 +17,7 @@
   "scripts": {
     "lint": "eslint .",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/browser-tests"
   },
   "devDependencies": {
     "@eslint/js": "^9",

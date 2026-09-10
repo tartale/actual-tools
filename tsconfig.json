@@ -14,5 +14,7 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Checked separately, against its own DOM-enabled config -- see src/browser-tests/tsconfig.json.
+  "exclude": ["src/browser-tests"]
 }

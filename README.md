@@ -699,12 +699,31 @@ to the same major via `LANGUAGE_VERSIONS="typescript-5"`.
 
 ### Driving the app in a browser
 
-Playwright is available for checking the companion app's own behaviour --
-the parts that unit tests can't reach, like whether a menu actually opens
-or the month roll really scrolls through the months in between. The
-browsers are baked into the sandbox image (`.claude/sandbox/plugin.sh`)
-rather than downloaded per session, and `./actual test` points Playwright
-at them by exporting `PLAYWRIGHT_BROWSERS_PATH` when it finds them.
+`src/browser-tests/` drives the companion app in a real browser, covering
+what route tests can't reach: whether the header menu actually opens,
+whether hidden categories appear when toggled, whether moving the month
+window rolls through the months in between, and whether the Category
+column holds still while they pass. Every case there stands for a bug that
+reached the working tree at some point and was only caught by pointing a
+browser at the page.
+
+No stub Actual server is involved: `startAppServer` runs inside the test
+process, so its own outbound calls are stubbed exactly as the route tests
+stub them, and only the browser is out-of-process. These run as part of
+`./actual test` like everything else -- and skip themselves, with a
+warning, on a machine where the browsers aren't installed, the same
+courtesy `./actual lint` extends to a missing shellcheck.
+
+They typecheck against `src/browser-tests/tsconfig.json` rather than the
+root one, purely so the DOM types those in-browser callbacks need stay out
+of the rest of the repo: everything else here is Node-only, and putting
+`dom` in the root `lib` would let server code reference browser globals and
+still compile.
+
+The browsers are baked into the sandbox image
+(`.claude/sandbox/plugin.sh`) rather than downloaded per session, and
+`./actual test` points Playwright at them by exporting
+`PLAYWRIGHT_BROWSERS_PATH` when it finds them.
 
 That export matters because the image sets the variable from
 `/etc/profile.d`, which only a *login* shell reads -- so a script, an

@@ -129,9 +129,26 @@ to rediscover.
 
 **How to apply**: unit tests cover the server side (`hidden` pass-through,
 full-span fetches, the empty-selection 400, the `no-store` header --
-`budget-tools.test.ts`/`app-server.test.ts`, 402 tests total). The client-side
-behaviour above is **not** automatically tested -- there is no browser test
-harness in the repo yet, and it was all verified by ad-hoc Playwright scripts
-against the live budget. That gap is the obvious next piece of work if this
-area keeps changing. See [[sandbox-toolchain-policy]] for how Playwright is
-set up here, and [[fire-dashboard]] for the app's Retirement section.
+`budget-tools.test.ts`/`app-server.test.ts`). The client-side behaviour above
+is covered by `src/browser-tests/app-ui.test.ts`, which drives a real browser
+against a real server: one case per bug listed here. 407 tests total.
+
+**The harness is simpler than it looks, and that is the useful part**: no stub
+Actual server is needed, because `startAppServer` runs *inside* the vitest
+process, so its outbound calls are stubbed with `vi.stubGlobal("fetch", ...)`
+exactly as `app-server.test.ts` already does. Only the browser is
+out-of-process. It skips itself with a warning when Playwright's browsers
+aren't installed (mirroring `./actual lint`'s missing-shellcheck behaviour),
+and it typechecks under its own `src/browser-tests/tsconfig.json` so the DOM
+lib those in-browser callbacks need never reaches the Node-only code -- adding
+`dom` to the root `lib` would let `document` compile inside `app-server.ts`.
+
+**Every one of those tests was mutation-checked**: each bug was deliberately
+reintroduced and the matching test confirmed to fail (and, for the roll, that
+disabling the roll entirely fails it rather than passing on the end state
+alone). Worth repeating for anything added here -- an end-state-only
+assertion would have passed against the very implementation this feature
+replaced.
+
+See [[sandbox-toolchain-policy]] for how Playwright is set up here, and
+[[fire-dashboard]] for the app's Retirement section.
