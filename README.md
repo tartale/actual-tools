@@ -300,7 +300,18 @@ old → new amounts, grouped by month.
 nothing to preview when nothing will be written) — uses the
 same robust (median-based) outlier test as the CLI
 (`src/anomaly-detect.ts`) against each category's own trailing 12-month
-history. Any month flagged this way unlocks a second card, **Tag flagged
+history. Each finding is also boxed in the grid itself, on that category and
+month's **Spent** figure — the same idea as a Preview marking the Budgeted
+cells it would change, and in the place you were already looking rather
+than only in the list above. Colour and an arrow both carry the direction
+(▲ spent more than usual, ▼ less), a group's own total carries the flag so
+a folded group still shows it, and a flagged `$0.00` keeps its full weight
+instead of being dimmed as an empty cell — "spent $0.00 where -$210.00 is
+typical" is exactly the kind of finding worth looking at. Like a preview,
+the flags describe one run over one selection, so changing the action, the
+months or the categories drops them.
+
+Any month flagged this way unlocks a second card, **Tag flagged
 transactions**: prepends a `#anomaly-high`/`#anomaly-low` tag to the note
 of whichever transaction(s) in that month are themselves responsible (or,
 if none stands out individually, the single largest transaction that

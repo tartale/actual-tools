@@ -72,6 +72,18 @@ actually carries the flag (the group header for a hidden group, the row for a
 hidden category); a hidden group's categories inherit only the dimming, so
 the icon isn't repeated down every row.
 
+**Anomaly findings are drawn into the grid, not just listed** (2026-09-10):
+`PICKER.flagged` is a `categoryId|month -> direction` map, keyed exactly like
+`PICKER.preview`, and boxes the **Spent** cell (a preview boxes **Budgeted** --
+an anomaly is a statement about what was spent, a preview about what would be
+budgeted). Both are overlays describing one run over one selection, so both are
+dropped together by `clearActionOverlays` whenever the action, months or
+categories change. Two details that are easy to get wrong: a flagged `$0.00`
+must not pick up the `bt-zero` dimming (spending nothing where -$210 is typical
+is the finding), and a group total is only given a direction arrow when every
+flagged category inside agrees on one -- a summed figure has no direction when
+some are high and some low.
+
 ## The month roll (2026-09-10)
 
 Moving the window **rolls sideways through every month in between**: going

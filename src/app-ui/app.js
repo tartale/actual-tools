@@ -965,9 +965,8 @@ function applySelectedAction() {
   document.getElementById("previewSetValuesBtn").hidden = findingAnomalies
   document.getElementById("applySetValuesBtn").hidden = findingAnomalies
   document.getElementById("findAnomaliesBtn").hidden = !findingAnomalies
-  document.getElementById("actionResult").innerHTML = ""
   document.getElementById("tagCard").hidden = true
-  PICKER.preview = new Map()
+  clearActionOverlays()
   if (PICKER.table) renderPickerTable(PICKER.table)
   updatePickerButtons()
 }
@@ -988,6 +987,10 @@ const PICKER = {
   table: null,
   checked: new Set(),
   preview: new Map(),
+  // What a Find anomalies run flagged, keyed the same way the preview is: `categoryId|month` ->
+  // direction. Both are overlays describing one run over one selection, and both are dropped by
+  // the same events -- see clearActionOverlays.
+  flagged: new Map(),
   showHidden: false,
   loadSeq: 0,
   renderedWindowStart: null,
@@ -1025,12 +1028,18 @@ function selectedMonths() {
 // click that picked a column also lets go of it. Clicking one month inside a wider span collapses
 // to just that month, matching how selecting in a list normally behaves; a second click then
 // clears. The span always stays contiguous, since that's what the action itself takes.
+// Function to drop whatever the last run left on screen -- the preview figures, the anomaly flags,
+// and the result beside them. They describe one specific run over one specific selection, so any
+// change to that selection makes them stale rather than merely out of date.
+function clearActionOverlays() {
+  PICKER.preview = new Map()
+  PICKER.flagged = new Map()
+  document.getElementById("actionResult").innerHTML = ""
+}
+
 function selectMonth(month, extend) {
   const picker = PICKER
-  // The overlay describes one specific run over one specific selection; changing the selection
-  // makes it stale, so it goes rather than lingering over months it never covered.
-  picker.preview = new Map()
-  document.getElementById("actionResult").innerHTML = ""
+  clearActionOverlays()
   if (extend && picker.anchor) {
     picker.selStart = picker.anchor < month ? picker.anchor : month
     picker.selEnd = picker.anchor < month ? month : picker.anchor
@@ -1323,10 +1332,16 @@ function renderPickerTable(table, options = {}) {
   // header's rowspan would otherwise throw off by one on the sub-header row).
   const preview = PICKER.preview
   const previewedBudget = (categoryId, month) => preview.get(`${categoryId}|${month}`)
-  const numCell = (cents, first, picked, changed) =>
-    `<td class="bt-num${first ? " bt-month-start" : ""}${picked}${changed ? " bt-changed" : ""}${cents === 0 && !changed ? " bt-zero" : ""}">${usd(cents)}</td>`
-  const numCells = (m, month, change) =>
-    `${numCell(change ? change.newBudgeted : m.budgeted, true, pick(month), Boolean(change))}${numCell(m.spent, false, pick(month), false)}${numCell(m.balance, false, pick(month), false)}`
+  // A flag lands on the SPENT figure, not the budgeted one: an anomaly is a statement about what
+  // was spent that month, where a preview is a statement about what would be budgeted.
+  const flagged = PICKER.flagged
+  const flaggedAt = (categoryId, month) => flagged.get(`${categoryId}|${month}`) ?? null
+  // A zero that has been flagged keeps its full weight -- "spent $0.00 where -$210.00 is typical"
+  // is precisely the kind of finding worth looking at, so bt-zero must not dim it away.
+  const numCell = (cents, first, picked, changed, flag) =>
+    `<td class="bt-num${first ? " bt-month-start" : ""}${picked}${changed ? " bt-changed" : ""}${flag ? ` bt-flagged bt-flagged-${flag}` : ""}${cents === 0 && !changed && !flag ? " bt-zero" : ""}">${flag === "high" || flag === "low" ? `<span class="bt-flag-mark">${flag === "high" ? "\u25b2" : "\u25bc"}</span> ` : ""}${usd(cents)}</td>`
+  const numCells = (m, month, change, flag) =>
+    `${numCell(change ? change.newBudgeted : m.budgeted, true, pick(month), Boolean(change), null)}${numCell(m.spent, false, pick(month), false, flag)}${numCell(m.balance, false, pick(month), false, null)}`
 
   // A month's whole column shades when it's picked, and its header is the control that picks it --
   // click for one month, shift-click for a span.
@@ -1354,14 +1369,22 @@ function renderPickerTable(table, options = {}) {
     .map((group, groupIndex) => {
       const groupClass = `bt-group-${groupIndex}`
       const groupTotalsChanged = (month) => group.categories.some((category) => previewedBudget(category.id, month))
+      // So a flag is still visible on a folded group. Only claims a direction when every flagged
+      // category inside agrees on one -- otherwise the total is marked without an arrow, since
+      // "some high, some low" is not a direction the summed figure actually has.
+      const groupFlag = (month) => {
+        const directions = [...new Set(group.categories.map((category) => flaggedAt(category.id, month)).filter(Boolean))]
+        if (directions.length === 0) return null
+        return directions.length === 1 ? directions[0] : "mixed"
+      }
       const groupTotalCells = table.months
-        .map((month) => numCells(sumCells(group.categories, month), month, groupTotalsChanged(month) ? { newBudgeted: sumCells(group.categories, month).budgeted } : null))
+        .map((month) => numCells(sumCells(group.categories, month), month, groupTotalsChanged(month) ? { newBudgeted: sumCells(group.categories, month).budgeted } : null, groupFlag(month)))
         .join("")
       const rows = group.categories
         .map(
           (category, categoryIndex) => `<tr class="bt-row ${groupClass} ${categoryIndex % 2 === 1 ? "bt-row-alt" : ""}${category.hidden || group.hidden ? " bt-hidden" : ""}">
             <td class="bt-name"><label><input type="checkbox" class="bt-category-check" data-category-id="${category.id}" data-group="${groupClass}">${category.hidden ? hiddenMark : ""} ${escapeHtml(category.name)}</label></td>
-            ${table.months.map((month) => numCells(category.months[month] ?? { budgeted: 0, spent: 0, balance: 0 }, month, previewedBudget(category.id, month))).join("")}
+            ${table.months.map((month) => numCells(category.months[month] ?? { budgeted: 0, spent: 0, balance: 0 }, month, previewedBudget(category.id, month), flaggedAt(category.id, month))).join("")}
           </tr>`,
         )
         .join("")
@@ -1533,8 +1556,7 @@ function syncGroupCheckboxes() {
 function syncCheckedCategories() {
   const picker = PICKER
   // Same reasoning as selectMonth: a different set of categories is a different run.
-  picker.preview = new Map()
-  document.getElementById("actionResult").innerHTML = ""
+  clearActionOverlays()
   document.querySelectorAll("#budgetTable .bt-category-check").forEach((checkbox) => {
     if (checkbox.checked) {
       picker.checked.add(checkbox.dataset.categoryId)
@@ -1642,6 +1664,11 @@ async function runFindAnomalies() {
     const res = await api("/api/budget/anomalies", { method: "POST", body: JSON.stringify({ categories, startMonth, endMonth }) })
     clearError()
     renderAnomalyFindings(res.findings)
+    // Same treatment a preview gets: put the result in the grid you were already reading, not only
+    // in the list above it. Months outside the visible window keep their flag in the map and light
+    // up when the window rolls back over them.
+    picker.flagged = new Map(res.findings.map((finding) => [`${finding.category.id}|${finding.month}`, finding.direction]))
+    renderPickerTable(picker.table)
     lastAnomalyQuery = { categories, startMonth, endMonth }
     document.getElementById("tagCard").hidden = res.findings.length === 0
     document.getElementById("tagResult").innerHTML = ""

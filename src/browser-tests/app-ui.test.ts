@@ -67,8 +67,19 @@ const MONTH_CATEGORIES = [
   { id: "c3", name: "Flights", is_income: false, hidden: false, group_id: "g2", budgeted: 10000, spent: -2500, balance: 7500, carryover: false },
 ]
 
-// Every month answers with the same figures -- these tests are about which months are on screen and
-// how they get there, never about the numbers inside them.
+// Every month answers with the same figures except one: Groceries spends an order of magnitude more
+// in the current month than in any other. Months are otherwise interchangeable here -- these tests
+// are about which months are on screen and how they get there -- but a history with no variation in
+// it has no anomalies in it either, so the outlier is what gives a Find run something to find.
+function thisMonth(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+}
+
+function monthCategoriesFor(month: string) {
+  return MONTH_CATEGORIES.map((category) => (category.id === "c1" && month === thisMonth() ? { ...category, spent: -900000 } : category))
+}
+
 function mockActualFetch() {
   return vi.fn(async (url: string | URL, init?: RequestInit) => {
     const u = new URL(url)
@@ -78,7 +89,8 @@ function mockActualFetch() {
     if (/\/accounts$/.test(u.pathname)) return jsonResponse({ data: [] })
     if (/\/categorygroups$/.test(u.pathname)) return jsonResponse({ data: CATEGORY_GROUPS })
     if (/\/accounts\/[^/]+\/transactions/.test(u.pathname)) return jsonResponse({ data: [] })
-    if (/\/months\/[^/]+\/categories$/.test(u.pathname)) return jsonResponse({ data: MONTH_CATEGORIES })
+    const monthMatch = /\/months\/([^/]+)\/categories$/.exec(u.pathname)
+    if (monthMatch) return jsonResponse({ data: monthCategoriesFor(monthMatch[1] as string) })
     if (/\/run-query$/.test(u.pathname)) return jsonResponse({ data: [] })
     return jsonResponse({})
   })
@@ -254,6 +266,44 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
     // filmstrip stretched <main> and pushed the card's own buttons off the right edge.
     expect(midRoll.pageWidth).toBeLessThanOrEqual(midRoll.viewportWidth)
     expect(midRoll.pageWidth).toBe(pageWidthBefore)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("flags an anomaly in the grid, on the Spent figure, not only in the list", async () => {
+    const { page: ui, errors } = await openBudgetPage()
+    await ui.locator("#budgetTable th.bt-month-head").first().click()
+    await ui.locator("#budgetTable .bt-group-check").first().check()
+    await ui.selectOption("#budgetAction", "anomalies")
+    await ui.locator("#findAnomaliesBtn").click()
+    await ui.waitForSelector("#budgetTable .bt-flagged", { timeout: 20000 })
+
+    const flagged = await ui.evaluate(() => {
+      const cells = [...document.querySelectorAll("#budgetTable tr.bt-row .bt-num.bt-flagged")]
+      const row = cells[0]?.closest("tr")
+      const cellsInRow = row ? [...row.querySelectorAll(".bt-num")] : []
+      return {
+        count: cells.length,
+        // Budgeted, Spent, Balance -- the flag belongs on the middle one.
+        indexInRow: cellsInRow.indexOf(cells[0] as Element),
+        category: row?.querySelector(".bt-name label")?.textContent?.trim(),
+        direction: [...(cells[0]?.classList ?? [])].find((c) => c.startsWith("bt-flagged-")),
+        dimmed: cells[0]?.classList.contains("bt-zero"),
+        // The group's own total carries it too, so a folded group still shows it.
+        groupFlagged: document.querySelectorAll("#budgetTable tr.bt-group-header .bt-num.bt-flagged").length,
+        listed: document.getElementById("actionResult")?.textContent?.includes("Groceries"),
+      }
+    })
+    expect(flagged.count).toBe(1)
+    expect(flagged.indexInRow).toBe(1)
+    expect(flagged.category).toBe("Groceries")
+    expect(flagged.direction).toBe("bt-flagged-high")
+    expect(flagged.dimmed).toBe(false)
+    expect(flagged.groupFlagged).toBe(1)
+    expect(flagged.listed).toBe(true)
+
+    // The flag describes one run over one selection, so changing either drops it.
+    await ui.selectOption("#budgetAction", "balance")
+    expect(await ui.evaluate(() => document.querySelectorAll("#budgetTable .bt-flagged").length)).toBe(0)
     expect(errors).toEqual([])
   }, 60000)
 

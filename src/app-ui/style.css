@@ -425,6 +425,23 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 /* A zero reads as "nothing happened here" in Actual's own table too -- dimmed so the figures that
    actually moved are what the eye lands on. */
 .budget-table-el .bt-row .bt-num.bt-zero { color: var(--ink-faint); }
+/* A month a Find anomalies run flagged, boxed on the Spent figure the same way a pending edit is
+   boxed on the Budgeted one -- so a finding is findable in the grid you were already reading and
+   not only in the list above it. Coloured by direction to match the findings list's own chips,
+   with an arrow as well, since colour alone shouldn't be what separates high from low. A group
+   total whose categories disagree on direction is boxed without an arrow. */
+.budget-table-el .bt-num.bt-flagged { color: var(--ink-strong); font-weight: 600; }
+.budget-table-el .bt-num.bt-flagged-high {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 60%, transparent);
+}
+.budget-table-el .bt-num.bt-flagged-low,
+.budget-table-el .bt-num.bt-flagged-mixed {
+  background: color-mix(in srgb, var(--info) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--info) 60%, transparent);
+}
+.bt-flag-mark { font-size: 9px; vertical-align: 1.5px; opacity: 0.85; }
+
 /* A cell a Preview/Apply would change (or just changed): the figure shown is the new one, boxed so
    the pending edits are findable at a glance without a written list beside the table. */
 .budget-table-el .bt-num.bt-changed {
