@@ -28,6 +28,28 @@ Revisit when typescript-eslint ships TS 7 support. (Biome and oxlint were the
 alternatives that would have kept TS 7; oxlint declares TS 7 support through
 `oxlint-tsgolint`.)
 
+**Playwright (added 2026-09-09/10)**, for driving the companion app in a real
+browser -- see [[app-budget-section]] for what that turned up. It follows the
+same shape as `vitest`: installed globally in the image
+(`tools/playwright.sh` in `.claude/sandbox/plugin.sh`, browsers baked into
+`/ms-playwright`) **and** pinned as a project devDependency (`"playwright":
+"^1"`). Both are needed and for different reasons -- the image install
+provides the CLI and the browsers, while the devDependency is what makes
+`import { chromium } from "playwright"` actually resolve from `/workspace`
+(global `node_modules` is not on the project's resolution path).
+
+**The gotcha worth remembering**: the image exports
+`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` from `/etc/profile.d/playwright.sh`,
+which only a **login** shell reads. A script, an agent's shell, an editor
+terminal or a CI step therefore has the browsers on disk while Playwright
+looks in `~/.cache/ms-playwright` and fails with a bare "Executable doesn't
+exist at ...". `./actual test` now sets the variable itself when it is unset
+and `/ms-playwright` exists (`ensurePlaywrightBrowsers` in `actual`), before
+`ensureDependencies` -- deliberately in that order, since the `playwright`
+package's own postinstall reads the same variable and will then skip a
+redundant several-hundred-megabyte browser download. Off the image the
+variable is left alone so Playwright falls back to its own default.
+
 **Why**: the major is where backward compatibility actually matters, so
 pinning minor/patch just creates drift to clean up later with no
 compatibility benefit.
