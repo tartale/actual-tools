@@ -111,7 +111,11 @@ export function formatError(error: unknown): string {
 
 // Function to validate month format
 export function validateMonthFormat(month: string): void {
-  if (!/^\d{4}-\d{2}$/.test(month)) {
+  // The month part is range-checked, not just counted: a shape-only test accepted 2026-13, which
+  // addMonths then rolls over into 2027-01, so a typo'd month quietly operated on a different month
+  // instead of being rejected. Nothing in this repo produces a month any other way than
+  // getUTCMonth() + 1, so no legitimate caller is turned away by this.
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
     throw new Error(`Invalid month format: ${month}`)
   }
 }

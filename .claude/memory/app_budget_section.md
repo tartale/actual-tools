@@ -8,8 +8,11 @@ metadata:
   originSessionId: e2895bd5-4b33-4a55-8b6d-f01dc8ec722d
 ---
 
-`./actual app` gained a **Budget** section (nav order: Budget / Transactions
-"Planned" / Retirement, with Budget the default landing page). It is the web
+`./actual app` gained a **Budget** section (nav: Budget / Retirement, with
+Budget the default landing page). A disabled "Transactions -- Planned" nav item
+sat between them for a while and was removed 2026-09-10: working with
+individual transactions is one-shot, scriptable work that the CLI does well
+(`./actual transactions match-uncleared`) and a page adds nothing to. It is the web
 equivalent of `./actual budget set-values` and `./actual budget anomalies`,
 sharing `src/budget-tools.ts` with both CLIs so there is one implementation
 rather than two drifting apart.

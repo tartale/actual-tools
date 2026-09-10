@@ -157,8 +157,10 @@ analysis with a live preview (**Budget**, below — the web equivalent of
 `./actual budget set-values`/`anomalies`, which stay available too for
 scripting/automation), and retirement/FIRE configuration and dashboard
 health (**Retirement**, further below — replaces the old
-`./actual configure`/`./actual reports fire` entirely). **Transactions**
-is a placeholder for now.
+`./actual configure`/`./actual reports fire` entirely). Working with
+individual transactions stays a CLI job — see `./actual transactions
+match-uncleared` — since it is one-shot, scriptable work rather than
+something a page helps with.
 
 ```
 ./actual app [-f PATH] [-i PATH] [-o PATH] [-p N] [--no-open]
@@ -748,6 +750,16 @@ stub them, and only the browser is out-of-process. These run as part of
 `./actual test` like everything else -- and skip themselves, with a
 warning, on a machine where the browsers aren't installed, the same
 courtesy `./actual lint` extends to a missing shellcheck.
+
+The CLIs are covered on two levels of their own: `cli-args.test.ts` imports
+each entry point's `parseArguments` directly (they export it, and guard
+their own `main()` on being the program node was actually pointed at, so
+importing one doesn't run it), and `cli-dispatch.test.ts` runs `./actual`
+as a real process for the routing and exit codes that live in bash where
+neither `tsc` nor eslint reaches. Nothing in either touches the network:
+every case prints help or is rejected before a request is made, and the
+subprocess tests run with a blanked environment so a machine with real
+`AB_*` variables set can't wander into a live budget.
 
 They typecheck against `src/browser-tests/tsconfig.json` rather than the
 root one, purely so the DOM types those in-browser callbacks need stay out

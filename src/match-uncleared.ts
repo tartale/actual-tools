@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { pathToFileURL } from "node:url"
+
 import {
   addDays,
   addTagToNotes,
@@ -64,7 +66,7 @@ function defaultSinceDate(): string {
 }
 
 // Function to parse and validate command-line arguments
-function parseArguments(argv: readonly string[]): Options {
+export function parseArguments(argv: readonly string[]): Options {
   let sinceDate: string | null = null
   let dryRun = process.env.DRY_RUN === "true"
 
@@ -173,7 +175,12 @@ process.stdout.on("error", (error: NodeJS.ErrnoException) => {
   throw error
 })
 
-main().catch((error: unknown) => {
-  process.stderr.write(`${formatError(error)}\n`)
-  process.exit(1)
-})
+// Only runs when this file is the program being executed, so a test can import parseArguments
+// above without the CLI running itself on the way in. Invoked through the ./actual dispatcher or
+// its package.json bin entry, this is exactly the file node was pointed at.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    process.stderr.write(`${formatError(error)}\n`)
+    process.exit(1)
+  })
+}

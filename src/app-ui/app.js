@@ -906,7 +906,7 @@ document.querySelectorAll("[data-tab]").forEach((tab) => {
   })
 })
 
-// --- Section switching (the sidebar's Budget/Transactions/Retirement nav) ---
+// --- Section switching (the sidebar's Budget/Retirement nav) ---
 
 // Function to switch the visible top-level section -- shared by the click handler below and the
 // on-load restoration a bit further down, so clicking a nav item and reloading the page onto a

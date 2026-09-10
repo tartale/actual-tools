@@ -131,10 +131,8 @@ body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); accent-color: 
 .subline { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
 nav.sections { display: flex; flex-direction: column; gap: 1px; }
 .section-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 9px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); cursor: pointer; }
-.section-item:hover:not(.active):not(.disabled) { background: var(--sidebar-hover); }
+.section-item:hover:not(.active) { background: var(--sidebar-hover); }
 .section-item.active { background: var(--accent-selected-bg); color: var(--accent-selected); }
-.section-item.disabled { color: #627d98; cursor: default; }
-.section-item .soon { font-size: 9px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--sidebar-hover); padding: 1px 4px; border-radius: 3px; }
 .rail-foot { margin-top: auto; font-size: 11px; color: var(--ink-faint); border-top: 1px solid var(--sidebar-hover); padding-top: 12px; }
 .rail-foot code { font-family: 'Inter', sans-serif; background: var(--sidebar-hover); padding: 1px 4px; border-radius: 3px; font-size: 10.5px; color: var(--ink); }
 

@@ -174,7 +174,9 @@ describe("validateMonthFormat", () => {
   })
 
   it("rejects anything else", () => {
-    for (const bad of ["2026-8", "26-08", "2026/08", "2026-08-01", ""]) {
+    // 2026-13/2026-00 are shaped right and still nonsense: addMonths would roll them over into a
+    // real month rather than fail, so a mistyped month would act on a month nobody asked for.
+    for (const bad of ["2026-8", "26-08", "2026/08", "2026-08-01", "", "2026-13", "2026-00", "2026-99"]) {
       expect(() => validateMonthFormat(bad)).toThrow(`Invalid month format: ${bad}`)
     }
   })

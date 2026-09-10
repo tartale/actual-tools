@@ -219,6 +219,23 @@ the one subcommand for now, but the group exists for whatever else operates
 on individual transactions later, as distinct from `budget`'s category-level
 tools.
 
+**CLI argument parsing and dispatch are tested as of 2026-09-10.** The logic
+these CLIs call was always well covered; the layer between what someone types
+and that logic was not covered at all. Two files now do it: `cli-args.test.ts`
+imports each entry point's `parseArguments` (now exported, with `main()` guarded
+on `import.meta.url === pathToFileURL(process.argv[1]).href` so importing the
+module doesn't run the CLI), doubling `process.exit`/`process.stderr.write` to
+capture exit codes; and `cli-dispatch.test.ts` spawns `./actual` itself for the
+bash routing, which neither tsc nor eslint reaches. Both are network-free, and
+the subprocess one blanks the environment so a machine with real `AB_*` set
+can't reach a live budget through a case that failed to bail out.
+
+**A real bug fell out of writing them**: `validateMonthFormat` checked only the
+*shape* `\d{4}-\d{2}`, so `2026-13` passed and `addMonths` rolled it over into
+`2027-01` -- a mistyped month silently operated on a different month instead of
+erroring. Now range-checked (`0[1-9]|1[0-2]`); safe because every month string
+in the repo is produced by `getUTCMonth() + 1`, which can only be 1-12.
+
 **How to apply**: the full plan snapshot is at
 `.claude/plans/set-budget-migration.md` in the repo (the machine-local copy
 `~/.claude/plans/idempotent-scribbling-gosling.md` does not exist in the
