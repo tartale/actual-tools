@@ -247,10 +247,11 @@ Everything here runs over one picker: pick the months and categories once,
 then choose what to do with them from the **Action** list. Finding
 anomalies is simply one of those actions rather than a separate tab with
 its own copy of the same grid and its own separate selection to make. The
-card's heading and buttons follow whichever action is selected, and any
-result on screen is cleared when it changes — a result describes the run
-that produced it, so leaving it up under a different heading would
-misattribute it.
+buttons follow whichever action is selected, and any result on screen is
+cleared when it changes — a result describes the run that produced it, so
+leaving it up beside a different action would misattribute it. The card
+carries the section's own title and runs to the top of the page, so the
+Action list is the first thing on it.
 
 **Setting values**: pick an **action** (the same five as the CLI --
 `balance`/`spent`/`spent-3`/`spent-12`/`previous` -- or **Custom amount**

@@ -22,12 +22,19 @@ as everything else. `BUDGET_PICKERS` (a map keyed `budget`/`anomaly`, threaded
 through every picker function as a `key` parameter) collapsed to a single
 module-level `PICKER`, and the element ids that used to live on each entry
 (`tableId`/`stripId`/`menuId`) are named where they're used -- there is exactly
-one of each in the markup now. The card's heading and its buttons follow the
-selected action: set-values actions get Preview/Apply, the anomalies action a
-single Find button, since a read-only action has nothing to preview. Changing
-the action clears any result on screen -- a result describes the run that
-produced it, and leaving it up under a different heading would misattribute
-it.
+one of each in the markup now. The buttons follow the selected action:
+set-values actions get Preview/Apply, the anomalies action a single Find
+button, since a read-only action has nothing to preview. Changing the action
+clears any result on screen -- a result describes the run that produced it,
+and leaving it up beside a different action would misattribute it.
+
+The card also carries the section's own `<h1>Budget</h1>` in its head and runs
+flush to the top of the page: the separate `.page-head` block (title plus a
+description) is gone, so the Action list is the first thing on the page rather
+than the third. The top gap moved off `main` and onto `.page-head`/`.top-error`
+themselves, as *padding* not margin -- a top margin on main's first child would
+collapse straight out through main's now-zero top padding. Retirement still has
+its own `.page-head` and is unaffected.
 
 **Watch for this when collapsing that kind of indirection**: dropping
 `tableId`/`stripId`/`menuId` from the picker object left six

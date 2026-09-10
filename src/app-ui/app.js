@@ -950,23 +950,17 @@ function currentMonthValue() {
 // when nothing is going to be written.
 const ANOMALIES_ACTION = "anomalies"
 
-const ACTION_TITLES = {
-  [ANOMALIES_ACTION]: "Find spending anomalies",
-  default: "Bulk update category budget values",
-}
-
 function selectedAction() {
   return document.getElementById("budgetAction").value
 }
 
-// Function to point the card at whichever action is selected: its heading, the amount box that only
-// a custom amount needs, and which buttons are on offer. Results are dropped on the way through --
-// they describe a run of the action that was selected when they were produced, so leaving them up
-// under a different heading would misattribute them.
+// Function to point the card at whichever action is selected: the amount box that only a custom
+// amount needs, and which buttons are on offer. Results are dropped on the way through -- they
+// describe a run of the action that was selected when they were produced, so leaving them up beside
+// a different action would misattribute them.
 function applySelectedAction() {
   const action = selectedAction()
   const findingAnomalies = action === ANOMALIES_ACTION
-  document.getElementById("budgetActionTitle").textContent = ACTION_TITLES[action] ?? ACTION_TITLES.default
   document.getElementById("budgetCustomAmountField").hidden = action !== "custom"
   document.getElementById("previewSetValuesBtn").hidden = findingAnomalies
   document.getElementById("applySetValuesBtn").hidden = findingAnomalies

@@ -139,7 +139,10 @@ nav.sections { display: flex; flex-direction: column; gap: 1px; }
 .rail-foot code { font-family: 'Inter', sans-serif; background: var(--sidebar-hover); padding: 1px 4px; border-radius: 3px; font-size: 10.5px; color: var(--ink); }
 
 /* --- Main --- */
-main { padding: 26px 40px 56px; max-width: 1360px; }
+main { padding: 0 40px 56px; max-width: 1360px; }
+.page-head, .top-error:not([hidden]) { padding-top: 26px; }
+/* A card standing in for a page heading: same bar, a little more room for the larger type. */
+.card-head-page { padding: 14px 16px; }
 .page { display: none; }
 .page.active { display: block; }
 .page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 20px; }
@@ -466,7 +469,8 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
   .rail { flex-direction: row; overflow-x: auto; }
   .summary, .plan-grid, .acct-fields, .income-grid { grid-template-columns: 1fr 1fr; }
   .account-row { grid-template-columns: 1fr; }
-  main { padding: 18px; }
+  main { padding: 0 18px 18px; }
+  .page-head, .top-error:not([hidden]) { padding-top: 18px; }
 }
 
 @media (min-width: 861px) and (max-width: 1150px) {

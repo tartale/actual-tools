@@ -290,7 +290,6 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
         preview: !(document.getElementById("previewSetValuesBtn") as HTMLElement).hidden,
         apply: !(document.getElementById("applySetValuesBtn") as HTMLElement).hidden,
         find: !(document.getElementById("findAnomaliesBtn") as HTMLElement).hidden,
-        title: document.getElementById("budgetActionTitle")?.textContent,
       }))
 
     // A set-values action offers Preview/Apply and no Find.
@@ -298,7 +297,7 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
 
     await ui.selectOption("#budgetAction", "anomalies")
     // Read-only, so there is nothing to preview and nothing to apply.
-    expect(await buttons()).toMatchObject({ preview: false, apply: false, find: true, title: "Find spending anomalies" })
+    expect(await buttons()).toMatchObject({ preview: false, apply: false, find: true })
 
     // The custom-amount box belongs to exactly one action, and isn't dragged along by the others.
     await ui.selectOption("#budgetAction", "custom")
