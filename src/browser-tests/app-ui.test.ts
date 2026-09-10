@@ -257,20 +257,54 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
-  it("keeps each section's tabs to itself", async () => {
-    // Regression: Budget's tabs carry the same .tab class for styling, so the Retirement handler
-    // matched them too, threw on a panel id that doesn't exist, and left every panel on the page
-    // deactivated -- including Retirement's, which then came back blank.
+  it("switches between sections without disturbing Retirement's own tabs", async () => {
+    // Regression: the Retirement tab handler used to select on the bare .tab class and deactivate
+    // every .panel on the page. Budget no longer has tabs of its own for that to collide with, but
+    // the handler stays scoped to [data-tab] and its own section's panels, and moving between
+    // sections must still leave the tab state it finds alone.
     const { page: ui, errors } = await openBudgetPage()
     const activePanels = () => ui.evaluate(() => [...document.querySelectorAll(".panel.active")].map((p) => p.id).sort())
 
-    expect(await activePanels()).toEqual(["budget-panel-set-values", "panel-configure"])
-    await ui.locator('[data-budget-tab="anomalies"]').click()
-    expect(await activePanels()).toEqual(["budget-panel-anomalies", "panel-configure"])
-
+    expect(await activePanels()).toEqual(["panel-configure"])
     await ui.locator('.section-item[data-section="retirement"]').click()
     expect(await ui.evaluate(() => document.getElementById("page-retirement")?.classList.contains("active"))).toBe(true)
-    expect(await activePanels()).toEqual(["budget-panel-anomalies", "panel-configure"])
+
+    await ui.locator('[data-tab="analyze"]').click()
+    expect(await activePanels()).toEqual(["panel-analyze"])
+    await ui.locator('.section-item[data-section="budget"]').click()
+    expect(await ui.evaluate(() => document.getElementById("page-budget")?.classList.contains("active"))).toBe(true)
+    // Retirement's own tab choice survives the trip through another section.
+    expect(await activePanels()).toEqual(["panel-analyze"])
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("offers finding anomalies as an action over the same picker, not a separate tab", async () => {
+    const { page: ui, errors } = await openBudgetPage()
+    // There is one grid and one month strip on the page, not one per action.
+    expect(await ui.evaluate(() => document.querySelectorAll(".budget-table").length)).toBe(1)
+    expect(await ui.evaluate(() => document.querySelectorAll(".month-strip").length)).toBe(1)
+    expect(await ui.evaluate(() => document.querySelectorAll("#page-budget [data-budget-tab]").length)).toBe(0)
+
+    const buttons = () =>
+      ui.evaluate(() => ({
+        preview: !(document.getElementById("previewSetValuesBtn") as HTMLElement).hidden,
+        apply: !(document.getElementById("applySetValuesBtn") as HTMLElement).hidden,
+        find: !(document.getElementById("findAnomaliesBtn") as HTMLElement).hidden,
+        title: document.getElementById("budgetActionTitle")?.textContent,
+      }))
+
+    // A set-values action offers Preview/Apply and no Find.
+    expect(await buttons()).toMatchObject({ preview: true, apply: true, find: false })
+
+    await ui.selectOption("#budgetAction", "anomalies")
+    // Read-only, so there is nothing to preview and nothing to apply.
+    expect(await buttons()).toMatchObject({ preview: false, apply: false, find: true, title: "Find spending anomalies" })
+
+    // The custom-amount box belongs to exactly one action, and isn't dragged along by the others.
+    await ui.selectOption("#budgetAction", "custom")
+    expect(await ui.locator("#budgetCustomAmountField").isVisible()).toBe(true)
+    await ui.selectOption("#budgetAction", "anomalies")
+    expect(await ui.locator("#budgetCustomAmountField").isVisible()).toBe(false)
     expect(errors).toEqual([])
   }, 60000)
 })

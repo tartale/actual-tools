@@ -241,9 +241,18 @@ underlying logic (`src/budget-tools.ts`, shared with both CLIs so there's
 one implementation, not two drifting apart), with a live preview instead
 of `-c NAME` flags and a positional action argument. Income is never a
 valid target for either tool (exactly as the CLI has always enforced), so
-neither tab's category picker even offers an income category or group.
+the category picker doesn't even offer an income category or group.
 
-**Set Values**: pick an **action** (the same five as the CLI --
+Everything here runs over one picker: pick the months and categories once,
+then choose what to do with them from the **Action** list. Finding
+anomalies is simply one of those actions rather than a separate tab with
+its own copy of the same grid and its own separate selection to make. The
+card's heading and buttons follow whichever action is selected, and any
+result on screen is cleared when it changes — a result describes the run
+that produced it, so leaving it up under a different heading would
+misattribute it.
+
+**Setting values**: pick an **action** (the same five as the CLI --
 `balance`/`spent`/`spent-3`/`spent-12`/`previous` -- or **Custom amount**
 for a flat dollar figure), then choose the months and categories it applies
 to in the table below, which is styled after Actual's own budget page: a
@@ -285,8 +294,9 @@ budgeted amount would be without writing anything. **Apply changes**
 Every result line shows its status (unchanged/would update/updated) and the
 old → new amounts, grouped by month.
 
-**Anomalies**: same category/month picker as Set Values (its own copy, with
-its own selection), then **Find anomalies** — always read-only, using the
+**Finding anomalies** (the one read-only action, so it offers a single
+**Find anomalies** button rather than the Preview/Apply pair — there is
+nothing to preview when nothing will be written) — uses the
 same robust (median-based) outlier test as the CLI
 (`src/anomaly-detect.ts`) against each category's own trailing 12-month
 history. Any month flagged this way unlocks a second card, **Tag flagged

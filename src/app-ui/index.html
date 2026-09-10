@@ -250,83 +250,56 @@
         </div>
       </div>
 
-      <div class="tabs">
-        <button type="button" class="tab active" data-budget-tab="set-values">Set Values</button>
-        <button type="button" class="tab" data-budget-tab="anomalies">Anomalies</button>
-      </div>
-
-      <!-- SET VALUES -->
-      <div class="panel active" id="budget-panel-set-values">
-        <div class="card">
-          <div class="card-head">
-            <h2>Bulk update category budget values</h2>
-          </div>
-          <div class="card-body">
-            <div class="action-row">
-              <div class="field">
-                <label for="budgetAction">Action</label>
-                <select id="budgetAction">
+      <!-- One picker, one action list. "Find anomalies" is simply another action over the same
+           months and categories, rather than a second tab with a second copy of the same grid. -->
+      <div class="card">
+        <div class="card-head">
+          <h2 id="budgetActionTitle">Bulk update category budget values</h2>
+        </div>
+        <div class="card-body">
+          <div class="action-row">
+            <div class="field">
+              <label for="budgetAction">Action</label>
+              <select id="budgetAction">
+                <optgroup label="Set budget values">
                   <option value="balance">Zero out these months/categories budget values</option>
                   <option value="spent">Match last month's actual spending</option>
                   <option value="spent-3">Match average spending, last 3 months</option>
                   <option value="spent-12">Match average spending, last 12 months</option>
                   <option value="previous">Match last month's budgeted amount</option>
                   <option value="custom">Custom amount…</option>
-                </select>
-              </div>
-              <div class="field" id="budgetCustomAmountField" hidden>
-                <label for="budgetCustomAmount">Amount</label>
-                <div class="input-affix prefix-dollar">
-                  <input type="text" inputmode="decimal" id="budgetCustomAmount" placeholder="0.00">
-                </div>
-              </div>
-              <div class="action-buttons">
-                <button type="button" class="btn secondary" id="previewSetValuesBtn" disabled>Preview</button>
-                <button type="button" class="btn" id="applySetValuesBtn" disabled>Apply changes</button>
+                </optgroup>
+                <optgroup label="Analyze">
+                  <option value="anomalies">Find spending anomalies</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="field" id="budgetCustomAmountField" hidden>
+              <label for="budgetCustomAmount">Amount</label>
+              <div class="input-affix prefix-dollar">
+                <input type="text" inputmode="decimal" id="budgetCustomAmount" placeholder="0.00">
               </div>
             </div>
-            <div class="action-result" id="setValuesResult"></div>
-            <div class="field full category-picker">
-              <label>Categories</label>
-              <div class="derived">Check the categories for which this action should apply</div>
-              <div class="month-strip" id="budgetMonthStrip" hidden></div>
-              <div class="budget-table" id="budgetTable"><div class="empty-note">Loading…</div></div>
-              <div class="bt-menu" id="budgetMenu" role="menu" hidden>
-                <button type="button" role="menuitem" data-menu-item="toggle-hidden">Toggle hidden categories</button>
-                <button type="button" role="menuitem" data-menu-item="expand">Expand all</button>
-                <button type="button" role="menuitem" data-menu-item="collapse">Collapse all</button>
-              </div>
+            <div class="action-buttons">
+              <button type="button" class="btn secondary" id="previewSetValuesBtn" disabled>Preview</button>
+              <button type="button" class="btn" id="applySetValuesBtn" disabled>Apply changes</button>
+              <button type="button" class="btn" id="findAnomaliesBtn" disabled hidden>Find anomalies</button>
+            </div>
+          </div>
+          <div class="action-result" id="actionResult"></div>
+          <div class="field full category-picker">
+            <label>Categories</label>
+            <div class="derived">Check the categories for which this action should apply</div>
+            <div class="month-strip" id="budgetMonthStrip" hidden></div>
+            <div class="budget-table" id="budgetTable"><div class="empty-note">Loading…</div></div>
+            <div class="bt-menu" id="budgetMenu" role="menu" hidden>
+              <button type="button" role="menuitem" data-menu-item="toggle-hidden">Toggle hidden categories</button>
+              <button type="button" role="menuitem" data-menu-item="expand">Expand all</button>
+              <button type="button" role="menuitem" data-menu-item="collapse">Collapse all</button>
             </div>
           </div>
         </div>
       </div>
-
-      <!-- ANOMALIES -->
-      <div class="panel" id="budget-panel-anomalies">
-        <div class="card">
-          <div class="card-head">
-            <h2>Find spending anomalies</h2>
-          </div>
-          <div class="card-body">
-            <div class="action-row">
-              <div class="action-buttons">
-                <button type="button" class="btn" id="findAnomaliesBtn" disabled>Find anomalies</button>
-              </div>
-            </div>
-            <div class="action-result" id="anomaliesResult"></div>
-            <div class="field full category-picker">
-              <label>Categories</label>
-              <div class="derived">Check the categories for which this action should apply</div>
-              <div class="month-strip" id="anomalyMonthStrip" hidden></div>
-              <div class="budget-table" id="anomalyTable"><div class="empty-note">Loading…</div></div>
-              <div class="bt-menu" id="anomalyMenu" role="menu" hidden>
-                <button type="button" role="menuitem" data-menu-item="toggle-hidden">Toggle hidden categories</button>
-                <button type="button" role="menuitem" data-menu-item="expand">Expand all</button>
-                <button type="button" role="menuitem" data-menu-item="collapse">Collapse all</button>
-              </div>
-            </div>
-          </div>
-        </div>
 
         <div class="card" id="tagCard" hidden>
           <div class="card-head">
@@ -342,7 +315,6 @@
             <div class="action-result" id="tagResult"></div>
           </div>
         </div>
-      </div>
       </div>
     </main>
   </div>

@@ -12,9 +12,30 @@ metadata:
 "Planned" / Retirement, with Budget the default landing page). It is the web
 equivalent of `./actual budget set-values` and `./actual budget anomalies`,
 sharing `src/budget-tools.ts` with both CLIs so there is one implementation
-rather than two drifting apart. Two tabs, Set Values and Anomalies, each with
-its own independent copy of the same category/month picker (`BUDGET_PICKERS`
-in `app-ui/app.js` keys them `budget` and `anomaly`).
+rather than two drifting apart.
+
+**One picker, one action list** (2026-09-10). This started as two tabs, Set
+Values and Anomalies, each with its own copy of the same category/month grid
+and its own separate selection to make. They were merged: finding anomalies is
+now just another entry in the Action list, over the same months and categories
+as everything else. `BUDGET_PICKERS` (a map keyed `budget`/`anomaly`, threaded
+through every picker function as a `key` parameter) collapsed to a single
+module-level `PICKER`, and the element ids that used to live on each entry
+(`tableId`/`stripId`/`menuId`) are named where they're used -- there is exactly
+one of each in the markup now. The card's heading and its buttons follow the
+selected action: set-values actions get Preview/Apply, the anomalies action a
+single Find button, since a read-only action has nothing to preview. Changing
+the action clears any result on screen -- a result describes the run that
+produced it, and leaving it up under a different heading would misattribute
+it.
+
+**Watch for this when collapsing that kind of indirection**: dropping
+`tableId`/`stripId`/`menuId` from the picker object left six
+`document.getElementById(picker.tableId)` calls resolving to `undefined` ->
+`null`, which threw on first render and left the page stuck on "Loading…".
+`app-ui/` is neither typechecked nor linted (it's a static asset, excluded in
+eslint.config.js), so nothing caught it but the browser tests -- which failed
+exactly as they should have, all six at once.
 
 **The picker is a real budget grid, not a form.** Foldable group rows,
 a checkbox per category and per group, and a Budgeted/Spent/Balance triplet
