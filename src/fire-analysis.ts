@@ -88,6 +88,18 @@ export interface BridgeResult {
   // bridging gap from having simply outspent a fully-unlocked portfolio.
   lockedAtDepletion: number
   nextUnlockAfterDepletion: number | null
+  // One point per simulated year from retirementAge onward, for charting the burndown -- not a
+  // reinterpretation of the simulation, just what it already computes at each step, exposed.
+  // Ends at depletionAge (whatever is left the moment it can't cover a full year) when the
+  // scenario depletes, or at planToAge when it doesn't; never continues past either. accessible +
+  // locked at the first point always equals accessibleAtRetirement + lockedAtRetirement above.
+  timeline: BridgeYear[]
+}
+
+export interface BridgeYear {
+  age: number
+  accessibleBalance: number
+  lockedBalance: number
 }
 
 // Function to project a single retirement-age scenario forward at mean returns with no
@@ -106,6 +118,21 @@ export function simulateBridge(
 ): BridgeResult {
   const balances = accounts.map((account) => account.balance)
   const isAccessible = (account: BridgeAccount, age: number): boolean => account.accessAge == null || age >= account.accessAge
+  // Shared by the retirement-age split below and the timeline recording further down, so the two
+  // never disagree about what "accessible at this age" means.
+  const splitAt = (age: number): { accessible: number; locked: number } => {
+    let accessible = 0
+    let locked = 0
+    accounts.forEach((account, index) => {
+      if (isAccessible(account, age)) {
+        accessible += balances[index] as number
+      } else {
+        locked += balances[index] as number
+      }
+    })
+    return { accessible, locked }
+  }
+  const timeline: BridgeYear[] = []
 
   let accessibleAtRetirement = 0
   let lockedAtRetirement = 0
@@ -134,6 +161,13 @@ export function simulateBridge(
         }
       })
       capturedSplit = true
+    }
+
+    // Recorded every year of the withdrawal phase, not just at the moments the summary fields
+    // above care about -- this is the actual line the chart draws.
+    if (age >= retirementAge) {
+      const split = splitAt(age)
+      timeline.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked })
     }
 
     if (age < retirementAge) {
@@ -180,6 +214,14 @@ export function simulateBridge(
     .filter((account) => account.accessAge != null && account.accessAge > retirementAge)
     .map((account) => account.accessAge as number)
 
+  // Only when the plan was funded through to the end -- a depleted scenario's timeline already
+  // ends exactly where the simulation itself stopped, and extending it past that would be drawing
+  // a year the simulation never actually ran.
+  if (depletionAge === null) {
+    const split = splitAt(planToAge)
+    timeline.push({ age: planToAge, accessibleBalance: split.accessible, lockedBalance: split.locked })
+  }
+
   return {
     retirementAge,
     accessibleAtRetirement,
@@ -188,6 +230,7 @@ export function simulateBridge(
     nextUnlockAge: unlockAges.length > 0 ? Math.min(...unlockAges) : null,
     lockedAtDepletion,
     nextUnlockAfterDepletion,
+    timeline,
   }
 }
 

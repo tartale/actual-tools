@@ -10,7 +10,7 @@ import {
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
-import type { BridgeAccount } from "./fire-analysis.ts"
+import type { BridgeAccount, BridgeResult } from "./fire-analysis.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 
@@ -116,6 +116,51 @@ describe("simulateBridge", () => {
     expect(bridgeFinding(result, 100).level).toBe("fail")
   })
 
+  it("records one timeline point per year, ending at zero the year the reachable pool runs dry", () => {
+    const result = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
+    expect(result.timeline).toEqual([
+      { age: 50, accessibleBalance: 1000, lockedBalance: 0 },
+      { age: 51, accessibleBalance: 900, lockedBalance: 0 },
+      { age: 52, accessibleBalance: 800, lockedBalance: 0 },
+      { age: 53, accessibleBalance: 700, lockedBalance: 0 },
+      { age: 54, accessibleBalance: 600, lockedBalance: 0 },
+      { age: 55, accessibleBalance: 500, lockedBalance: 0 },
+      { age: 56, accessibleBalance: 400, lockedBalance: 0 },
+      { age: 57, accessibleBalance: 300, lockedBalance: 0 },
+      { age: 58, accessibleBalance: 200, lockedBalance: 0 },
+      { age: 59, accessibleBalance: 100, lockedBalance: 0 },
+      { age: 60, accessibleBalance: 0, lockedBalance: 0 },
+    ])
+    // The first point is exactly the retirement-age split, and the last is the depletion age --
+    // the same two facts BridgeResult's own summary fields already assert, restated here as the
+    // shape the chart actually draws from.
+    expect(result.timeline[0]).toEqual({ age: result.retirementAge, accessibleBalance: result.accessibleAtRetirement, lockedBalance: result.lockedAtRetirement })
+    expect(result.timeline.at(-1)?.age).toBe(result.depletionAge)
+  })
+
+  it("records through planToAge, inclusive, when the scenario never depletes", () => {
+    const result = simulateBridge([bridgeAccount({ id: "a1", balance: 100000 })], 50, 50, 100, 100, 0)
+    expect(result.depletionAge).toBeNull()
+    expect(result.timeline).toHaveLength(51) // ages 50..100 inclusive
+    expect(result.timeline[0]?.age).toBe(50)
+    expect(result.timeline.at(-1)?.age).toBe(100)
+  })
+
+  it("moves an account's balance from locked to accessible in the timeline the moment it unlocks", () => {
+    const accounts = [
+      bridgeAccount({ id: "reachable", balance: 500 }),
+      bridgeAccount({ id: "locked", balance: 500, accessAge: 53 }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 100, 100, 0)
+    const byAge = new Map(result.timeline.map((year) => [year.age, year]))
+    // The year before it unlocks: still split, locked sitting untouched at its starting balance.
+    expect(byAge.get(52)).toEqual({ age: 52, accessibleBalance: 300, lockedBalance: 500 })
+    // The unlock year itself: the whole 500 has moved over, before that year's own withdrawal.
+    expect(byAge.get(53)).toEqual({ age: 53, accessibleBalance: 700, lockedBalance: 0 })
+    // Never locked again once unlocked.
+    expect(result.timeline.filter((year) => year.age >= 53).every((year) => year.lockedBalance === 0)).toBe(true)
+  })
+
   it("nets a later-starting income stream out of spend before inflating, extending the runway", () => {
     const withoutIncome = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
     expect(withoutIncome.depletionAge).toBe(60)
@@ -151,21 +196,39 @@ describe("simulateBridge", () => {
   })
 })
 
+// Function to build a bridge result with inert defaults -- bridgeFinding reads only the summary
+// fields, never the timeline, so these tests never need to fabricate one.
+function bridgeResult(overrides: Partial<BridgeResult> & Pick<BridgeResult, "retirementAge">): BridgeResult {
+  return {
+    accessibleAtRetirement: 0,
+    lockedAtRetirement: 0,
+    depletionAge: null,
+    nextUnlockAge: null,
+    lockedAtDepletion: 0,
+    nextUnlockAfterDepletion: null,
+    timeline: [],
+    ...overrides,
+  }
+}
+
 describe("bridgeFinding", () => {
   it("passes a scenario that funds every year", () => {
-    const finding = bridgeFinding({ retirementAge: 59, accessibleAtRetirement: 100, lockedAtRetirement: 0, depletionAge: null, nextUnlockAge: null, lockedAtDepletion: 0, nextUnlockAfterDepletion: null }, 100)
+    const finding = bridgeFinding(bridgeResult({ retirementAge: 59, accessibleAtRetirement: 100 }), 100)
     expect(finding.level).toBe("ok")
   })
 
   it("fails a scenario that runs dry before its locked money unlocks", () => {
-    const finding = bridgeFinding({ retirementAge: 52, accessibleAtRetirement: 200, lockedAtRetirement: 1000, depletionAge: 54, nextUnlockAge: 59, lockedAtDepletion: 1000, nextUnlockAfterDepletion: 59 }, 100)
+    const finding = bridgeFinding(
+      bridgeResult({ retirementAge: 52, accessibleAtRetirement: 200, lockedAtRetirement: 1000, depletionAge: 54, nextUnlockAge: 59, lockedAtDepletion: 1000, nextUnlockAfterDepletion: 59 }),
+      100,
+    )
     expect(finding.level).toBe("fail")
     expect(finding.title).toContain("5 yrs before the next")
     expect(finding.title).toContain("unlocks at 59")
   })
 
   it("warns, rather than failing, when everything has already unlocked", () => {
-    const finding = bridgeFinding({ retirementAge: 59, accessibleAtRetirement: 1000, lockedAtRetirement: 0, depletionAge: 80, nextUnlockAge: null, lockedAtDepletion: 0, nextUnlockAfterDepletion: null }, 100)
+    const finding = bridgeFinding(bridgeResult({ retirementAge: 59, accessibleAtRetirement: 1000, depletionAge: 80 }), 100)
     expect(finding.level).toBe("warn")
   })
 })

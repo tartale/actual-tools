@@ -674,7 +674,23 @@ editing in the app. Two things get checked:
   accessible-only funding rule Actual's own Monte Carlo engine uses — a
   *best* case, so a scenario that runs dry here runs dry in essentially
   every simulated run. Also nets out guaranteed income/debt payoff the
-  same way Generate does.
+  same way Generate does. **Drawn as a burndown chart**, one line per
+  retirement age, next to the prose finding rather than instead of it:
+  the accessible balance declining toward zero (or the end of the plan),
+  with the still-locked balance as a dashed companion in the same color —
+  a scenario that runs dry gets a hollow ring and a muted "unlocks NN"
+  reference line marking how far off the next unlock actually is; one
+  that funds the whole plan gets neither. This chart cannot live in
+  Actual's own dashboard — every one of Actual's widget types (checked
+  against upstream, not guessed) is a query over your ledger, with no
+  slot for a projected series like this one, so it stays here on the
+  Analyze tab. A scenario that never depletes is only drawn 20 years past
+  its own retirement age, not all the way to the end of the plan: a
+  portfolio whose growth outpaces its spending can compound to genuinely
+  enormous nominal figures over a 40+ year horizon, which would swamp the
+  scale for every other scenario on the same chart and squash the years
+  that actually matter down to an unreadable sliver. The real number is
+  still in the finding text below, unaffected by where the line is drawn.
 
 Retirement spend for both actions comes from the live crossover widget's
 own category selection and date range once one exists (so narrowing either

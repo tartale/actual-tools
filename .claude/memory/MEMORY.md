@@ -3,3 +3,4 @@
 - [Sandbox toolchain policy](sandbox_toolchain_policy.md) — bake tools into the sandbox image (incl. Playwright + its browsers-path gotcha); pin dependency versions by major only
 - [FIRE dashboard](fire_dashboard.md) — `./actual app` companion web app (retirement/FIRE section), built on Actual's own native dashboard widgets, not reimplemented FIRE math
 - [App Budget section](app_budget_section.md) — `./actual app`'s Budget tabs: the category/month picker, its month-roll animation, hidden categories, and the browser-driven bugs behind them
+- [Bridge burndown chart](bridge_burndown_chart.md) — Analyze tab's per-retirement-age burndown chart: why it can't be an Actual dashboard widget, the domain-windowing fix for a real scale-distortion bug, dataviz-skill decisions

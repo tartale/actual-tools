@@ -32,7 +32,7 @@ import {
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
-import type { Finding } from "./fire-analysis.ts"
+import type { BridgeResult, Finding } from "./fire-analysis.ts"
 
 // The non-CLI guts of what used to be reports-fire.ts's main(): fetching real data, building or
 // analyzing the dashboard, and returning a plain structured result rather than printing one --
@@ -411,6 +411,9 @@ export interface CheckResult {
   inflationMean: number
   driftFindings: Finding[]
   bridgeFindings: Finding[]
+  // The full simulation behind bridgeFindings, one entry per retirement age in the same order --
+  // bridgeFindings is prose derived from these; this is what the client charts the burndown from.
+  bridgeResults: BridgeResult[]
 }
 
 // Function to analyze the dashboard that is actually live in Actual, rather than generating a new
@@ -487,20 +490,20 @@ export async function checkDashboard(
     portfolioIds.map(async (accountId): Promise<[string, number]> => [accountId, await fetchAccountBalance(actualConfig, accountId, BALANCE_SINCE_DATE)]),
   )
   const balances = new Map(balanceEntries)
-  const bridgeFindings = options.retirementAges.map((retirementAge) =>
-    bridgeFinding(
-      simulateBridge(
-        toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge),
-        options.currentAge,
-        retirementAge,
-        options.planToAge,
-        annualSpend,
-        inflationMean,
-        incomeStreams,
-      ),
+  // Simulated once per retirement age and kept in full -- bridgeFindings below is prose derived
+  // from these results, not a second computation, so the two can never disagree.
+  const bridgeResults = options.retirementAges.map((retirementAge) =>
+    simulateBridge(
+      toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge),
+      options.currentAge,
+      retirementAge,
       options.planToAge,
+      annualSpend,
+      inflationMean,
+      incomeStreams,
     ),
   )
+  const bridgeFindings = bridgeResults.map((result) => bridgeFinding(result, options.planToAge))
 
   return {
     monteCarloWidgetCount: monteCarloMetas.length,
@@ -513,6 +516,7 @@ export async function checkDashboard(
     inflationMean,
     driftFindings,
     bridgeFindings,
+    bridgeResults,
   }
 }
 

@@ -311,6 +311,45 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .chip.ok { color: var(--ok); background: var(--ok-soft); }
 .finding .title { font-size: 12.5px; font-weight: 500; color: var(--ink); }
 .finding .detail { font-size: 11.5px; color: var(--ink-soft); margin-top: 3px; }
+/* --- Bridge burndown chart (Analyze tab). See BRIDGE_SERIES_COLORS in app.js for the categorical
+   palette itself and why it lives there rather than as CSS custom properties: this app is dark-only
+   with no theme toggle, so there is no second mode for a --series-N variable to swap under. */
+.bridge-chart { position: relative; margin: 4px 16px 2px; }
+.bridge-chart-svg { width: 100%; height: auto; display: block; }
+.bridge-grid { stroke: var(--line-soft); stroke-width: 1; }
+.bridge-axis-label { font-size: 9.5px; fill: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.bridge-end-label { font-size: 10px; fill: var(--ink-soft); font-weight: 500; }
+/* A hollow ring, not a filled dot, so a depleted line reads as "ran out" rather than just "chart
+   ends here" -- --fail is a status color and stays off the line itself (which keeps the scenario's
+   own categorical color throughout), carried only by this small end mark. */
+.bridge-end-critical { fill: var(--surface); stroke: var(--fail); stroke-width: 2; }
+.bridge-crosshair { stroke: var(--line); stroke-width: 1; pointer-events: none; }
+/* A locked tranche's own unlock age, after a depleting scenario has already run out -- neutral
+   because it names an account fact, not a series, and dedup'd (see app.js) so two scenarios sharing
+   the same locked account's access age don't draw the line twice. */
+.bridge-unlock-line { stroke: var(--ink-faint); stroke-width: 1; stroke-dasharray: 3 3; }
+.bridge-unlock-label { font-size: 9.5px; fill: var(--ink-faint); }
+.bridge-hit { cursor: crosshair; }
+/* Always present for 2+ scenarios (renderBridgeChart omits this box entirely for a single one --
+   its own color needs no legend when there is nothing to tell it apart from). Line swatches, not
+   filled boxes, matching every mark they key. */
+.bridge-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 6px 4px 0; font-size: 11px; color: var(--ink-soft); }
+.bridge-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.bridge-legend-swatch { width: 14px; height: 2px; border-radius: 1px; flex: none; }
+/* The solid/dashed key, shown only when at least one scenario has locked money on the chart at
+   all -- explains the stroke-style half of the encoding once, rather than per scenario. */
+.bridge-style-key { display: flex; align-items: center; gap: 6px; padding: 3px 4px 0; font-size: 10.5px; color: var(--ink-faint); }
+.bridge-key-line { width: 16px; height: 0; border-top: 2px solid var(--ink-faint); flex: none; }
+.bridge-key-dashed { border-top-style: dashed; margin-left: 10px; }
+.bridge-tooltip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45); padding: 6px 9px; font-size: 11px; white-space: nowrap; }
+.bridge-tooltip[hidden] { display: none; }
+.bridge-tooltip-age { font-size: 10px; color: var(--ink-faint); margin-bottom: 3px; }
+.bridge-tooltip-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+.bridge-tooltip-key { width: 10px; height: 2px; border-radius: 1px; flex: none; }
+.bridge-tooltip-value { font-weight: 600; color: var(--ink-strong); font-variant-numeric: tabular-nums; }
+.bridge-tooltip-label { color: var(--ink-soft); }
+.bridge-tooltip-locked { color: var(--ink-faint); }
+
 .empty-note { padding: 14px 16px; font-size: 12.5px; color: var(--ink-faint); font-style: italic; }
 
 .top-error { background: var(--fail-soft); color: var(--fail); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 16px; font-size: 12.5px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

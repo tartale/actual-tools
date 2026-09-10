@@ -719,6 +719,261 @@ function moneyify(text) {
   return escapeHtml(text).replace(/-?\$[\d,]+\.\d{2}/g, (match) => `<span class="money">${match}</span>`)
 }
 
+// --- Bridge burndown chart (Analyze tab) ---
+
+// Fixed slot order, validated (dataviz skill's scripts/validate_palette.js) against this app's own
+// --surface as the chart background: all 8 pass lightness, chroma, adjacent CVD separation (worst
+// 8.4), adjacent normal-vision separation (worst 19.3), and contrast vs --surface. Assigned to
+// scenarios by POSITION in the selected retirement-age list, never by value, so a given age keeps
+// its color for as long as it stays selected and a filtered-down comparison never repaints the
+// scenarios that remain.
+const BRIDGE_SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+
+// Function to format cents as a compact dollar figure for the chart's own axis -- $0, $50K, $1.2M
+// -- never the full $50,000.00 usd() prints elsewhere, which would crowd a narrow axis gutter.
+function usdCompact(cents) {
+  const dollars = cents / 100
+  const abs = Math.abs(dollars)
+  const sign = dollars < 0 ? "-" : ""
+  if (abs >= 1000000) return `${sign}$${(abs / 1000000).toFixed(abs >= 10000000 ? 0 : 1).replace(/\.0$/, "")}M`
+  if (abs >= 1000) return `${sign}$${Math.round(abs / 1000)}K`
+  return `${sign}$${Math.round(abs)}`
+}
+
+// Function to lay out gridline ticks at a clean (1/2/2.5/5 x 10^k) step -- from $0 up to the
+// smallest multiple of that step that clears `maxCents` -- so EVERY tick is a round number.
+// Dividing a rounded ceiling into N equal parts (the more obvious approach) doesn't guarantee
+// that: a $5M ceiling split into 4 lands on $1.25M/$3.75M, neither of them clean.
+function niceAxisTicks(maxCents, targetCount) {
+  if (maxCents <= 0) return [0, 100]
+  const roughStep = maxCents / targetCount
+  const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)))
+  const step = [1, 2, 2.5, 5, 10].map((multiple) => multiple * magnitude).find((candidate) => candidate >= roughStep) ?? 10 * magnitude
+  const ticks = []
+  for (let value = 0; value <= maxCents + step * 0.001; value += step) ticks.push(Math.round(value))
+  return ticks
+}
+
+// Function to draw the bridge burndown: one line per selected retirement age, tracing the
+// accessible balance from retirement toward zero (or the end of the plan), with the still-locked
+// balance as a dashed companion in the same color -- the same two figures the prose finding below
+// it already states, drawn as a shape rather than left to be read as numbers. Returns null when
+// there is nothing worth plotting (no portfolio balance at all in any scenario).
+//
+// How far past retirement a scenario that never depletes is actually DRAWN: the point of this
+// chart is the bridge gap in the years right after retirement, not a decades-long net-worth
+// projection (Actual's own Monte Carlo widget already does that job). A portfolio whose growth
+// rate outpaces its spending can compound to genuinely enormous nominal figures over a 40+ year
+// horizon -- true, and worth showing on ITS OWN, but on a shared axis with a scenario that depletes
+// in year six, it swamps the scale and squashes the only years that scenario actually tells a story
+// in down to an unreadable sliver. So a funded scenario is capped here; a depleting one never is --
+// its own line already stops naturally at the age it runs out, which is the entire point.
+const BRIDGE_WINDOW_YEARS = 20
+
+function renderBridgeChart(bridgeResults) {
+  const usable = bridgeResults.filter((r) => r.timeline.length > 0 && r.accessibleAtRetirement + r.lockedAtRetirement > 0)
+  if (usable.length === 0) return null
+
+  // What actually gets drawn for each scenario, and where its line stops. `trimmed` scenarios keep
+  // no end mark at all below -- a line simply running off the right edge of a windowed chart is the
+  // ordinary, unremarkable way to read "still fine beyond here" (the legend, tooltip, and the prose
+  // finding below all still carry the real number); a marker drawn away from the age it actually
+  // describes would be a label lying about its own position.
+  const scenarios = usable.map((result) => {
+    const naturalEndAge = result.timeline[result.timeline.length - 1].age
+    const displayEndAge = result.depletionAge != null ? naturalEndAge : Math.min(naturalEndAge, result.retirementAge + BRIDGE_WINDOW_YEARS)
+    return { result, drawn: result.timeline.filter((point) => point.age <= displayEndAge), trimmed: displayEndAge < naturalEndAge }
+  })
+
+  const width = 640
+  const height = 240
+  const margin = { top: 12, right: 16, bottom: 24, left: 54 }
+  const plotWidth = width - margin.left - margin.right
+  const plotHeight = height - margin.top - margin.bottom
+
+  const minAge = Math.min(...scenarios.map((s) => s.drawn[0].age))
+  // Reference lines for a locked tranche unlocking after depletion belong in the domain too, even
+  // for a scenario whose own line stops a little before that age -- otherwise the one thing the
+  // marker exists to show (how far off the next unlock is) would be the one thing cropped away.
+  const maxAge = Math.max(...scenarios.flatMap((s) => [s.drawn[s.drawn.length - 1].age, s.result.nextUnlockAfterDepletion ?? -Infinity]))
+  const maxBalance = Math.max(1, ...scenarios.flatMap((s) => s.drawn.flatMap((point) => [point.accessibleBalance, point.lockedBalance])))
+  const yTicks = niceAxisTicks(maxBalance, 4)
+  const yMax = yTicks[yTicks.length - 1]
+
+  const scaleX = (age) => margin.left + (maxAge === minAge ? 0 : ((age - minAge) / (maxAge - minAge)) * plotWidth)
+  const scaleY = (cents) => margin.top + plotHeight - (cents / yMax) * plotHeight
+  const linePath = (points, key) => points.map((point, index) => `${index === 0 ? "M" : "L"}${scaleX(point.age).toFixed(1)},${scaleY(point[key]).toFixed(1)}`).join(" ")
+
+  const gridlines = yTicks
+    .map(
+      (tickCents) =>
+        `<line x1="${margin.left}" y1="${scaleY(tickCents).toFixed(1)}" x2="${width - margin.right}" y2="${scaleY(tickCents).toFixed(1)}" class="bridge-grid" />` +
+        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${usdCompact(tickCents)}</text>`,
+    )
+    .join("")
+
+  // 5-year steps read cleanly for the common decade-plus span; a short one (a handful of years to
+  // an early depletion) switches to 1s rather than showing one bare tick at either end.
+  const span = maxAge - minAge
+  const ageStep = span > 40 ? 10 : span > 12 ? 5 : 1
+  const ageTicks = []
+  for (let age = Math.ceil(minAge / ageStep) * ageStep; age <= maxAge; age += ageStep) ageTicks.push(age)
+  if (ageTicks[0] !== minAge) ageTicks.unshift(minAge)
+  if (ageTicks[ageTicks.length - 1] !== maxAge) ageTicks.push(maxAge)
+  const ageAxis = ageTicks
+    .map((age) => `<text x="${scaleX(age).toFixed(1)}" y="${height - margin.bottom + 16}" class="bridge-axis-label" text-anchor="middle">${age}</text>`)
+    .join("")
+
+  // One shared, neutral reference line per distinct "would unlock at" age among the scenarios that
+  // actually depleted before it -- neutral because it belongs to no one series (dedup: two
+  // scenarios retiring at different ages can still name the same locked account's own access age).
+  const unlockAges = [...new Set(scenarios.map((s) => s.result.nextUnlockAfterDepletion).filter((age) => age != null))]
+  const unlockLines = unlockAges
+    .map(
+      (age) =>
+        `<line x1="${scaleX(age).toFixed(1)}" y1="${margin.top}" x2="${scaleX(age).toFixed(1)}" y2="${height - margin.bottom}" class="bridge-unlock-line" />` +
+        `<text x="${scaleX(age).toFixed(1)}" y="${margin.top + 10}" class="bridge-unlock-label" text-anchor="${scaleX(age) > width - margin.right - 50 ? "end" : "start"}" dx="${scaleX(age) > width - margin.right - 50 ? -4 : 4}">unlocks ${age}</text>`,
+    )
+    .join("")
+
+  // Past 4 series, direct end-labels start to collide with each other rather than with the lines
+  // -- fall back to the legend + tooltip, per the series-count ladder. Only depleting scenarios
+  // carry one regardless (see the doc comment on BRIDGE_WINDOW_YEARS for why a funded one doesn't).
+  const directLabels = scenarios.length <= 4
+  const seriesSvg = scenarios
+    .map(({ result, drawn, trimmed }, index) => {
+      const color = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
+      const lockedPoints = drawn.filter((point) => point.lockedBalance > 0)
+      const last = drawn[drawn.length - 1]
+      const endX = scaleX(last.age)
+      const endY = scaleY(last.accessibleBalance)
+      const endMarker =
+        result.depletionAge != null
+          ? `<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="4.5" class="bridge-end-critical" />`
+          : trimmed
+            ? ""
+            : `<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="2" />`
+      const endLabel =
+        directLabels && result.depletionAge != null
+          ? `<text x="${endX.toFixed(1)}" y="${(endY - 9).toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">depletes ${result.depletionAge}</text>`
+          : ""
+      return `<g data-series="${index}">
+          ${lockedPoints.length > 1 ? `<path d="${linePath(lockedPoints, "lockedBalance")}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4 3" opacity="0.55" />` : ""}
+          <path d="${linePath(drawn, "accessibleBalance")}" fill="none" stroke="${color}" stroke-width="2" />
+          ${endMarker}
+          ${endLabel}
+        </g>`
+    })
+    .join("")
+
+  const showsLocked = scenarios.some((s) => s.drawn.some((point) => point.lockedBalance > 0))
+
+  const wrap = document.createElement("div")
+  wrap.className = "bridge-chart"
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" class="bridge-chart-svg" role="img" aria-label="Bridge burndown: accessible balance by age for each selected retirement age">
+      ${gridlines}
+      ${ageAxis}
+      ${seriesSvg}
+      ${unlockLines}
+      <line class="bridge-crosshair" x1="0" y1="${margin.top}" x2="0" y2="${height - margin.bottom}" hidden />
+      <rect class="bridge-hit" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="transparent" />
+    </svg>
+    <div class="bridge-tooltip" hidden></div>
+    ${
+      scenarios.length > 1
+        ? `<div class="bridge-legend">${scenarios
+            .map(
+              ({ result }, index) =>
+                `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${result.retirementAge}</span>`,
+            )
+            .join("")}</div>`
+        : ""
+    }
+    ${showsLocked ? `<div class="bridge-style-key"><span class="bridge-key-line bridge-key-solid"></span>Accessible<span class="bridge-key-line bridge-key-dashed"></span>Locked</div>` : ""}
+  `
+
+  wireBridgeTooltip(wrap, scenarios, { width, scaleX, minAge, maxAge, margin, plotWidth })
+  return wrap
+}
+
+// Function to wire the chart's hover layer: a crosshair that snaps to the nearest whole age (every
+// series has an exact point at every age it covers -- see simulateBridge's timeline -- so there is
+// never a value to interpolate), and one tooltip row per series that still has data at that age.
+// Every figure it shows is also in the prose finding below the chart, so this enhances rather than
+// gates -- there is no keyboard-equivalent hover here, which is fine precisely because of that.
+// Function to wire the chart's hover layer: a crosshair that snaps to the nearest whole age (every
+// series has an exact point at every age it covers -- see simulateBridge's timeline -- so there is
+// never a value to interpolate), and one tooltip row per series that still has data at that age.
+// Every figure it shows is also in the prose finding below the chart, so this enhances rather than
+// gates -- there is no keyboard-equivalent hover here, which is fine precisely because of that.
+function wireBridgeTooltip(wrap, scenarios, scale) {
+  const svg = wrap.querySelector(".bridge-chart-svg")
+  const hit = wrap.querySelector(".bridge-hit")
+  const crosshair = wrap.querySelector(".bridge-crosshair")
+  const tooltip = wrap.querySelector(".bridge-tooltip")
+  // Keyed off what is actually DRAWN, not each scenario's full timeline -- a funded scenario's line
+  // may be windowed short of its real end (see BRIDGE_WINDOW_YEARS), and the tooltip should never
+  // offer a value for an age that isn't on screen to hover in the first place.
+  const byAge = scenarios.map(({ drawn }) => new Map(drawn.map((point) => [point.age, point])))
+
+  const move = (event) => {
+    const rect = svg.getBoundingClientRect()
+    const svgX = ((event.clientX - rect.left) / rect.width) * scale.width
+    const fraction = Math.min(1, Math.max(0, (svgX - scale.margin.left) / scale.plotWidth))
+    const age = Math.round(scale.minAge + fraction * (scale.maxAge - scale.minAge))
+
+    const rows = scenarios.map(({ result }, index) => ({ result, index, point: byAge[index].get(age) })).filter((row) => row.point)
+    if (rows.length === 0) {
+      tooltip.hidden = true
+      crosshair.hidden = true
+      return
+    }
+
+    crosshair.hidden = false
+    crosshair.setAttribute("x1", scale.scaleX(age).toFixed(1))
+    crosshair.setAttribute("x2", scale.scaleX(age).toFixed(1))
+
+    tooltip.innerHTML = ""
+    const heading = document.createElement("div")
+    heading.className = "bridge-tooltip-age"
+    heading.textContent = `Age ${age}`
+    tooltip.appendChild(heading)
+    rows.forEach(({ result, index, point }) => {
+      const row = document.createElement("div")
+      row.className = "bridge-tooltip-row"
+      const key = document.createElement("span")
+      key.className = "bridge-tooltip-key"
+      key.style.background = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
+      const value = document.createElement("span")
+      value.className = "bridge-tooltip-value"
+      value.textContent = usd(point.accessibleBalance)
+      const label = document.createElement("span")
+      label.className = "bridge-tooltip-label"
+      label.textContent = scenarios.length > 1 ? `retire ${result.retirementAge}` : "accessible"
+      row.append(key, value, label)
+      if (point.lockedBalance > 0) {
+        const locked = document.createElement("span")
+        locked.className = "bridge-tooltip-locked"
+        locked.textContent = `· ${usd(point.lockedBalance)} locked`
+        row.appendChild(locked)
+      }
+      tooltip.appendChild(row)
+    })
+    tooltip.hidden = false
+    const wrapRect = wrap.getBoundingClientRect()
+    const left = Math.min(event.clientX - wrapRect.left + 12, wrapRect.width - tooltip.offsetWidth - 4)
+    tooltip.style.left = `${Math.max(4, left)}px`
+    tooltip.style.top = `${Math.max(0, event.clientY - wrapRect.top - tooltip.offsetHeight - 12)}px`
+  }
+
+  hit.addEventListener("pointermove", move)
+  hit.addEventListener("pointerleave", () => {
+    tooltip.hidden = true
+    crosshair.hidden = true
+  })
+}
+
 function renderFinding(finding) {
   const div = document.createElement("div")
   div.className = "finding"
@@ -753,6 +1008,8 @@ async function runCheck() {
       const group = document.createElement("div")
       group.className = "findings-group"
       group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation, withdrawals taxed</div>`
+      const chart = renderBridgeChart(result.bridgeResults)
+      if (chart) group.appendChild(chart)
       result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
       container.appendChild(group)
     }
