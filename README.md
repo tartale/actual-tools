@@ -672,3 +672,27 @@ dependencies are only needed for checks:
 TypeScript is held at 5.x because `typescript-eslint` does not yet support the
 7.x native port (its peer range caps at `<6.1.0`). The sandbox image is pinned
 to the same major via `LANGUAGE_VERSIONS="typescript-5"`.
+
+### Driving the app in a browser
+
+Playwright is available for checking the companion app's own behaviour --
+the parts that unit tests can't reach, like whether a menu actually opens
+or the month roll really scrolls through the months in between. The
+browsers are baked into the sandbox image (`.claude/sandbox/plugin.sh`)
+rather than downloaded per session, and `./actual test` points Playwright
+at them by exporting `PLAYWRIGHT_BROWSERS_PATH` when it finds them.
+
+That export matters because the image sets the variable from
+`/etc/profile.d`, which only a *login* shell reads -- so a script, an
+editor terminal or a CI step has the browsers on disk with Playwright
+looking in `~/.cache/ms-playwright` and failing with a bare "Executable
+doesn't exist". Off the image the variable is left alone and Playwright
+falls back to its own default location.
+
+The app itself is served with `Cache-Control: no-store`. Without it a
+browser may reuse `app.js`/`style.css` without revalidating (there is no
+ETag or Last-Modified to check against), which silently defeats the page's
+hot-reload -- it reloads on a new build id and is handed the same stale
+assets -- and lets the two files drift apart, since they cache
+independently.
+

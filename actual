@@ -79,8 +79,25 @@ function commandLint() {
   echo "Lint OK."
 }
 
-# Function to run the unit tests
+# Function to point Playwright at the browsers baked into the sandbox image. Playwright looks in
+# ~/.cache/ms-playwright by default, but the image installs them to /ms-playwright and exports
+# PLAYWRIGHT_BROWSERS_PATH from /etc/profile.d -- a *login* shell hook, so any non-login shell (an
+# editor terminal, a CI step, a script) has the browsers on disk with Playwright looking elsewhere,
+# failing with a bare "Executable doesn't exist at ~/.cache/...". Only fills the variable in when
+# the caller hasn't set one and that directory really exists, so off the image Playwright still
+# falls back to its own default location.
+function ensurePlaywrightBrowsers() {
+  if [[ -z "${PLAYWRIGHT_BROWSERS_PATH:-}" && -d /ms-playwright ]]; then
+    export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+  fi
+}
+
+# Function to run the unit tests. Playwright is pointed at the image's browsers BEFORE the install
+# step, not after: the playwright package's own postinstall reads PLAYWRIGHT_BROWSERS_PATH too, so
+# setting it first turns a fresh `npm install` here into a no-op ("browsers are already installed")
+# instead of a redundant several-hundred-megabyte download into the home cache.
 function commandTest() {
+  ensurePlaywrightBrowsers
   ensureDependencies
   npm run --silent test
 }
