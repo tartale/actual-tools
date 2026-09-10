@@ -72,6 +72,36 @@ actually carries the flag (the group header for a hidden group, the row for a
 hidden category); a hidden group's categories inherit only the dimming, so
 the icon isn't repeated down every row.
 
+**The grid IS the anomalies report** (2026-09-10): there is no findings list
+beside it any more -- that was the same report twice, once in a form you had to
+match back against the table by eye. What replaced it: the flagged cell carries
+a `title` with the figure it was judged against ("Typical: -$210.00"), and a
+single line above the grid says what the run found, which exists purely because
+a run that finds nothing must look different from a run that never happened.
+Tagging moved out of its own card to a button beside **Find anomalies**,
+revealed once something is flagged, and **its dry-run checkbox is gone -- it
+writes immediately**. The Find run is the preview: nothing can be tagged that
+has not already been flagged and boxed in the grid. Note `parseDryRun` in
+app-server.ts treats a *missing* flag as a dry run, so the client has to send
+`dryRun: false` explicitly -- dropping the field would silently turn every tag
+run into a no-op.
+
+**Nothing in the action row stretches** (same date): every field is sized to its
+content and the slack sits at the end, so the buttons start at the same x for
+every action. With a field growing to fill the row the buttons were pushed
+against the right edge, and their left edge then moved with their own count,
+which differs per action (Preview+Apply vs Find, +Tag). For the same reason the
+custom-amount box is disabled in place rather than hidden -- the repo already
+learned this once with the 401(k) fields; see [[fire-dashboard]].
+
+**The Category header has a select-all checkbox** with the same tri-state sync a
+group's box has (`setTriState`, shared by both). Two things to know: it operates
+on whatever is currently in the grid, so it takes hidden categories too when
+they are toggled on; and clicking it out of the indeterminate state selects
+everything, because indeterminate is a look rather than a third value a click
+cycles through -- a test that "unchecks" an indeterminate box is a no-op and
+proves nothing.
+
 **Anomaly findings are drawn into the grid, not just listed** (2026-09-10):
 `PICKER.flagged` is a `categoryId|month -> direction` map, keyed exactly like
 `PICKER.preview`, and boxes the **Spent** cell (a preview boxes **Budgeted** --

@@ -253,7 +253,7 @@
         </div>
         <div class="card-body">
           <div class="action-row">
-            <div class="field">
+            <div class="field action-field">
               <label for="budgetAction">Action</label>
               <select id="budgetAction">
                 <optgroup label="Set budget values">
@@ -269,7 +269,7 @@
                 </optgroup>
               </select>
             </div>
-            <div class="field" id="budgetCustomAmountField" hidden>
+            <div class="field" id="budgetCustomAmountField">
               <label for="budgetCustomAmount">Amount</label>
               <div class="input-affix prefix-dollar">
                 <input type="text" inputmode="decimal" id="budgetCustomAmount" placeholder="0.00">
@@ -279,6 +279,9 @@
               <button type="button" class="btn secondary" id="previewSetValuesBtn" disabled>Preview</button>
               <button type="button" class="btn" id="applySetValuesBtn" disabled>Apply changes</button>
               <button type="button" class="btn" id="findAnomaliesBtn" disabled hidden>Find anomalies</button>
+              <!-- Appears beside Find once a run has flagged something, rather than in a card of its
+                   own further down the page. -->
+              <button type="button" class="btn secondary" id="tagAnomaliesBtn" hidden>Tag flagged transactions</button>
             </div>
           </div>
           <div class="action-result" id="actionResult"></div>
@@ -296,20 +299,6 @@
         </div>
       </div>
 
-        <div class="card" id="tagCard" hidden>
-          <div class="card-head">
-            <h2>Tag flagged transactions</h2>
-          </div>
-          <div class="card-body">
-            <div class="action-row">
-              <div class="action-buttons">
-                <button type="button" class="btn" id="tagAnomaliesBtn">Tag flagged transactions</button>
-              </div>
-              <label class="checkbox-label"><input type="checkbox" id="tagDryRun" checked> Dry run (preview only — don't write tags yet)</label>
-            </div>
-            <div class="action-result" id="tagResult"></div>
-          </div>
-        </div>
       </div>
     </main>
   </div>

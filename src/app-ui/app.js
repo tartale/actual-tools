@@ -961,11 +961,12 @@ function selectedAction() {
 function applySelectedAction() {
   const action = selectedAction()
   const findingAnomalies = action === ANOMALIES_ACTION
-  document.getElementById("budgetCustomAmountField").hidden = action !== "custom"
+  // Disabled in place rather than hidden: taking the field out of the flow moved every button
+  // beside it, so the row was laid out differently for one action than for the other six.
+  document.getElementById("budgetCustomAmount").disabled = action !== "custom"
   document.getElementById("previewSetValuesBtn").hidden = findingAnomalies
   document.getElementById("applySetValuesBtn").hidden = findingAnomalies
   document.getElementById("findAnomaliesBtn").hidden = !findingAnomalies
-  document.getElementById("tagCard").hidden = true
   clearActionOverlays()
   if (PICKER.table) renderPickerTable(PICKER.table)
   updatePickerButtons()
@@ -1035,6 +1036,8 @@ function clearActionOverlays() {
   PICKER.preview = new Map()
   PICKER.flagged = new Map()
   document.getElementById("actionResult").innerHTML = ""
+  // Nothing is flagged any more, so there is nothing to tag.
+  document.getElementById("tagAnomaliesBtn").hidden = true
 }
 
 function selectMonth(month, extend) {
@@ -1336,10 +1339,16 @@ function renderPickerTable(table, options = {}) {
   // was spent that month, where a preview is a statement about what would be budgeted.
   const flagged = PICKER.flagged
   const flaggedAt = (categoryId, month) => flagged.get(`${categoryId}|${month}`) ?? null
+  const categoryFlag = (categoryId, month) => {
+    const found = flaggedAt(categoryId, month)
+    return found ? { direction: found.direction, title: `Typical: ${usd(found.typicalCents)}` } : null
+  }
   // A zero that has been flagged keeps its full weight -- "spent $0.00 where -$210.00 is typical"
   // is precisely the kind of finding worth looking at, so bt-zero must not dim it away.
+  // `flag` is null, or { direction, title } -- the title is what the cell says on hover, which is
+  // the whole of the detail the findings list used to carry in writing.
   const numCell = (cents, first, picked, changed, flag) =>
-    `<td class="bt-num${first ? " bt-month-start" : ""}${picked}${changed ? " bt-changed" : ""}${flag ? ` bt-flagged bt-flagged-${flag}` : ""}${cents === 0 && !changed && !flag ? " bt-zero" : ""}">${flag === "high" || flag === "low" ? `<span class="bt-flag-mark">${flag === "high" ? "\u25b2" : "\u25bc"}</span> ` : ""}${usd(cents)}</td>`
+    `<td class="bt-num${first ? " bt-month-start" : ""}${picked}${changed ? " bt-changed" : ""}${flag ? ` bt-flagged bt-flagged-${flag.direction}` : ""}${cents === 0 && !changed && !flag ? " bt-zero" : ""}"${flag ? ` title="${escapeHtml(flag.title)}"` : ""}>${flag && flag.direction !== "mixed" ? `<span class="bt-flag-mark">${flag.direction === "high" ? "\u25b2" : "\u25bc"}</span> ` : ""}${usd(cents)}</td>`
   const numCells = (m, month, change, flag) =>
     `${numCell(change ? change.newBudgeted : m.budgeted, true, pick(month), Boolean(change), null)}${numCell(m.spent, false, pick(month), false, flag)}${numCell(m.balance, false, pick(month), false, null)}`
 
@@ -1373,9 +1382,13 @@ function renderPickerTable(table, options = {}) {
       // category inside agrees on one -- otherwise the total is marked without an arrow, since
       // "some high, some low" is not a direction the summed figure actually has.
       const groupFlag = (month) => {
-        const directions = [...new Set(group.categories.map((category) => flaggedAt(category.id, month)).filter(Boolean))]
-        if (directions.length === 0) return null
-        return directions.length === 1 ? directions[0] : "mixed"
+        const flags = group.categories.map((category) => flaggedAt(category.id, month)).filter(Boolean)
+        if (flags.length === 0) return null
+        const directions = [...new Set(flags.map((flag) => flag.direction))]
+        return {
+          direction: directions.length === 1 ? directions[0] : "mixed",
+          title: `${flags.length} ${flags.length === 1 ? "category" : "categories"} flagged this month`,
+        }
       }
       const groupTotalCells = table.months
         .map((month) => numCells(sumCells(group.categories, month), month, groupTotalsChanged(month) ? { newBudgeted: sumCells(group.categories, month).budgeted } : null, groupFlag(month)))
@@ -1384,7 +1397,7 @@ function renderPickerTable(table, options = {}) {
         .map(
           (category, categoryIndex) => `<tr class="bt-row ${groupClass} ${categoryIndex % 2 === 1 ? "bt-row-alt" : ""}${category.hidden || group.hidden ? " bt-hidden" : ""}">
             <td class="bt-name"><label><input type="checkbox" class="bt-category-check" data-category-id="${category.id}" data-group="${groupClass}">${category.hidden ? hiddenMark : ""} ${escapeHtml(category.name)}</label></td>
-            ${table.months.map((month) => numCells(category.months[month] ?? { budgeted: 0, spent: 0, balance: 0 }, month, previewedBudget(category.id, month), flaggedAt(category.id, month))).join("")}
+            ${table.months.map((month) => numCells(category.months[month] ?? { budgeted: 0, spent: 0, balance: 0 }, month, previewedBudget(category.id, month), categoryFlag(category.id, month))).join("")}
           </tr>`,
         )
         .join("")
@@ -1423,6 +1436,7 @@ function renderPickerTable(table, options = {}) {
       <thead>
         <tr>
           <th class="bt-name-head" rowspan="2">
+            <input type="checkbox" class="bt-all-check" id="btAllCheck" aria-label="Select all categories">
             <span>Category</span>
             <button type="button" class="bt-head-menu" data-menu-toggle aria-haspopup="menu" aria-expanded="false" aria-label="Category options">⋮</button>
           </th>
@@ -1474,6 +1488,13 @@ function renderPickerTable(table, options = {}) {
     const base = menu.offsetParent.getBoundingClientRect()
     menu.style.top = `${button.bottom - base.top + 4}px`
     menu.style.left = `${Math.max(4, Math.min(button.left - base.left - 40, base.width - 180))}px`
+  })
+
+  const allCheckbox = container.querySelector(".bt-all-check")
+  allCheckbox.addEventListener("change", () => {
+    container.querySelectorAll(".bt-category-check").forEach((categoryCheckbox) => {
+      categoryCheckbox.checked = allCheckbox.checked
+    })
   })
 
   container.querySelectorAll(".bt-group-check").forEach((groupCheckbox) => {
@@ -1547,10 +1568,22 @@ function syncGroupCheckboxes() {
   const container = document.getElementById("budgetTable")
   container.querySelectorAll(".bt-group-check").forEach((groupBox) => {
     const children = [...container.querySelectorAll(`.bt-category-check[data-group="${groupBox.dataset.group}"]`)]
-    const checkedCount = children.filter((child) => child.checked).length
-    groupBox.checked = children.length > 0 && checkedCount === children.length
-    groupBox.indeterminate = checkedCount > 0 && checkedCount < children.length
+    setTriState(groupBox, children)
   })
+  // The header's own box stands in the same relation to every category in the grid that a group's
+  // box stands in to the categories under it, so it is kept in step the same way -- including the
+  // indeterminate middle state, which is the only honest thing to show for a partial selection.
+  const allBox = container.querySelector(".bt-all-check")
+  if (allBox) {
+    setTriState(allBox, [...container.querySelectorAll(".bt-category-check")])
+  }
+}
+
+// Function to put one checkbox into checked / indeterminate / unchecked from the boxes it covers.
+function setTriState(box, children) {
+  const checkedCount = children.filter((child) => child.checked).length
+  box.checked = children.length > 0 && checkedCount === children.length
+  box.indeterminate = checkedCount > 0 && checkedCount < children.length
 }
 
 function syncCheckedCategories() {
@@ -1667,28 +1700,31 @@ async function runFindAnomalies() {
     // Same treatment a preview gets: put the result in the grid you were already reading, not only
     // in the list above it. Months outside the visible window keep their flag in the map and light
     // up when the window rolls back over them.
-    picker.flagged = new Map(res.findings.map((finding) => [`${finding.category.id}|${finding.month}`, finding.direction]))
+    picker.flagged = new Map(res.findings.map((finding) => [`${finding.category.id}|${finding.month}`, { direction: finding.direction, typicalCents: finding.typicalCents }]))
     renderPickerTable(picker.table)
     lastAnomalyQuery = { categories, startMonth, endMonth }
-    document.getElementById("tagCard").hidden = res.findings.length === 0
-    document.getElementById("tagResult").innerHTML = ""
+    // Tagging is offered only once there is something to tag, beside the button that found it.
+    document.getElementById("tagAnomaliesBtn").hidden = res.findings.length === 0
   } catch (error) {
     showError(error.message)
   }
 }
 
+// Function to say what a run found, in one line. The findings themselves are drawn into the grid
+// (see the flagged overlay in renderPickerTable), so repeating them here as a list would be the
+// same report twice -- once where you have to match names and months back against the table by eye,
+// and once already in it. What a line is still needed for is the case the grid cannot show: a run
+// that found nothing looks exactly like a run that never happened.
 function renderAnomalyFindings(findings) {
   const container = document.getElementById("actionResult")
-  if (findings.length === 0) {
-    container.innerHTML = `<div class="empty-note">No anomalies found.</div>`
-    return
-  }
-  container.innerHTML = findings
-    .map((finding) => {
-      const chip = finding.direction === "high" ? "warn" : "info"
-      return `<div class="finding"><span class="chip ${chip}">${escapeHtml(finding.direction)}</span><div><div class="title">${escapeHtml(finding.month)} — ${escapeHtml(finding.category.name)}</div><div class="detail">Spent ${moneySpan(finding.spentCents)} · typical ${moneySpan(finding.typicalCents)}</div></div></div>`
-    })
-    .join("")
+  // Counted distinctly on both axes: a finding is one category in one month, so the same category
+  // flagged in three months is one category, not three.
+  const categories = new Set(findings.map((finding) => finding.category.id)).size
+  const months = new Set(findings.map((finding) => finding.month)).size
+  container.innerHTML =
+    findings.length === 0
+      ? `<div class="empty-note">No anomalies found.</div>`
+      : `<div class="empty-note">Flagged ${categories} ${categories === 1 ? "category" : "categories"} across ${months} ${months === 1 ? "month" : "months"} — highlighted below.</div>`
 }
 
 // Function to tag (or, dry-run, preview tagging) the transaction(s) behind the last "Find
@@ -1698,9 +1734,10 @@ async function runTagAnomalies() {
   if (!lastAnomalyQuery) {
     return
   }
-  const dryRun = document.getElementById("tagDryRun").checked
   try {
-    const res = await api("/api/budget/anomalies/tag", { method: "POST", body: JSON.stringify({ ...lastAnomalyQuery, dryRun }) })
+    // dryRun is explicitly false: the route treats a missing flag as a dry run (parseDryRun in
+    // app-server.ts), so leaving it off would quietly turn every tag run into a preview.
+    const res = await api("/api/budget/anomalies/tag", { method: "POST", body: JSON.stringify({ ...lastAnomalyQuery, dryRun: false }) })
     clearError()
     renderTagResults(res.tagResults)
   } catch (error) {
@@ -1709,7 +1746,7 @@ async function runTagAnomalies() {
 }
 
 function renderTagResults(results) {
-  const container = document.getElementById("tagResult")
+  const container = document.getElementById("actionResult")
   if (results.length === 0) {
     container.innerHTML = `<div class="empty-note">Nothing to tag.</div>`
     return

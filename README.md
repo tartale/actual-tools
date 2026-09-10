@@ -261,6 +261,10 @@ foldable row per category group (click the caret to collapse it, or its own
 checkbox to select every category inside at once) and a real
 Budgeted/Spent/Balance column triplet per month.
 
+The checkbox in the **Category** header takes or clears every category in
+the grid at once, and shows the same three states a group's own checkbox
+does — empty, a dash for a partial selection, a tick for all of them.
+
 Unlike the CLI, **an empty category selection is refused rather than
 treated as "every category"**: over the web the picker is a checkbox per
 category, where nothing checked reads as "I haven't picked yet", not as a
@@ -302,8 +306,14 @@ same robust (median-based) outlier test as the CLI
 (`src/anomaly-detect.ts`) against each category's own trailing 12-month
 history. Each finding is also boxed in the grid itself, on that category and
 month's **Spent** figure — the same idea as a Preview marking the Budgeted
-cells it would change, and in the place you were already looking rather
-than only in the list above. Colour and an arrow both carry the direction
+cells it would change. **The grid is the report**: there is no list of
+findings beside it, since that would be the same report twice, once where
+you have to match names and months back against the table by eye. Hovering
+a flagged cell gives the figure it was judged against ("Typical:
+-$210.00"), and a single line above says what the run found, which is the
+one thing the grid can't show — a run that finds nothing has to look
+different from a run that never happened. Colour and an arrow both carry
+the direction
 (▲ spent more than usual, ▼ less), a group's own total carries the flag so
 a folded group still shows it, and a flagged `$0.00` keeps its full weight
 instead of being dimmed as an empty cell — "spent $0.00 where -$210.00 is
@@ -311,13 +321,14 @@ typical" is exactly the kind of finding worth looking at. Like a preview,
 the flags describe one run over one selection, so changing the action, the
 months or the categories drops them.
 
-Any month flagged this way unlocks a second card, **Tag flagged
-transactions**: prepends a `#anomaly-high`/`#anomaly-low` tag to the note
-of whichever transaction(s) in that month are themselves responsible (or,
-if none stands out individually, the single largest transaction that
-month) — defaults to **dry run** (a checkbox, checked by default) so the
-first click always previews which transactions would be tagged before a
-second, unchecked click actually writes the notes.
+A run that flags something reveals a **Tag flagged transactions** button
+beside **Find anomalies**: it prepends a `#anomaly-high`/`#anomaly-low` tag
+to the note of whichever transaction(s) in that month are themselves
+responsible (or, if none stands out individually, the single largest
+transaction that month), and lists what it tagged. **It writes
+immediately** — there is no dry-run checkbox here, unlike the CLI's `-n`.
+The preview is the Find run itself: nothing can be tagged until a Find has
+flagged it, and what will be tagged is already boxed in the grid.
 
 ### Retirement — Configure tab
 

@@ -290,7 +290,10 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
         dimmed: cells[0]?.classList.contains("bt-zero"),
         // The group's own total carries it too, so a folded group still shows it.
         groupFlagged: document.querySelectorAll("#budgetTable tr.bt-group-header .bt-num.bt-flagged").length,
-        listed: document.getElementById("actionResult")?.textContent?.includes("Groceries"),
+        // The detail the findings list used to spell out now lives on the cell itself.
+        tooltip: cells[0]?.getAttribute("title"),
+        summary: document.getElementById("actionResult")?.textContent?.trim(),
+        tagOffered: !(document.getElementById("tagAnomaliesBtn") as HTMLElement).hidden,
       }
     })
     expect(flagged.count).toBe(1)
@@ -299,12 +302,54 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
     expect(flagged.direction).toBe("bt-flagged-high")
     expect(flagged.dimmed).toBe(false)
     expect(flagged.groupFlagged).toBe(1)
-    expect(flagged.listed).toBe(true)
+    expect(flagged.tooltip).toMatch(/^Typical: /)
+    // One line saying what happened, not a second copy of the report -- a run that found nothing
+    // has to look different from a run that never happened, and that is all this line is for.
+    expect(flagged.summary).toMatch(/^Flagged 1 category across 1 month/)
+    expect(ui.locator("#actionResult .finding")).toBeDefined()
+    expect(await ui.evaluate(() => document.querySelectorAll("#actionResult .finding").length)).toBe(0)
+    // Tagging is offered beside the button that found them, once there is something to tag.
+    expect(flagged.tagOffered).toBe(true)
 
     // The flag describes one run over one selection, so changing either drops it.
     await ui.selectOption("#budgetAction", "balance")
     expect(await ui.evaluate(() => document.querySelectorAll("#budgetTable .bt-flagged").length)).toBe(0)
+    expect(await ui.evaluate(() => (document.getElementById("tagAnomaliesBtn") as HTMLElement).hidden)).toBe(true)
     expect(errors).toEqual([])
+  }, 60000)
+
+  it("selects and clears every category from the header checkbox, showing a partial selection", async () => {
+    const { page: ui } = await openBudgetPage()
+    await ui.locator("#budgetTable .bt-head-menu").click()
+    await ui.locator('#budgetMenu [data-menu-item="toggle-hidden"]').click()
+
+    const state = () =>
+      ui.evaluate(() => {
+        const all = document.querySelector("#budgetTable .bt-all-check") as HTMLInputElement
+        const boxes = [...document.querySelectorAll("#budgetTable .bt-category-check")] as HTMLInputElement[]
+        return { checked: all.checked, indeterminate: all.indeterminate, categories: boxes.length, selected: boxes.filter((b) => b.checked).length }
+      })
+
+    expect(await state()).toMatchObject({ checked: false, indeterminate: false, selected: 0 })
+
+    // Ticking it takes every category in the grid, hidden ones included now they are shown.
+    await ui.locator("#budgetTable .bt-all-check").check()
+    const all = await state()
+    expect(all).toMatchObject({ checked: true, indeterminate: false })
+    expect(all.selected).toBe(all.categories)
+
+    // Clearing one leaves the header box in the middle state rather than lying either way.
+    await ui.locator("#budgetTable .bt-category-check").first().uncheck()
+    expect(await state()).toMatchObject({ checked: false, indeterminate: true, selected: all.categories - 1 })
+
+    // Clicking out of the middle state takes everything, which is what a native checkbox does --
+    // indeterminate is a look, not a third value a click cycles through.
+    await ui.locator("#budgetTable .bt-all-check").click()
+    expect(await state()).toMatchObject({ checked: true, indeterminate: false, selected: all.categories })
+
+    // And clicking it again clears the lot.
+    await ui.locator("#budgetTable .bt-all-check").click()
+    expect(await state()).toMatchObject({ checked: false, indeterminate: false, selected: 0 })
   }, 60000)
 
   it("switches between sections without disturbing Retirement's own tabs", async () => {
@@ -349,11 +394,18 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
     // Read-only, so there is nothing to preview and nothing to apply.
     expect(await buttons()).toMatchObject({ preview: false, apply: false, find: true })
 
-    // The custom-amount box belongs to exactly one action, and isn't dragged along by the others.
+    // The custom-amount box belongs to exactly one action, but stays in the layout for all of them:
+    // taking it out of the flow moved every button beside it, laying the row out differently for
+    // one action than for the rest.
     await ui.selectOption("#budgetAction", "custom")
-    expect(await ui.locator("#budgetCustomAmountField").isVisible()).toBe(true)
+    expect(await ui.locator("#budgetCustomAmount").isDisabled()).toBe(false)
+    const withAmount = await ui.evaluate(() => Math.round(document.querySelector(".action-buttons")!.getBoundingClientRect().left))
     await ui.selectOption("#budgetAction", "anomalies")
-    expect(await ui.locator("#budgetCustomAmountField").isVisible()).toBe(false)
+    expect(await ui.locator("#budgetCustomAmount").isDisabled()).toBe(true)
+    expect(await ui.locator("#budgetCustomAmountField").isVisible()).toBe(true)
+    const withoutAmount = await ui.evaluate(() => Math.round(document.querySelector(".action-buttons")!.getBoundingClientRect().left))
+    // Same geometry whichever action is selected -- the buttons never move under the cursor.
+    expect(withoutAmount).toBe(withAmount)
     expect(errors).toEqual([])
   }, 60000)
 })

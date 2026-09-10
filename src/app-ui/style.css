@@ -268,7 +268,13 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 /* The Action dropdown and the buttons that run it share one row -- the months are chosen in the
    table's own headers now, so there are no month fields left to sit between them. */
 .action-row { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
-.action-row .field { flex: 1 1 260px; min-width: 220px; }
+/* Nothing in this row stretches. Each field is as wide as it needs to be and the slack is left at
+   the end, so the buttons start at the same x whichever action is selected -- with a field growing
+   to fill the row, the buttons were pushed against the right edge and their left edge then moved
+   with their own count, which differs per action. */
+.action-row .field { flex: 0 0 auto; min-width: 0; }
+.action-field select { width: auto; max-width: 100%; }
+#budgetCustomAmountField { width: 150px; }
 .action-buttons { display: flex; align-items: center; gap: 10px; padding-bottom: 1px; }
 /* Results sit directly under the row that produced them -- below the category table they'd be a
    screen away from the button that was just clicked, which reads as "nothing happened". Capped so
@@ -371,6 +377,7 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 /* Still relative so the ⋮ button can pin to the cell's right edge; the dropdown itself no longer
    lives in here. */
 .budget-table-el thead th.bt-name-head { position: relative; padding-right: 26px; overflow: visible; }
+.bt-all-check { accent-color: var(--accent); margin: 0 8px 0 0; vertical-align: -1px; cursor: pointer; }
 .bt-head-menu { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); background: none; border: none; color: var(--ink-soft); font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: var(--radius-sm); cursor: pointer; }
 .bt-head-menu:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--line-soft) 60%, transparent); }
 /* Positioned against the wrapper, with top/left measured from the button when it opens. */
