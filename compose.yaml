@@ -1,0 +1,71 @@
+# Runs the companion app as a container. Brought up by `./actual service start` (or `docker compose
+# up -d` directly).
+
+# An explicit project name so this is the same stack whichever directory compose is invoked from --
+# the repo is reached by different paths from the host and from inside the sandbox container, and
+# without this each cwd would create its own separate stack.
+name: actual-tools
+
+services:
+  app:
+    # Plain `actual-tools`, not the compose-generated `actual-tools-app-1`. Single-instance service,
+    # so a fixed name costs nothing and makes docker ps / logs / exec read cleanly.
+    container_name: actual-tools
+    # The LOCAL tag `./actual build image` produces -- deliberately not a registry reference. A bare
+    # local tag makes `docker compose pull` fail outright rather than silently swapping in whatever
+    # an upstream tag happens to point at, and there is no published image for this anyway.
+    # Rebuild with `./actual build image` after pulling code.
+    image: actual-tools:latest
+    build:
+      context: .
+    # The published port is settable so a second instance (or a port already spoken for) doesn't
+    # need this file edited; `./actual service start -p N` sets it. Inside the container it is always
+    # 4247, which is what the image's own CMD and healthcheck use.
+    ports:
+      - "${ACTUAL_PORT:-4247}:4247"
+    # config.json lives here and is rewritten on every edit in the app, so it is a mounted directory
+    # rather than a baked-in file. A directory, not a single-file bind mount: those break the moment
+    # a writer replaces the file rather than writing through it, which is a trap worth avoiding even
+    # though this app's own writer happens to write in place today.
+    #
+    # An existing config.json at the repo root is NOT picked up -- move it into ./data to keep it.
+    #
+    # ACTUAL_DATA_DIR exists because a relative path here is resolved against the DAEMON's host, not
+    # against wherever compose is being run from. Those are the same place on the NAS itself, and a
+    # different place from inside the sandbox container, where the repo is /workspace but the host
+    # knows it as /volume1/workspace/projects/actual-tools -- `./data` there names a directory the
+    # daemon cannot see, and the container fails to start with "Bind mount failed". Set
+    # ACTUAL_DATA_DIR to the host's own absolute path in that case (.envrc is the place for it).
+    volumes:
+      - ${ACTUAL_DATA_DIR:-./data}:/app/data
+    # Explicit passthrough, NOT `env_file: .env` -- .env also holds sandbox and build-only secrets
+    # (CS_GITHUB_TOKEN) that a running app has no use for and should not be handed.
+    environment:
+      AB_BASE_URL: ${AB_BASE_URL}
+      AB_BUDGET_ID: ${AB_BUDGET_ID}
+      AB_API_KEY: ${AB_API_KEY}
+    # A container on the bridge network often cannot reach the host's own LAN address, even though
+    # it resolves: on this NAS, `tartalenas.local` resolves to 10.0.1.3 from inside the container and
+    # then every request to it hangs until it times out, which surfaces in the app as a bare "fetch
+    # failed" with no clue as to why. Mapping that same hostname to host-gateway routes it back
+    # through the docker bridge instead, which does work.
+    #
+    # Set ACTUAL_HOST_ALIAS to the hostname in AB_BASE_URL if you hit that (.envrc is the place for
+    # it). The default is a name nothing resolves or asks for, so the entry is inert when unused --
+    # an Actual reachable by plain IP, or on the same docker network, needs none of this.
+    extra_hosts:
+      - "${ACTUAL_HOST_ALIAS:-actual-host.invalid}:host-gateway"
+    restart: unless-stopped
+    # `restart: unless-stopped` only covers a process that exits; this surfaces a wedged-but-alive
+    # app as "unhealthy" in docker ps. Node's own http is used because the alpine image has no curl,
+    # and the build-id route is the cheapest one that proves the server is actually serving.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('node:http').get('http://127.0.0.1:4247/api/dev/build-id', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3

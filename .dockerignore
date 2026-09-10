@@ -1,0 +1,38 @@
+# Keeps the build context to what the image actually copies: package.json, irs-limits.json and src/.
+# Everything below is either rebuilt, mounted at run time, or has no business in an image.
+.git
+.github
+.claude
+node_modules
+.tmp
+
+# Secrets and machine-local environment -- the container is handed exactly the variables compose
+# passes it, and nothing else.
+.env
+.envrc
+
+# Run-time data, mounted as a volume instead (see compose.yaml). config.json in particular is
+# rewritten by the app, so a copy baked into the image would be a stale shadow of the real one.
+config.json
+fire-dashboard.json
+data/
+
+# Checks and their fixtures never run inside the image.
+**/*.test.ts
+src/browser-tests
+eslint.config.js
+tsconfig.json
+package-lock.json
+
+# Docs and tooling
+README.md
+LICENSE
+Dockerfile
+.dockerignore
+compose.yaml
+lib/
+actual
+
+# OS cruft
+.DS_Store
+@eaDir/

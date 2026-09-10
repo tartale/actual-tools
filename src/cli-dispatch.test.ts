@@ -31,7 +31,7 @@ describe("./actual dispatcher", () => {
     // Asking for help is not getting it wrong. This exited 1 once.
     const result = await actual(["--help"])
     expect(result.code).toBe(0)
-    for (const command of ["build", "lint", "test", "budget", "transactions", "app"]) {
+    for (const command of ["build", "lint", "test", "budget", "transactions", "service"]) {
       expect(result.stderr + result.stdout).toContain(command)
     }
   }, 30000)
@@ -82,6 +82,47 @@ describe("./actual dispatcher", () => {
       }
     }, 30000)
   })
+
+  it("routes the service subcommands, and no longer answers to the app command it replaced", async () => {
+    const help = await actual(["service", "--help"])
+    expect(help.code).toBe(0)
+    for (const subcommand of ["start", "status", "stop"]) {
+      expect(help.stderr + help.stdout).toContain(subcommand)
+    }
+
+    const bare = await actual(["service"])
+    expect(bare.code).toBe(1)
+    expect(bare.stderr).toContain("Usage:")
+
+    const unknown = await actual(["service", "nonsense"])
+    expect(unknown.code).toBe(1)
+    expect(unknown.stderr).toContain("Unknown service subcommand: nonsense")
+
+    // `./actual app` was replaced by `./actual service`; it should say so plainly rather than
+    // silently doing nothing.
+    const app = await actual(["app"])
+    expect(app.code).toBe(1)
+    expect(app.stderr).toContain("Unknown command: app")
+  }, 60000)
+
+  it("reports a port nothing is listening on as down, with or without docker", async () => {
+    // The one service subcommand that needs neither the daemon nor a running app: it answers by
+    // connecting to the port, which is the only thing that actually settles the question.
+    const result = await actual(["service", "status", "--port", "4291"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("down")
+    expect(result.stdout).toContain("4291")
+  }, 60000)
+
+  it("keeps build's type-check while adding the image subcommand", async () => {
+    const help = await actual(["build", "--help"])
+    expect(help.code).toBe(0)
+    expect(help.stderr + help.stdout).toContain("image")
+
+    const unknown = await actual(["build", "nonsense"])
+    expect(unknown.code).toBe(1)
+    expect(unknown.stderr).toContain("Unknown build subcommand: nonsense")
+  }, 60000)
 
   it("rejects bad arguments before making any request, with no credentials in the environment", async () => {
     // If any of these reached the API layer they would fail on missing AB_* variables instead, so

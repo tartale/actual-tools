@@ -25,13 +25,14 @@ Every task in this repo runs through one dispatcher, from any directory:
 ./actual budget set-values ARGS            # set category budgets
 ./actual budget anomalies ARGS             # flag categories with unusual spending
 ./actual transactions match-uncleared ARGS # tag matching uncleared transactions
-./actual app ARGS                          # launch the local companion app (see below)
+./actual service start                     # run the companion app as a container (see below)
+./actual build image                       # build the image that service runs
 ```
 
 ## `./actual budget set-values`
 
 Sets category budgets for a month, or an inclusive range of months. Also
-available as a web form with a live preview — see `./actual app`'s
+available as a web form with a live preview — see `./actual service`'s
 **Budget** section below.
 
 ```
@@ -83,7 +84,7 @@ This replaces the earlier `balance-to-zero.sh`, whose behaviour is now the
 
 Flags categories whose spending in a month deviates sharply from that
 category's own trailing 12-month history. Also available as a web form —
-see `./actual app`'s **Budget** section below.
+see `./actual service`'s **Budget** section below.
 
 ```
 ./actual budget anomalies -c CATEGORY [-c CATEGORY]... [-t] [-n] yyyy-mm [yyyy-mm]
@@ -148,7 +149,7 @@ early-imported, never-updated row), but it means an occasional false match
 between two otherwise-unrelated transactions is possible; review the printed
 pairs, especially with `-n` first, before trusting a large `--since` window.
 
-## `./actual app`
+## `./actual service` / `./actual build image`
 
 A local **companion app** for a self-hosted Actual Budget instance — one
 small web page, run alongside Actual, for the things a terminal interview
@@ -163,8 +164,42 @@ match-uncleared` — since it is one-shot, scriptable work rather than
 something a page helps with.
 
 ```
-./actual app [-f PATH] [-i PATH] [-o PATH] [-p N] [--no-open]
+./actual service start [--dev] [-p N]
+./actual service status [-p N]
+./actual service stop [-p N]
+./actual build image [-t TAG] [--platform P]
 ```
+
+`service start` runs the app as a container (`docker compose up -d`) from
+the image `./actual build image` produces. `--dev` instead runs the sources
+directly in the foreground, restarting on every edit — that's the working
+loop, and the container is not involved in it. `status` answers by
+connecting to the port, since that's the only thing that settles whether
+anything is actually serving; a container can be running with a wedged
+server inside it. `stop` takes down the container and any `--dev` process
+holding the port, so it doesn't matter which way it was started.
+
+Two things about running the container that are worth knowing before they
+bite:
+
+- **`ACTUAL_DATA_DIR`** — `config.json` lives in a mounted directory
+  (`./data`), and a relative path there resolves against the *docker
+  daemon's host*, not against wherever compose was run from. Those differ
+  whenever the daemon is remote or the repo is reached through a container,
+  and the symptom is `Bind mount failed: '…' does not exist`. Set this to
+  the host's own absolute path in that case.
+- **`ACTUAL_HOST_ALIAS`** — a container on the bridge network often can't
+  reach the host's LAN address even though it resolves; requests just hang
+  and surface as a bare `fetch failed`. Set this to the hostname in
+  `AB_BASE_URL` and compose maps it to `host-gateway`, which routes back
+  through the bridge. Not needed if Actual is reachable by plain IP.
+
+Both belong in `.envrc`. The image itself installs nothing: this repo has
+no runtime dependencies and Node runs the TypeScript directly, so the image
+is the base plus `src/`.
+
+The old `./actual app` is gone — `./actual service start --dev` is what it
+was.
 
 - `-f`, `--config PATH` — path to the config file to read from and write
   (default: `config.json`).
@@ -215,9 +250,9 @@ while that's happening. If it does ultimately fail, the error banner gets
 a clearer message plus a **Retry** button, rather than requiring a full
 page reload.
 
-`./actual app` also hot-reloads end to end, with no manual stop/restart
-needed for a source change: `./actual`'s dispatcher runs it under node's
-own `--watch` flag, which restarts the process automatically the moment
+`./actual service start --dev` also hot-reloads end to end, with no manual
+stop/restart needed for a source change: the dispatcher runs it under
+node's own `--watch` flag, which restarts the process automatically the moment
 any file it imports changes (`app-server.ts`, any `fire-*.ts` module —
 `app.js`/`style.css`/`index.html` are re-read from disk on every request
 already, so those never even need a restart). The page itself polls a

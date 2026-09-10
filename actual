@@ -7,6 +7,9 @@ cd "${THIS_SCRIPT_DIR}"
 # shellcheck source=lib/cli-format.sh
 source "${THIS_SCRIPT_DIR}/lib/cli-format.sh"
 
+# The port the app serves on, matching compose.yaml's published port and src/app.ts's own default.
+SERVICE_PORT=4247
+
 # Function to display usage and exit. Takes the exit code: 0 for an explicit --help, 1 for an error.
 function usage() {
   local exitCode="${1:-1}"
@@ -15,12 +18,12 @@ function usage() {
   echo "Every command runs from the repository root, whatever directory you invoke it from." >&2
   echo >&2
   cliSection "Commands" \
-    "build" "Install dependencies if needed and type-check the sources." \
+    "build" "Type-check the sources, or build the container image. See './actual build --help'." \
     "lint" "Run eslint over the TypeScript and shellcheck over the shell scripts." \
     "test" "Run the unit test suite." \
     "budget" "Set category budgets or flag unusual spending. See './actual budget --help'." \
     "transactions" "Work with individual transactions. See './actual transactions --help'." \
-    "app" "Launch the local companion app (retirement/FIRE today; more sections planned). See './actual app --help'."
+    "service" "Run the companion app as a container. See './actual service --help'."
   exit "${exitCode}"
 }
 
@@ -45,6 +48,73 @@ function transactionsUsage() {
   exit "${exitCode}"
 }
 
+# Function to display usage for the build subcommand group and exit
+function buildUsage() {
+  local exitCode="${1:-1}"
+  cliUsage "./actual build [SUBCOMMAND] [ARGS]"
+  echo >&2
+  echo "With no subcommand, type-checks the TypeScript sources." >&2
+  echo >&2
+  cliSection "Subcommands" \
+    "image" "Build the container image the service runs (tags actual-tools:latest)."
+  echo >&2
+  cliSection "Options (image)" \
+    "-t, --tag TAG" "Tag to apply instead of actual-tools:latest." \
+    "--platform P" "Build for this platform instead of the host's."
+  exit "${exitCode}"
+}
+
+# Function to display usage for the service subcommand group and exit
+function serviceUsage() {
+  local exitCode="${1:-1}"
+  cliUsage "./actual service SUBCOMMAND [ARGS]"
+  echo >&2
+  cliSection "Subcommands" \
+    "start" "Start the app in a container (docker compose up -d)." \
+    "status" "Report whether the app is up, and where to reach it." \
+    "stop" "Stop the app, container or --dev process alike."
+  echo >&2
+  cliSection "Options" \
+    "--dev" "start: run the sources directly instead, in the foreground, restarting on every edit. The container is not involved." \
+    "-p, --port N" "Port to check or serve on (default: ${SERVICE_PORT})."
+  exit "${exitCode}"
+}
+
+# Function to fail with a clear message unless docker is installed and its daemon is reachable --
+# every message it can produce is more useful than the daemon's own connection error.
+function requireDocker() {
+  if ! command -v docker &> /dev/null; then
+    echo "docker not found; it is required to build or run the service." >&2
+    echo "Run './actual service start --dev' to run from the sources instead." >&2
+    exit 1
+  fi
+  if ! docker info &> /dev/null; then
+    echo "The docker daemon isn't reachable; start Docker and try again." >&2
+    exit 1
+  fi
+}
+
+# Function to report whether anything is actually accepting connections on a port. A connect is the
+# only thing that settles this: matching process names also matches the command asking the question,
+# which reports a server as up when nothing is listening. bash's own /dev/tcp keeps it dependency
+# free -- neither lsof nor ss is present in every image this runs in.
+function portListening() {
+  local port="$1"
+  (exec 3<> "/dev/tcp/127.0.0.1/${port}") &> /dev/null
+}
+
+# Function to list the PIDs listening on a port, for stopping a --dev run. Prefers fuser, falls back
+# to matching the app's own command line with this process tree excluded, so the pipeline asking the
+# question can never match itself.
+function pidsOnPort() {
+  local port="$1"
+  if command -v fuser &> /dev/null; then
+    fuser "${port}/tcp" 2> /dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true
+    return 0
+  fi
+  pgrep -f "app\.ts" 2> /dev/null | grep -v -e "^$$\$" -e "^$PPID\$" || true
+}
+
 # Function to install node dependencies if they are not already present
 function ensureDependencies() {
   if [[ ! -d node_modules ]]; then
@@ -53,11 +123,64 @@ function ensureDependencies() {
   fi
 }
 
-# Function to type-check the TypeScript sources
+# Function to type-check the TypeScript sources, or build the container image
 function commandBuild() {
+  local subcommand="${1:-}"
+  if [[ "${subcommand}" == "-h" || "${subcommand}" == "--help" ]]; then
+    buildUsage 0
+  fi
+  if [[ "${subcommand}" == "image" ]]; then
+    shift
+    buildImage "$@"
+    return 0
+  fi
+  if [[ -n "${subcommand}" ]]; then
+    echo "Unknown build subcommand: ${subcommand}" >&2
+    buildUsage
+  fi
+
   ensureDependencies
   npm run --silent typecheck
   echo "Build OK."
+}
+
+# Function to build the container image the service runs. Tagged locally and never pushed: compose
+# refers to that same local tag deliberately, so there is no registry in the loop to serve up an
+# older image than the checkout being run.
+function buildImage() {
+  requireDocker
+
+  local tag="actual-tools:latest"
+  local platformArgs=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -t | --tag)
+        tag="${2:-}"
+        if [[ -z "${tag}" ]]; then
+          echo "Missing argument for --tag" >&2
+          buildUsage
+        fi
+        shift 2
+        ;;
+      --platform)
+        if [[ -z "${2:-}" ]]; then
+          echo "Missing argument for --platform" >&2
+          buildUsage
+        fi
+        platformArgs=(--platform "$2")
+        shift 2
+        ;;
+      -h | --help) buildUsage 0 ;;
+      *)
+        echo "Unknown option: $1" >&2
+        buildUsage
+        ;;
+    esac
+  done
+
+  echo "Building ${tag}..." >&2
+  docker build "${platformArgs[@]}" -t "${tag}" .
+  echo "Built ${tag}."
 }
 
 # Function to lint every language in the repo
@@ -149,21 +272,161 @@ function commandTransactions() {
   esac
 }
 
-# Function to launch the local companion app, restarting it automatically whenever a source file
-# it imports changes (node's own --watch flag) -- so editing app-server.ts/fire-*.ts/etc. never
-# needs a manual stop/restart; the page's own hot-reload (a per-process build id polled by the
-# browser -- see app-server.ts/app.js) picks up each restart and reloads any tab left open on it.
-# Skipped for -h/--help: --watch keeps node alive waiting for the next file change even after the
-# script itself calls process.exit(), which would otherwise turn `./actual app --help` into a
-# command that never returns.
-function commandApp() {
-  local arg
-  for arg in "$@"; do
-    if [[ "${arg}" == "-h" || "${arg}" == "--help" ]]; then
-      exec ./src/app.ts "$@"
-    fi
+# Function to dispatch the service subcommands
+function commandService() {
+  local subcommand="${1:-}"
+  if [[ -z "${subcommand}" ]]; then
+    serviceUsage 1
+  fi
+  if [[ "${subcommand}" == "-h" || "${subcommand}" == "--help" ]]; then
+    serviceUsage 0
+  fi
+  shift
+
+  case "${subcommand}" in
+    start) serviceStart "$@" ;;
+    status) serviceStatus "$@" ;;
+    stop) serviceStop "$@" ;;
+    *)
+      echo "Unknown service subcommand: ${subcommand}" >&2
+      serviceUsage
+      ;;
+  esac
+}
+
+# Function to start the app: as a container by default, or straight from the sources with --dev.
+#
+# --dev is the working loop, not a lesser mode of the same thing: it runs in the foreground under
+# node's own --watch, so editing app-server.ts/fire-*.ts/etc. restarts the server, and the page's
+# own hot-reload (a per-process build id the browser polls -- see app-server.ts/app.js) reloads any
+# tab left open on it. A container would have to be rebuilt for each of those edits.
+function serviceStart() {
+  local dev=false
+  local port="${SERVICE_PORT}"
+  local passthrough=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dev) dev=true; shift ;;
+      -p | --port)
+        port="${2:-}"
+        if [[ -z "${port}" ]]; then
+          echo "Missing argument for --port" >&2
+          serviceUsage
+        fi
+        shift 2
+        ;;
+      -h | --help) serviceUsage 0 ;;
+      *) passthrough+=("$1"); shift ;;
+    esac
   done
-  exec node --watch ./src/app.ts "$@"
+
+  if [[ "${dev}" == true ]]; then
+    exec node --watch ./src/app.ts --port "${port}" "${passthrough[@]}"
+  fi
+
+  requireDocker
+  if ! docker image inspect actual-tools:latest &> /dev/null; then
+    echo "No actual-tools:latest image yet; build it with './actual build image'." >&2
+    exit 1
+  fi
+  # config.json is written here, so the directory has to exist before the mount does: docker would
+  # otherwise create it as root and the app could not write into it. Only for the default location --
+  # an ACTUAL_DATA_DIR pointing at the daemon's host may well not be a path this side can create, and
+  # silently making a local directory of that name would hide the real problem rather than fix it.
+  if [[ -z "${ACTUAL_DATA_DIR:-}" ]]; then
+    mkdir -p "${THIS_SCRIPT_DIR}/data"
+  fi
+  # Published port only; inside the container it is always 4247. See compose.yaml.
+  ACTUAL_PORT="${port}" docker compose up -d
+  echo
+  serviceStatus --port "${port}"
+}
+
+# Function to report whether the app is up. The port is the question that matters -- a container can
+# be running with a wedged server inside it -- so that is what decides "up"; the container is then
+# reported alongside as context, and only when docker is actually available.
+function serviceStatus() {
+  local port="${SERVICE_PORT}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -p | --port) port="${2:-${SERVICE_PORT}}"; shift 2 ;;
+      -h | --help) serviceUsage 0 ;;
+      *) shift ;;
+    esac
+  done
+
+  if portListening "${port}"; then
+    echo "● up      http://localhost:${port}/"
+  else
+    echo "○ down    nothing is listening on port ${port}"
+  fi
+
+  if command -v docker &> /dev/null && docker info &> /dev/null; then
+    local container
+    container="$(docker ps -a --filter "name=^actual-tools$" --format '{{.Status}}' 2> /dev/null || true)"
+    if [[ -n "${container}" ]]; then
+      echo "          container: ${container}"
+    else
+      echo "          container: not created"
+    fi
+  fi
+
+  if portListening "${port}"; then
+    echo "          Stop with: ./actual service stop"
+  else
+    echo "          Start with: ./actual service start"
+  fi
+}
+
+# Function to stop the app, whichever way it was started. Both are attempted rather than one being
+# inferred: a --dev run and a container can each be holding the port, and stopping only the kind
+# that was asked about leaves the other one running and the port still taken.
+function serviceStop() {
+  local port="${SERVICE_PORT}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -p | --port) port="${2:-${SERVICE_PORT}}"; shift 2 ;;
+      -h | --help) serviceUsage 0 ;;
+      *) shift ;;
+    esac
+  done
+
+  local stopped=false
+  if command -v docker &> /dev/null && docker info &> /dev/null; then
+    if [[ -n "$(docker ps -a --filter "name=^actual-tools$" --format '{{.ID}}' 2> /dev/null || true)" ]]; then
+      docker compose down
+      stopped=true
+    fi
+  fi
+
+  if portListening "${port}"; then
+    local pids
+    pids="$(pidsOnPort "${port}")"
+    if [[ -n "${pids}" ]]; then
+      echo "Stopping the process on port ${port} (PIDs: $(echo "${pids}" | tr '\n' ' '))" >&2
+      # shellcheck disable=SC2086
+      kill ${pids} 2> /dev/null || true
+      local waited=0
+      while [[ ${waited} -lt 10 ]] && portListening "${port}"; do
+        sleep 1
+        waited=$((waited + 1))
+      done
+      if portListening "${port}"; then
+        echo "Still up after ${waited}s; forcing." >&2
+        # shellcheck disable=SC2086
+        kill -9 ${pids} 2> /dev/null || true
+      fi
+      stopped=true
+    else
+      echo "Something is listening on port ${port} but its process could not be identified." >&2
+    fi
+  fi
+
+  if [[ "${stopped}" == true ]]; then
+    echo "Stopped."
+  else
+    echo "Nothing to stop."
+  fi
 }
 
 # Main function
@@ -180,7 +443,7 @@ function main() {
     test) commandTest "$@" ;;
     budget) commandBudget "$@" ;;
     transactions) commandTransactions "$@" ;;
-    app) commandApp "$@" ;;
+    service) commandService "$@" ;;
     -h|--help|help) usage 0 ;;
     *)
       echo "Unknown command: ${command}" >&2

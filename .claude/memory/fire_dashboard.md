@@ -347,6 +347,30 @@ Before writing any code, built and iterated a throwaway HTML/CSS/JS prototype (p
 9. 306 tests total (this round added ~35: `combinedAnnualAdditionsLimit`, `computeEmployerContribution`, `employerContributionSummary`, HSA-coverage variants of `annualContributionLimit`/`contributionLimitLines`, the legacy-override-id regression guard for `resolveMonthlyContributions`, `calculateMortgagePayoff`, plus `app-server.test.ts` coverage for the network-binding change).
 10. README's Retirement/Configure-tab section extended for the savings type, employer match + combined-limit, HSA coverage, the Rule of 55 checkbox, and the mortgage payoff calculator; the `irs-limits.json` example and its surrounding prose updated for `annualAdditions` (the earlier round's now-stale "family coverage isn't used for Max" caveat removed, since it's implemented now).
 
+**Containerized 2026-09-10.** `./actual app` is gone, replaced by `./actual
+service [start|status|stop]` plus `./actual build image`, following the patterns
+in the tartale/mixer repo (its `build image` local-tag-never-registry rule, its
+"only a connect() settles whether a port is up" rule, and its explicit-env-
+passthrough-not-env_file rule). `service start` runs the container;
+`service start --dev` is the old foreground `node --watch` loop, which is still
+how UI work gets done -- a container would have to be rebuilt per edit.
+
+The image is unusually simple because the repo has no runtime dependencies and
+Node runs the TypeScript directly: it is `node:22-alpine` plus `src/`, with a
+build-time probe that fails the build if the base image's Node is too old to
+strip types (the alternative is a baffling syntax error at run time).
+
+**Two container gotchas, both hit for real and both now behind env vars in
+.envrc**: `ACTUAL_DATA_DIR`, because a relative bind-mount path in compose
+resolves against the *daemon's host* -- inside the sandbox the repo is
+/workspace but the host knows it as /volume1/workspace/projects/actual-tools,
+so `./data` named a directory the daemon could not see ("Bind mount failed").
+And `ACTUAL_HOST_ALIAS`, because a bridge-network container resolved
+`tartalenas.local` to the NAS's LAN address 10.0.1.3 and then could not reach
+it -- every request hung to timeout and surfaced as a bare "fetch failed".
+Mapping that hostname to `host-gateway` fixes it while keeping port mapping,
+which `--network host` would not.
+
 **Twenty-second round, same session: dollar/percent affixes, consistent active/inactive 401(k) layout, Generate as a browser download, and dropped implementation-detail copy.**
 
 1. **Dollar/percent formatting**: new `.input-affix` CSS utility (a `$` prefix or `%` suffix rendered via `::before`/`::after`, padding on the input to make room) applied consistently to every dollar field (monthly contribution, annual salary, mortgage monthly payment, mortgage balance) and every percent field (employer match rate, match cap, mortgage interest rate) -- including the pre-existing monthly-contribution field, not just the ones added last round, so the page doesn't end up with some boxes styled and others not.
