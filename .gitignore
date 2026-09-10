@@ -2,6 +2,7 @@
 .envrc
 nohub.out
 .DS_Store
+@eaDir/
 node_modules
 .tmp
 config.json
