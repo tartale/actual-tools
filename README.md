@@ -245,33 +245,57 @@ neither tab's category picker even offers an income category or group.
 
 **Set Values**: pick an **action** (the same five as the CLI --
 `balance`/`spent`/`spent-3`/`spent-12`/`previous` -- or **Custom amount**
-for a flat dollar figure) and a month range, then check which categories
-to include in the table below — styled after Actual's own budget page: a
-foldable row per category group (click the caret to collapse it, or its
-own checkbox to select every category inside at once), and a real
-Budgeted/Spent/Balance column triplet per month in the selected range
-(capped at 6 months, taken from the start of the range, so a wide range
-doesn't render an unusably wide table — `BUDGET_TABLE_MAX_MONTHS` in
-`src/budget-tools.ts`), reloaded automatically whenever the range
-changes. Leave nothing checked to mean "every category" (matching the
-CLI's own unfiltered-sweep default). Then **Preview** — always a dry run,
-computing what every matching category's new budgeted amount would be
-without writing anything. **Apply changes** (disabled until a Preview has
-run at least once) re-runs the identical request for real. Every result
-line shows its status (unchanged/would update/updated) and the old → new
-amounts, grouped by month.
+for a flat dollar figure), then choose the months and categories it applies
+to in the table below, which is styled after Actual's own budget page: a
+foldable row per category group (click the caret to collapse it, or its own
+checkbox to select every category inside at once) and a real
+Budgeted/Spent/Balance column triplet per month.
 
-**Anomalies**: pick a month range and at least one category, then **Find
-anomalies** — always read-only, using the same robust (median-based)
-outlier test as the CLI (`src/anomaly-detect.ts`) against each category's
-own trailing 12-month history. Any month flagged this way unlocks a second
-card, **Tag flagged transactions**: prepends a `#anomaly-high`/
-`#anomaly-low` tag to the note of whichever transaction(s) in that month
-are themselves responsible (or, if none stands out individually, the
-single largest transaction that month) — defaults to **dry run** (a
-checkbox, checked by default) so the first click always previews which
-transactions would be tagged before a second, unchecked click actually
-writes the notes.
+Unlike the CLI, **an empty category selection is refused rather than
+treated as "every category"**: over the web the picker is a checkbox per
+category, where nothing checked reads as "I haven't picked yet", not as a
+request to sweep the entire budget.
+
+Three months are on screen at a time. The **month strip** above the table
+spans two years: click any month to jump the window there, use the
+chevrons to step one month at a time, or the calendar button to return to
+today. Moving the window **rolls the grid sideways through every month in
+between** — jumping from May 2026 back to November 2025 shows May leave to
+the right while April arrives from the left, then March, then February,
+until November lands in the first column. The whole journey is fetched in
+one request so each month passing by shows its own real figures
+(`BUDGET_TABLE_MAX_MONTHS` in `src/budget-tools.ts` caps how wide a single
+request can get). Anyone who has asked their system for reduced motion
+lands on the new months directly, with no journey.
+
+Which months the action covers is a separate thing from which months are
+on screen: click a **month's header** to select it (shift-click to extend
+a span), and the selected columns shade to show it.
+
+The **⋮ menu** in the Category header holds **Toggle hidden categories**
+(Actual's hidden categories and groups are left out by default — they're
+hidden there precisely because they aren't part of day-to-day budgeting;
+switching them on marks each one dimmed and italic with an eye-off glyph
+so it never reads as an ordinary row) plus **Expand/Collapse all**.
+
+**Preview** — enabled once at least one month and one category are picked
+— is always a dry run, computing what every matching category's new
+budgeted amount would be without writing anything. **Apply changes**
+(disabled until a Preview has run) re-runs the identical request for real.
+Every result line shows its status (unchanged/would update/updated) and the
+old → new amounts, grouped by month.
+
+**Anomalies**: same category/month picker as Set Values (its own copy, with
+its own selection), then **Find anomalies** — always read-only, using the
+same robust (median-based) outlier test as the CLI
+(`src/anomaly-detect.ts`) against each category's own trailing 12-month
+history. Any month flagged this way unlocks a second card, **Tag flagged
+transactions**: prepends a `#anomaly-high`/`#anomaly-low` tag to the note
+of whichever transaction(s) in that month are themselves responsible (or,
+if none stands out individually, the single largest transaction that
+month) — defaults to **dry run** (a checkbox, checked by default) so the
+first click always previews which transactions would be tagged before a
+second, unchecked click actually writes the notes.
 
 ### Retirement — Configure tab
 
@@ -695,4 +719,3 @@ ETag or Last-Modified to check against), which silently defeats the page's
 hot-reload -- it reloads on a new build id and is handed the same stale
 assets -- and lets the two files drift apart, since they cache
 independently.
-

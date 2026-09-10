@@ -11,10 +11,6 @@ let STATE = null
 // file), so the first render could land before STATE existed and show nothing as pinned until a
 // manual refresh re-ran loadLiveSettings after STATE was already populated.
 let LIVE_SETTINGS = null
-// Category groups for the Budget section's two category pickers -- fetched once, lazily, the
-// first time the Budget nav item is opened (not on initial page load, since Retirement is still
-// the default landing section and most sessions never touch Budget at all).
-let BUDGET_CATEGORY_GROUPS = null
 // The category/month-range a "Find anomalies" run just used, so "Tag flagged transactions" can
 // re-run the exact same query server-side (see runTagAnomalies) without the client having to
 // round-trip full Finding objects (each carrying a full CategoryMonth) back to the server.
@@ -895,10 +891,15 @@ document.getElementById("refreshLiveSettingsBtn").addEventListener("click", load
 document.getElementById("generateBtn").addEventListener("click", runGenerate)
 document.getElementById("refreshAnalysisBtn").addEventListener("click", runCheck)
 
-document.querySelectorAll(".tab").forEach((tab) => {
+// Keyed off [data-tab] and scoped to this section's own panels, NOT a bare .tab/.panel sweep:
+// Budget's tabs share the .tab class for styling but carry data-budget-tab instead, so a bare .tab
+// selector matched them too and built getElementById("panel-undefined") -- null, which threw. The
+// throw landed halfway through, after .active had already been stripped from every .panel on the
+// page including this section's, leaving Retirement blank once you switched back to it.
+document.querySelectorAll("[data-tab]").forEach((tab) => {
   tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"))
-    document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"))
+    document.querySelectorAll("[data-tab]").forEach((t) => t.classList.remove("active"))
+    document.querySelectorAll("#page-retirement .panel").forEach((p) => p.classList.remove("active"))
     tab.classList.add("active")
     document.getElementById("panel-" + tab.dataset.tab).classList.add("active")
     if (tab.dataset.tab === "analyze") runCheck()
@@ -907,18 +908,31 @@ document.querySelectorAll(".tab").forEach((tab) => {
 
 // --- Section switching (the sidebar's Budget/Transactions/Retirement nav) ---
 
+// Function to switch the visible top-level section -- shared by the click handler below and the
+// on-load restoration a bit further down, so clicking a nav item and reloading the page onto a
+// previously-chosen section behave identically (including lazily loading Budget's own data either
+// way, not just on a real click).
+function activateSection(name) {
+  document.querySelectorAll(".section-item[data-section]").forEach((i) => i.classList.toggle("active", i.dataset.section === name))
+  document.querySelectorAll(".page").forEach((p) => p.classList.toggle("active", p.id === "page-" + name))
+  if (name === "budget") {
+    Object.entries(BUDGET_PICKERS).forEach(([key, picker]) => {
+      if (!picker.table) loadPickerTable(key)
+    })
+  }
+}
+
 document.querySelectorAll(".section-item[data-section]").forEach((item) => {
   item.addEventListener("click", () => {
-    document.querySelectorAll(".section-item[data-section]").forEach((i) => i.classList.remove("active"))
-    document.querySelectorAll(".page").forEach((p) => p.classList.remove("active"))
-    item.classList.add("active")
-    document.getElementById("page-" + item.dataset.section).classList.add("active")
-    if (item.dataset.section === "budget") {
-      loadBudgetContext()
-      loadBudgetTable()
+    activateSection(item.dataset.section)
+    try {
+      setCookie("activeSection", item.dataset.section)
+    } catch {
+      // Cookies disabled -- the switch still works for this page view, it just won't be remembered.
     }
   })
 })
+
 
 // --- Budget section ---
 
@@ -934,84 +948,338 @@ document.querySelectorAll("[data-budget-tab]").forEach((tab) => {
   })
 })
 
+// Honoured by the roll itself rather than by a CSS override, since the movement is a scripted
+// scroll: someone who asked for less motion gets the new months outright, with no journey.
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches
+}
+
 function currentMonthValue() {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
-}
-;["budgetStartMonth", "budgetEndMonth", "anomalyStartMonth", "anomalyEndMonth"].forEach((id) => {
-  document.getElementById(id).value = currentMonthValue()
-})
-
-// Function to fetch and cache the category groups the Anomalies picker uses -- lazy (only once
-// Budget is actually opened) since most sessions never touch this section at all. Set Values has
-// its own richer picker (see loadBudgetTable) that needs budgeted/spent/balance per month, which
-// this plain group/category listing doesn't carry.
-async function loadBudgetContext() {
-  if (BUDGET_CATEGORY_GROUPS) {
-    return
-  }
-  try {
-    const body = await api("/api/budget/context")
-    BUDGET_CATEGORY_GROUPS = body.categoryGroups
-    renderCategoryOptions(document.getElementById("anomalyCategories"))
-  } catch (error) {
-    showError(error.message)
-  }
-}
-
-function renderCategoryOptions(select) {
-  select.innerHTML = (BUDGET_CATEGORY_GROUPS ?? [])
-    .map(
-      (group) =>
-        `<optgroup label="${escapeHtml(group.name)}">${group.categories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}</optgroup>`,
-    )
-    .join("")
-}
-
-function selectedValues(select) {
-  return [...select.selectedOptions].map((option) => option.value)
 }
 
 document.getElementById("budgetAction").addEventListener("change", (e) => {
   document.getElementById("budgetCustomAmountField").hidden = e.target.value !== "custom"
 })
 
-// Function to fetch and render the Set Values category picker -- a read-only grid styled after
-// Actual's own budget page (foldable groups, a Budgeted/Spent/Balance triplet per month), reloaded
-// whenever the month range changes since the figures it shows are specific to that range. Any
-// currently-checked categories are lost on reload (the range and the selection are shown together
-// deliberately, but reconciling a checked set against a table that may no longer even list the
-// same months isn't worth the complexity for how rarely the range changes mid-review).
-async function loadBudgetTable() {
-  const startMonth = document.getElementById("budgetStartMonth").value
-  const container = document.getElementById("budgetTable")
-  if (!startMonth) {
-    container.innerHTML = `<div class="empty-note">Pick a start month first.</div>`
+// Both Budget tabs pick categories the same way: a month strip to scroll the visible window (see
+// renderMonthStrip) over a grid of budgeted/spent/balance figures with a checkbox per category.
+// One config entry per instance is what lets a single set of functions drive both without the two
+// tables' checkboxes, strips, or scroll positions ever touching each other.
+const BUDGET_PICKERS = {
+  budget: { tableId: "budgetTable", stripId: "budgetMonthStrip", menuId: "budgetMenu", windowStart: null, stripStart: null, selStart: null, selEnd: null, anchor: null, table: null, checked: new Set(), preview: new Map(), showHidden: false, loadSeq: 0, renderedWindowStart: null },
+  anomaly: { tableId: "anomalyTable", stripId: "anomalyMonthStrip", menuId: "anomalyMenu", windowStart: null, stripStart: null, selStart: null, selEnd: null, anchor: null, table: null, checked: new Set(), preview: new Map(), showHidden: false, loadSeq: 0, renderedWindowStart: null },
+}
+
+// How many month columns a picker shows at once -- must match BUDGET_TABLE_MAX_MONTHS in
+// budget-tools.ts, which is what actually trims the response.
+const PICKER_VISIBLE_MONTHS = 3
+// The Category column's fixed width, shared by the colgroup below and .month-strip-lead in
+// style.css (which is what lines the strip's months up with the columns underneath them).
+const NAME_COL_WIDTH = 220
+// Moving the window rolls the grid sideways through every month in between: jumping from May 2026
+// back to November 2025 shows May leave to the right while April arrives from the left, then March,
+// then February, and so on until November lands in the first column. Time scales with the distance
+// so each month gets its own moment, clamped at both ends -- a single step shouldn't feel abrupt,
+// and a twenty-month jump shouldn't be something you sit and wait through.
+const ROLL_MS_PER_MONTH = 190
+const ROLL_MIN_MS = 460
+const ROLL_MAX_MS = 1800
+// How many months the strip itself spans -- matches Actual's own budget-page scroller.
+const STRIP_MONTHS = 24
+const MONTH_ABBREVIATIONS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+// Function to list the months a picker's action currently covers -- a contiguous span, since the
+// table's headers are chosen by click and shift-click. Nothing is selected until you pick it --
+// the page always opens with an empty selection rather than restoring one.
+function selectedMonths(key) {
+  const picker = BUDGET_PICKERS[key]
+  return picker.selStart && picker.selEnd ? monthsBetween(picker.selStart, picker.selEnd) : []
+}
+
+// Function to record a header click. Shift-click spans anchor..month in either direction. A plain
+// click starts a new one-month selection (and becomes the anchor a later shift-click extends from)
+// -- except on a month that is already the whole selection, where it clears instead, so the same
+// click that picked a column also lets go of it. Clicking one month inside a wider span collapses
+// to just that month, matching how selecting in a list normally behaves; a second click then
+// clears. The span always stays contiguous, since that's what the action itself takes.
+function selectMonth(key, month, extend) {
+  const picker = BUDGET_PICKERS[key]
+  // The overlay describes one specific run over one specific selection; changing the selection
+  // makes it stale, so it goes rather than lingering over months it never covered.
+  picker.preview = new Map()
+  document.getElementById("setValuesResult").innerHTML = ""
+  if (extend && picker.anchor) {
+    picker.selStart = picker.anchor < month ? picker.anchor : month
+    picker.selEnd = picker.anchor < month ? month : picker.anchor
     return
   }
-  const endMonth = document.getElementById("budgetEndMonth").value || startMonth
-  container.innerHTML = `<div class="empty-note">Loading…</div>`
+  if (picker.selStart === month && picker.selEnd === month) {
+    picker.selStart = null
+    picker.selEnd = null
+    picker.anchor = null
+    return
+  }
+  picker.anchor = month
+  picker.selStart = month
+  picker.selEnd = month
+}
+
+
+function shiftMonth(month, delta) {
+  const [year, monthNumber] = month.split("-").map(Number)
+  const shifted = new Date(year, monthNumber - 1 + delta, 1)
+  return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`
+}
+
+function monthsBetween(startMonth, endMonth) {
+  const months = []
+  for (let month = startMonth; month <= endMonth && months.length < 600; month = shiftMonth(month, 1)) {
+    months.push(month)
+  }
+  return months
+}
+
+// Function to compute the STRIP_MONTHS-wide span the month strip covers -- Actual's own strip
+// shows months on both sides of the selected ones, so this sits the range roughly in the middle
+// rather than starting at it (a 3-month range starting at the anchor would leave the strip showing
+// nothing but future months). Depends only on the range, so it stays put as the window moves
+// across it instead of sliding under the cursor on every click.
+function stripMonthsFor(key) {
+  const picker = BUDGET_PICKERS[key]
+  // Anchored so today sits a third of the way in -- history behind, room to plan ahead -- and then
+  // left alone, so the strip stays put as the window moves across it. It only re-anchors (pages)
+  // when the window would otherwise walk off an end.
+  picker.stripStart ??= shiftMonth(currentMonthValue(), -Math.floor(STRIP_MONTHS / 3))
+  const windowStart = picker.windowStart
+  if (windowStart) {
+    if (windowStart < picker.stripStart) picker.stripStart = windowStart
+    const lastStart = shiftMonth(picker.stripStart, STRIP_MONTHS - PICKER_VISIBLE_MONTHS)
+    if (windowStart > lastStart) picker.stripStart = shiftMonth(windowStart, -(STRIP_MONTHS - PICKER_VISIBLE_MONTHS))
+  }
+  return Array.from({ length: STRIP_MONTHS }, (unused, index) => shiftMonth(picker.stripStart, index))
+}
+
+// Function to render the month strip above a picker's table -- Actual's own budget-page scroller:
+// a Today button, year labels above the months they cover, every month in the selected range
+// clickable to jump the visible window there, the visible ones highlighted, and chevrons to step
+// one month at a time. Always rendered, even when the range already fits on screen: it's the
+// section's month navigation, so having it come and go with the range width just reads as broken.
+function renderMonthStrip(key, stripMonths, visibleMonths) {
+  const picker = BUDGET_PICKERS[key]
+  const strip = document.getElementById(picker.stripId)
+  const chosen = selectedMonths(key)
+
+  const yearCells = []
+  for (let index = 0; index < stripMonths.length; ) {
+    const year = stripMonths[index].slice(0, 4)
+    let span = 0
+    while (index + span < stripMonths.length && stripMonths[index + span].startsWith(year)) span++
+    yearCells.push(`<div class="month-strip-year" style="grid-column:${index + 1}/span ${span}">${escapeHtml(year)}</div>`)
+    index += span
+  }
+  // The window on screen is drawn as a bracket spanning its months rather than a fill behind each
+  // one -- it reads as "this span" instead of "these three separate buttons are selected."
+  const firstVisible = stripMonths.indexOf(visibleMonths[0])
+  const bracketCell =
+    firstVisible === -1
+      ? ""
+      : `<div class="month-strip-bracket" style="grid-column:${firstVisible + 1}/span ${Math.min(visibleMonths.length, stripMonths.length - firstVisible)}"></div>`
+
+  const monthCells = stripMonths.map((month, index) => {
+    const label = MONTH_ABBREVIATIONS[Number(month.slice(5, 7)) - 1]
+    // Every month here scrolls the table's view. "in-range" marks the ones actually chosen for the
+    // action (clicked in the table's headers), which is a separate thing from what's on screen.
+    const inRange = chosen.includes(month)
+    const classes = `month-strip-month${visibleMonths.includes(month) ? " is-visible" : ""}${inRange ? " in-range" : ""}`
+    const scope = inRange ? "selected for this action" : "not selected"
+    return `<button type="button" class="${classes}" style="grid-column:${index + 1}" data-month="${month}" title="${escapeHtml(month)} — ${scope}">${label}</button>`
+  })
+
+  strip.hidden = false
+  strip.innerHTML = `
+    <div class="month-strip-lead">
+      <button type="button" class="month-strip-today" data-today aria-label="Jump to the current month" title="Jump to the current month">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>
+        </svg>
+      </button>
+      <button type="button" class="month-strip-arrow" data-step="-1" aria-label="Earlier months">‹</button>
+    </div>
+    <div class="month-strip-months" style="grid-template-columns:repeat(${stripMonths.length}, minmax(26px, 1fr))">${yearCells.join("")}${bracketCell}${monthCells.join("")}</div>
+    <button type="button" class="month-strip-arrow" data-step="1" aria-label="Later months">›</button>`
+
+  strip.querySelectorAll(".month-strip-month").forEach((button) => {
+    button.addEventListener("click", () => {
+      picker.windowStart = button.dataset.month
+      loadPickerTable(key)
+    })
+  })
+  strip.querySelectorAll(".month-strip-arrow").forEach((button) => {
+    button.addEventListener("click", () => {
+      picker.windowStart = shiftMonth(visibleMonths[0], Number(button.dataset.step))
+      loadPickerTable(key)
+    })
+  })
+  // "Today" lands on the current month; loadPickerTable clamps it back into the selected range if
+  // the range doesn't actually cover today.
+  strip.querySelector("[data-today]").addEventListener("click", () => {
+    picker.windowStart = currentMonthValue()
+    loadPickerTable(key)
+  })
+}
+
+// Function to fetch and render one picker's table for its current window. The window defaults to
+// the LATEST months in the selected range (Actual opens on the current month, not the oldest one
+// it knows about) and is clamped so it never runs off either end of the range. Any checked
+// categories are lost on reload -- reconciling a checked set against a table that may no longer
+// list the same months isn't worth the complexity for how rarely the range changes mid-review.
+async function loadPickerTable(key) {
+  const picker = BUDGET_PICKERS[key]
+  const container = document.getElementById(picker.tableId)
+  // The view opens on this month and the two ahead of it -- budgets get set looking forward -- and
+  // then follows the strip. Which months an action covers is a separate thing entirely: that comes
+  // from clicking the table's own month headers (see selectMonth), not from what's on screen.
+  picker.windowStart ??= currentMonthValue()
+  const stripMonths = stripMonthsFor(key)
+  const lastStripStart = stripMonths[stripMonths.length - PICKER_VISIBLE_MONTHS]
+  if (picker.windowStart < stripMonths[0]) picker.windowStart = stripMonths[0]
+  if (picker.windowStart > lastStripStart) picker.windowStart = lastStripStart
+  const windowEnd = shiftMonth(picker.windowStart, PICKER_VISIBLE_MONTHS - 1)
+
+  // Every load takes a sequence number. Clicking again while a roll is still running -- or while
+  // its request is still in flight -- has to abandon the first one outright, or two animations and
+  // two responses race each other to the same grid. Everything that resumes after an await checks
+  // this before touching the DOM.
+  const seq = (picker.loadSeq += 1)
+
+  const from = picker.renderedWindowStart
+  const rolling = Boolean(from) && from !== picker.windowStart && !prefersReducedMotion()
+  // One request spanning the whole journey, not just the destination: each month rolls past showing
+  // its own real figures, and the three landed on come out of that same payload rather than costing
+  // a second round trip.
+  const spanStart = rolling && from < picker.windowStart ? from : picker.windowStart
+  const spanEnd = rolling && from > picker.windowStart ? shiftMonth(from, PICKER_VISIBLE_MONTHS - 1) : windowEnd
+  picker.renderedWindowStart = picker.windowStart
+
+  // Only blank the grid when there's nothing there yet. Paging months used to clear it to a
+  // "Loading…" line first, so every move read as a blink and then a slide -- leaving the current
+  // columns up until the new ones are ready makes the movement the only thing that happens.
+  if (!picker.table) {
+    container.innerHTML = `<div class="empty-note">Loading…</div>`
+  }
   try {
-    const table = await api("/api/budget/table", { method: "POST", body: JSON.stringify({ startMonth, endMonth }) })
+    const span = await api("/api/budget/table", { method: "POST", body: JSON.stringify({ startMonth: spanStart, endMonth: spanEnd }) })
+    if (picker.loadSeq !== seq) return
     clearError()
-    renderBudgetTable(table)
+    // The strip reflects where we are going from the moment the move starts, so it isn't left
+    // pointing at the old months for the length of the roll.
+    renderMonthStrip(key, stripMonths, monthsBetween(picker.windowStart, windowEnd))
+    if (rolling) {
+      await rollThroughMonths(key, span, from, picker.windowStart, seq)
+      if (picker.loadSeq !== seq) return
+    }
+    picker.table = windowSlice(span, picker.windowStart)
+    container.scrollLeft = 0
+    renderPickerTable(key, picker.table)
+    updatePickerButtons()
   } catch (error) {
     showError(error.message)
     container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
   }
 }
-;["budgetStartMonth", "budgetEndMonth"].forEach((id) => {
-  document.getElementById(id).addEventListener("change", () => loadBudgetTable())
-})
 
-// Function to render the budget table's grouped, foldable, checkbox-driven grid from
-// GET /api/budget/table's response. Each group gets its own "select all in this group" checkbox
-// and fold toggle; category rows carry a plain checkbox plus one Budgeted/Spent/Balance cell per
-// month, in the same order the API returned them (already capped server-side, see
-// BUDGET_TABLE_MAX_MONTHS in budget-tools.ts).
-function renderBudgetTable(table) {
-  const container = document.getElementById("budgetTable")
-  if (table.groups.every((group) => group.categories.length === 0)) {
+// Function to cut the three months actually on screen out of a wider journey payload, so landing
+// after a roll costs nothing extra. Only the months change -- every group and category comes
+// through untouched, hidden flags and all.
+function windowSlice(table, startMonth) {
+  const start = table.months.indexOf(startMonth)
+  const months = table.months.slice(start, start + PICKER_VISIBLE_MONTHS)
+  return {
+    months,
+    groups: table.groups.map((group) => ({
+      ...group,
+      categories: group.categories.map((category) => ({
+        ...category,
+        months: Object.fromEntries(months.map((month) => [month, category.months[month]])),
+      })),
+    })),
+  }
+}
+
+// Function to roll the grid from one month window to another, showing every month in between on the
+// way past. The whole journey is rendered as one over-wide table inside the wrapper's own
+// scrollport and then genuinely scrolled: a transform of the destination block (what this used to
+// do) can only ever slide the months being landed on into place, since the months in between were
+// never rendered at all. Scrolling is also what lets the Category column hold still via
+// position:sticky while the figures travel past it.
+async function rollThroughMonths(key, journey, fromMonth, toMonth, seq) {
+  const picker = BUDGET_PICKERS[key]
+  const container = document.getElementById(picker.tableId)
+  const from = journey.months.indexOf(fromMonth)
+  const to = journey.months.indexOf(toMonth)
+  // A month the payload doesn't cover (a span the server capped, say) just lands with no journey,
+  // rather than rolling from the wrong place.
+  if (from === -1 || to === -1) return
+  renderPickerTable(key, journey, { filmstrip: true })
+  if (picker.loadSeq !== seq) return
+  const monthWidth = (container.clientWidth - NAME_COL_WIDTH) / PICKER_VISIBLE_MONTHS
+  container.scrollLeft = from * monthWidth
+  const duration = Math.min(ROLL_MAX_MS, Math.max(ROLL_MIN_MS, Math.abs(to - from) * ROLL_MS_PER_MONTH))
+  await tweenScrollLeft(container, to * monthWidth, duration, () => picker.loadSeq !== seq)
+}
+
+// Function to scroll an element to a target offset over a set duration. Eased in and out so the
+// months at either end of the journey are readable and the ones in the middle travel at a steady
+// clip -- a plain ease-out would spend the whole journey decelerating and make the months in
+// between a blur. Resolves when it arrives, or as soon as `abandoned()` goes true.
+function tweenScrollLeft(element, target, duration, abandoned) {
+  return new Promise((resolve) => {
+    const start = element.scrollLeft
+    const startedAt = performance.now()
+    const step = (now) => {
+      if (abandoned()) {
+        resolve()
+        return
+      }
+      const progress = Math.min(1, (now - startedAt) / duration)
+      const eased = progress < 0.5 ? 2 * progress * progress : 1 - (2 - 2 * progress) ** 2 / 2
+      element.scrollLeft = start + (target - start) * eased
+      if (progress < 1) {
+        requestAnimationFrame(step)
+      } else {
+        resolve()
+      }
+    }
+    requestAnimationFrame(step)
+  })
+}
+
+
+// Function to render one picker's grouped, foldable, checkbox-driven grid from
+// POST /api/budget/table's response. Each group gets its own "select all in this group" checkbox,
+// a fold toggle to its LEFT (matching Actual's own placement), and -- also matching Actual's own
+// budget page -- a per-month Budgeted/Spent/Balance total summed across every category inside it.
+// Category rows carry a plain checkbox plus one such cell per month, in the same order the API
+// returned them (already trimmed to the window, see BUDGET_TABLE_MAX_MONTHS in budget-tools.ts).
+function renderPickerTable(key, table, options = {}) {
+  // A filmstrip render is the transient one the roll scrolls across: the same grid, but every month
+  // of the journey wide enough that exactly PICKER_VISIBLE_MONTHS of them fill the wrapper, so the
+  // table overflows its own scrollport instead of squeezing to fit.
+  const filmstrip = options.filmstrip === true
+  const picker = BUDGET_PICKERS[key]
+  const container = document.getElementById(picker.tableId)
+  // Actual's own hidden categories stay out of the grid until the header menu asks for them --
+  // they're hidden in Actual precisely because they aren't part of day-to-day budgeting. A group
+  // is dropped once nothing inside it is left to show.
+  const groups = picker.showHidden
+    ? table.groups
+    : table.groups
+        .filter((group) => !group.hidden)
+        .map((group) => ({ ...group, categories: group.categories.filter((category) => !category.hidden) }))
+        .filter((group) => group.categories.length > 0)
+  if (groups.every((group) => group.categories.length === 0)) {
     container.innerHTML = `<div class="empty-note">No categories found.</div>`
     return
   }
@@ -1020,54 +1288,148 @@ function renderBudgetTable(table) {
     const [year, monthNum] = month.split("-").map(Number)
     return new Date(year, monthNum - 1, 1).toLocaleDateString(undefined, { month: "short", year: "numeric" })
   }
-  const colCount = 1 + table.months.length * 3
+  const sumCells = (categories, month) =>
+    categories.reduce(
+      (totals, category) => {
+        const m = category.months[month] ?? { budgeted: 0, spent: 0, balance: 0 }
+        const change = previewedBudget(category.id, month)
+        return { budgeted: totals.budgeted + (change ? change.newBudgeted : m.budgeted), spent: totals.spent + m.spent, balance: totals.balance + m.balance }
+      },
+      { budgeted: 0, spent: 0, balance: 0 },
+    )
+  // bt-month-start marks the first column of each month's triplet, so the heavier "new month"
+  // rule in style.css can key off a class instead of nth-child arithmetic (which the Category
+  // header's rowspan would otherwise throw off by one on the sub-header row).
+  const preview = BUDGET_PICKERS[key].preview
+  const previewedBudget = (categoryId, month) => preview.get(`${categoryId}|${month}`)
+  const numCell = (cents, first, picked, changed) =>
+    `<td class="bt-num${first ? " bt-month-start" : ""}${picked}${changed ? " bt-changed" : ""}${cents === 0 && !changed ? " bt-zero" : ""}">${usd(cents)}</td>`
+  const numCells = (m, month, change) =>
+    `${numCell(change ? change.newBudgeted : m.budgeted, true, pick(month), Boolean(change))}${numCell(m.spent, false, pick(month), false)}${numCell(m.balance, false, pick(month), false)}`
 
-  const monthHeaderCells = table.months.map((month) => `<th colspan="3">${escapeHtml(monthLabel(month))}</th>`).join("")
-  const subHeaderCells = table.months.map(() => `<th class="bt-sub">Budgeted</th><th class="bt-sub">Spent</th><th class="bt-sub">Balance</th>`).join("")
+  // A month's whole column shades when it's picked, and its header is the control that picks it --
+  // click for one month, shift-click for a span.
+  const chosen = selectedMonths(key)
+  const pick = (month) => (chosen.includes(month) ? " is-picked" : "")
+  const monthHeaderCells = table.months
+    .map(
+      (month) =>
+        `<th class="bt-month-start bt-month-head${pick(month)}" colspan="3" data-pick-month="${month}" title="${chosen.includes(month) ? `Click to unselect ${escapeHtml(month)}` : `Click to select ${escapeHtml(month)}`}; shift-click to extend the span">${escapeHtml(monthLabel(month))}</th>`,
+    )
+    .join("")
+  const subHeaderCells = table.months
+    .map((month) => `<th class="bt-sub bt-month-start${pick(month)}">Budgeted</th><th class="bt-sub${pick(month)}">Spent</th><th class="bt-sub${pick(month)}">Balance</th>`)
+    .join("")
 
-  const groupsHtml = table.groups
+  // Actual dims its own hidden categories rather than dropping them from the page; the same read
+  // here, since a row that is only on screen because the header menu asked for it shouldn't look
+  // like part of the everyday budget. The eye-off glyph is the privacy toggle's own icon (see
+  // index.html), permanently slashed. It marks whichever thing actually carries the hidden flag --
+  // the group header for a hidden group, the row for a hidden category -- so a hidden group doesn't
+  // repeat the same glyph down every one of its rows; the dimming is what carries down.
+  const hiddenMark = `<span class="bt-hidden-mark" title="Hidden in Actual" aria-label="Hidden in Actual"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C4.5 7 8 4.5 12 4.5S19.5 7 22 12c-2.5 5-6 7.5-10 7.5S4.5 17 2 12Z"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18"/></svg></span>`
+
+  const groupsHtml = groups
     .map((group, groupIndex) => {
       const groupClass = `bt-group-${groupIndex}`
+      const groupTotalsChanged = (month) => group.categories.some((category) => previewedBudget(category.id, month))
+      const groupTotalCells = table.months
+        .map((month) => numCells(sumCells(group.categories, month), month, groupTotalsChanged(month) ? { newBudgeted: sumCells(group.categories, month).budgeted } : null))
+        .join("")
       const rows = group.categories
-        .map((category) => {
-          const cells = table.months
-            .map((month) => {
-              const m = category.months[month] ?? { budgeted: 0, spent: 0, balance: 0 }
-              return `<td class="bt-num">${usd(m.budgeted)}</td><td class="bt-num">${usd(m.spent)}</td><td class="bt-num">${usd(m.balance)}</td>`
-            })
-            .join("")
-          return `<tr class="bt-row ${groupClass}"><td class="bt-name"><label><input type="checkbox" class="bt-category-check" data-category-id="${category.id}" data-group="${groupClass}"> ${escapeHtml(category.name)}</label></td>${cells}</tr>`
-        })
+        .map(
+          (category, categoryIndex) => `<tr class="bt-row ${groupClass} ${categoryIndex % 2 === 1 ? "bt-row-alt" : ""}${category.hidden || group.hidden ? " bt-hidden" : ""}">
+            <td class="bt-name"><label><input type="checkbox" class="bt-category-check" data-category-id="${category.id}" data-group="${groupClass}">${category.hidden ? hiddenMark : ""} ${escapeHtml(category.name)}</label></td>
+            ${table.months.map((month) => numCells(category.months[month] ?? { budgeted: 0, spent: 0, balance: 0 }, month, previewedBudget(category.id, month))).join("")}
+          </tr>`,
+        )
         .join("")
       return `
-        <tr class="bt-group-header">
-          <td colspan="${colCount}">
-            <button type="button" class="bt-fold-toggle" data-fold-target="${groupClass}" aria-expanded="true">▾</button>
-            <label class="bt-group-check-label"><input type="checkbox" class="bt-group-check" data-group="${groupClass}"> ${escapeHtml(group.name)}</label>
+        <tr class="bt-group-header${group.hidden ? " bt-hidden" : ""}">
+          <td class="bt-name">
+            <div class="bt-group-name">
+              <button type="button" class="bt-fold-toggle" data-fold-target="${groupClass}" aria-expanded="true">▼</button>
+              <label class="bt-group-check-label"><input type="checkbox" class="bt-group-check" data-group="${groupClass}">${group.hidden ? hiddenMark : ""} ${escapeHtml(group.name)}</label>
+            </div>
           </td>
+          ${groupTotalCells}
         </tr>
         ${rows}`
     })
     .join("")
 
+  // Settled view: only the Category column gets a width, and every month sub-column is left unsized
+  // so the fixed-layout, full-width table splits whatever is left evenly among exactly 3*N columns.
+  // That both fills the panel's horizontal space and keeps the count whole -- there is no natural
+  // overflow to clip a trailing sliver from.
+  // Rolling view: each month is pinned to the width it will have once it lands, measured from the
+  // wrapper, so the journey scrolls past at exactly the scale it arrives at and every month steps by
+  // the same distance. Widths have to be explicit here -- left unsized, a fixed-layout table would
+  // divide the panel among all N months at once and shrink the columns to slivers instead of
+  // overflowing.
+  const monthWidth = (container.clientWidth - NAME_COL_WIDTH) / PICKER_VISIBLE_MONTHS
+  const colgroup = filmstrip
+    ? `<colgroup><col style="width:${NAME_COL_WIDTH}px">${table.months.map(() => `<col style="width:${monthWidth / 3}px"><col style="width:${monthWidth / 3}px"><col style="width:${monthWidth / 3}px">`).join("")}</colgroup>`
+    : `<colgroup><col style="width:${NAME_COL_WIDTH}px">${table.months.map(() => "<col><col><col>").join("")}</colgroup>`
+  const tableWidth = filmstrip ? ` style="width:${NAME_COL_WIDTH + table.months.length * monthWidth}px"` : ""
+
   container.innerHTML = `
-    <table class="budget-table-el">
+    <table class="budget-table-el${filmstrip ? " bt-filmstrip" : ""}"${tableWidth}>
+      ${colgroup}
       <thead>
-        <tr><th class="bt-name-head"></th>${monthHeaderCells}</tr>
-        <tr><th class="bt-name-head"></th>${subHeaderCells}</tr>
+        <tr>
+          <th class="bt-name-head" rowspan="2">
+            <span>Category</span>
+            <button type="button" class="bt-head-menu" data-menu-toggle aria-haspopup="menu" aria-expanded="false" aria-label="Category options">⋮</button>
+          </th>
+          ${monthHeaderCells}
+        </tr>
+        <tr>${subHeaderCells}</tr>
       </thead>
       <tbody>${groupsHtml}</tbody>
     </table>`
 
-  container.querySelectorAll(".bt-fold-toggle").forEach((button) => {
-    button.addEventListener("click", () => {
-      const expanded = button.getAttribute("aria-expanded") === "true"
-      button.setAttribute("aria-expanded", String(!expanded))
-      button.textContent = expanded ? "▸" : "▾"
-      container.querySelectorAll(`.${button.dataset.foldTarget}`).forEach((row) => {
-        row.hidden = expanded
-      })
+  container.querySelectorAll(".bt-fold-toggle").forEach((toggle) => {
+    toggle.addEventListener("click", () => setGroupFolded(container, toggle, toggle.getAttribute("aria-expanded") === "true"))
+  })
+
+  container.querySelectorAll(".bt-category-check").forEach((checkbox) => {
+    checkbox.checked = picker.checked.has(checkbox.dataset.categoryId)
+  })
+  syncGroupCheckboxes(key)
+
+  container.querySelectorAll("[data-pick-month]").forEach((header) => {
+    header.addEventListener("click", (event) => {
+      selectMonth(key, header.dataset.pickMonth, event.shiftKey)
+      // Re-rendered from the response already in hand -- picking months changes what's shaded and
+      // what the action will cover, never which months are on screen, so there's nothing to refetch.
+      renderPickerTable(key, table)
+      renderMonthStrip(key, stripMonthsFor(key), table.months)
+      updatePickerButtons()
     })
+  })
+
+  // Only the opener is re-wired per render (the button is part of the table's own header); what the
+  // menu does is bound once, at the bottom of this file, to an element that outlives the table.
+  const menu = document.getElementById(picker.menuId)
+  const menuToggle = container.querySelector("[data-menu-toggle]")
+  menuToggle.addEventListener("click", (event) => {
+    event.stopPropagation()
+    const wasOpen = !menu.hidden
+    closeBudgetMenus()
+    menuToggle.setAttribute("aria-expanded", String(!wasOpen))
+    if (wasOpen) return
+    // Unhidden BEFORE it is measured, not after: [hidden] is display:none, and a display:none
+    // element has no offsetParent at all -- reading one threw, which killed the whole handler and
+    // left the menu permanently unopenable. Both happen in the same synchronous block, so nothing
+    // paints at the pre-positioned spot in between.
+    menu.hidden = false
+    // Parked under the button it belongs to, measured rather than guessed -- the menu is a
+    // sibling of the table wrapper now, not a child of the header cell it drops from.
+    const button = menuToggle.getBoundingClientRect()
+    const base = menu.offsetParent.getBoundingClientRect()
+    menu.style.top = `${button.bottom - base.top + 4}px`
+    menu.style.left = `${Math.max(4, Math.min(button.left - base.left - 40, base.width - 180))}px`
   })
 
   container.querySelectorAll(".bt-group-check").forEach((groupCheckbox) => {
@@ -1079,54 +1441,167 @@ function renderBudgetTable(table) {
   })
 }
 
-function checkedBudgetCategoryIds() {
-  return [...document.querySelectorAll("#budgetTable .bt-category-check:checked")].map((checkbox) => checkbox.dataset.categoryId)
+// Function to fold or unfold one group, shared by its own caret and the header menu's
+// Expand/Collapse all so both always leave the caret, aria state, and rows in step.
+function setGroupFolded(container, toggle, folded) {
+  toggle.setAttribute("aria-expanded", String(!folded))
+  toggle.textContent = folded ? "\u25b6" : "\u25bc"
+  container.querySelectorAll(`.${toggle.dataset.foldTarget}`).forEach((row) => {
+    row.hidden = folded
+  })
+}
+
+// The header menu's own behaviour, bound once per picker to markup that outlives every re-render --
+// the toggle rebuilds the very table it was clicked from, so anything wired inside that table would
+// be destroyed mid-click.
+Object.entries(BUDGET_PICKERS).forEach(([key, picker]) => {
+  document.getElementById(picker.menuId).addEventListener("click", (event) => {
+    const item = event.target.closest("[data-menu-item]")
+    if (!item) return
+    const container = document.getElementById(picker.tableId)
+    closeBudgetMenus()
+    if (item.dataset.menuItem === "toggle-hidden") {
+      picker.showHidden = !picker.showHidden
+      if (!picker.showHidden) {
+        // Dropping them from view drops them from the selection too -- acting on a category you
+        // can no longer see is exactly the kind of surprise this table exists to avoid.
+        picker.table.groups.forEach((group) => {
+          group.categories.filter((category) => category.hidden || group.hidden).forEach((category) => picker.checked.delete(category.id))
+        })
+      }
+      renderPickerTable(key, picker.table)
+      updatePickerButtons()
+      return
+    }
+    const folded = item.dataset.menuItem === "collapse"
+    container.querySelectorAll(".bt-fold-toggle").forEach((toggle) => setGroupFolded(container, toggle, folded))
+  })
+})
+
+function closeBudgetMenus() {
+  document.querySelectorAll(".bt-menu").forEach((menu) => {
+    menu.hidden = true
+  })
+  document.querySelectorAll("[data-menu-toggle]").forEach((toggle) => toggle.setAttribute("aria-expanded", "false"))
+}
+document.addEventListener("click", closeBudgetMenus)
+
+// Read from the picker's own remembered set rather than the DOM: the table re-renders whenever the
+// month window moves or the section is re-entered, and a selection that survived one of those but
+// not the other would be its own kind of surprise.
+function checkedCategoryIds(key) {
+  return [...BUDGET_PICKERS[key].checked]
+}
+
+// Function to sync the picker's remembered set from whatever the table currently shows -- called on
+// every checkbox change, including the group "select all in here" boxes, which tick their own
+// children before this runs.
+// Function to derive every group checkbox from the categories under it: ticked when they all are,
+// indeterminate on a partial selection, clear when none are. A group box holds no state of its own
+// -- it was only ever a shortcut for its children -- so recomputing it here keeps it honest no
+// matter how the underlying selection changed: a child unticked by hand, the table re-rendered
+// after scrolling months, hidden categories toggled, or the group box itself clicked.
+function syncGroupCheckboxes(key) {
+  const container = document.getElementById(BUDGET_PICKERS[key].tableId)
+  container.querySelectorAll(".bt-group-check").forEach((groupBox) => {
+    const children = [...container.querySelectorAll(`.bt-category-check[data-group="${groupBox.dataset.group}"]`)]
+    const checkedCount = children.filter((child) => child.checked).length
+    groupBox.checked = children.length > 0 && checkedCount === children.length
+    groupBox.indeterminate = checkedCount > 0 && checkedCount < children.length
+  })
+}
+
+function syncCheckedCategories(key) {
+  const picker = BUDGET_PICKERS[key]
+  // Same reasoning as selectMonth: a different set of categories is a different run.
+  picker.preview = new Map()
+  document.getElementById("setValuesResult").innerHTML = ""
+  document.querySelectorAll(`#${picker.tableId} .bt-category-check`).forEach((checkbox) => {
+    if (checkbox.checked) {
+      picker.checked.add(checkbox.dataset.categoryId)
+    } else {
+      picker.checked.delete(checkbox.dataset.categoryId)
+    }
+  })
 }
 
 // Function to run (preview or apply) a set-values request -- the same request either way, just
 // dryRun flipped; a fresh Preview is required before Apply becomes clickable (see the button's
 // default `disabled` in index.html), so a real write is never the very first thing a click does.
 async function runSetValues(dryRun) {
-  const startMonth = document.getElementById("budgetStartMonth").value
-  if (!startMonth) {
-    showError("Pick a start month first.")
+  const picker = BUDGET_PICKERS.budget
+  if (!picker.selStart) {
+    showError("Click a month header to pick which months to update.")
     return
   }
   const action = document.getElementById("budgetAction").value === "custom" ? document.getElementById("budgetCustomAmount").value : document.getElementById("budgetAction").value
   const body = {
     action,
-    startMonth,
-    endMonth: document.getElementById("budgetEndMonth").value || startMonth,
-    categories: checkedBudgetCategoryIds(),
+    startMonth: picker.selStart,
+    endMonth: picker.selEnd,
+    categories: checkedCategoryIds("budget"),
     dryRun,
   }
   try {
     const res = await api("/api/budget/set-values", { method: "POST", body: JSON.stringify(body) })
     clearError()
-    renderSetValuesResult(res.months)
+    applySetValuesPreview(res.months)
+    if (dryRun) {
+      // Nothing on the server moved, so the figures already in hand are still current -- just
+      // redraw them with the overlay on top.
+      renderPickerTable("budget", picker.table)
+    } else {
+      // The real values changed underneath us; refetch so the cells show what Actual now holds,
+      // with the same cells still marked as the ones this run touched.
+      await loadPickerTable("budget")
+    }
     document.getElementById("applySetValuesBtn").disabled = false
   } catch (error) {
     showError(error.message)
   }
 }
 
-function renderSetValuesResult(months) {
-  const container = document.getElementById("setValuesResult")
-  const lines = months.flatMap((month) => month.lines)
-  if (lines.length === 0) {
-    container.innerHTML = `<div class="empty-note">No matching categories in this range.</div>`
-    return
-  }
-  container.innerHTML = lines
-    .map((line) => {
-      const chip = line.status === "updated" ? "ok" : line.status === "would-update" ? "warn" : "info"
-      const label = line.status === "would-update" ? "would update" : line.status
-      const amountText =
-        line.status === "unchanged" || line.status === "skipped" ? moneySpan(line.oldBudgeted) : `${moneySpan(line.oldBudgeted)} → ${moneySpan(line.newBudgeted)}`
-      return `<div class="finding"><span class="chip ${chip}">${escapeHtml(label)}</span><div><div class="title">${escapeHtml(line.month)} — ${escapeHtml(line.categoryName)}</div><div class="detail">${amountText} · balance ${moneySpan(line.balance)}</div></div></div>`
+// Function to turn a set-values response into the overlay the table draws: one entry per line that
+// would actually change, keyed by category and month. Rendering it in the grid itself (new figure
+// in the Budgeted cell, cell highlighted) says the same thing a list of "old -> new" sentences did,
+// in the place you were already looking. Lines that change nothing are deliberately absent -- an
+// unchanged cell should look exactly like every other unchanged cell.
+function applySetValuesPreview(months) {
+  const picker = BUDGET_PICKERS.budget
+  picker.preview = new Map()
+  months
+    .flatMap((month) => month.lines)
+    .filter((line) => line.status === "would-update" || line.status === "updated")
+    .forEach((line) => {
+      picker.preview.set(`${line.categoryId}|${line.month}`, { newBudgeted: line.newBudgeted, status: line.status })
     })
-    .join("")
+
+  const note = document.getElementById("setValuesResult")
+  note.innerHTML = picker.preview.size === 0 ? `<div class="empty-note">Nothing to change in the selected months.</div>` : ""
 }
+
+// Function to keep both Set Values buttons in step with the table's checkboxes. There is no
+// "check nothing to mean everything" shortcut -- with a real checkbox per category, an empty
+// selection is far more likely to be "I haven't picked yet" than "sweep all of them", so the
+// action simply isn't available until something is checked. Apply additionally stays disabled
+// until a Preview has run (runSetValues enables it), and drops back out if the selection is
+// cleared afterwards.
+function updatePickerButtons() {
+  const budgetReady = checkedCategoryIds("budget").length > 0 && selectedMonths("budget").length > 0
+  document.getElementById("previewSetValuesBtn").disabled = !budgetReady
+  if (!budgetReady) {
+    document.getElementById("applySetValuesBtn").disabled = true
+  }
+  document.getElementById("findAnomaliesBtn").disabled = checkedCategoryIds("anomaly").length === 0 || selectedMonths("anomaly").length === 0
+}
+// Delegated to the containers, which survive every re-render of the tables inside them.
+Object.entries(BUDGET_PICKERS).forEach(([key, picker]) => {
+  document.getElementById(picker.tableId).addEventListener("change", () => {
+    syncCheckedCategories(key)
+    syncGroupCheckboxes(key)
+    updatePickerButtons()
+  })
+})
 
 document.getElementById("previewSetValuesBtn").addEventListener("click", () => runExclusive(() => runSetValues(true)))
 document.getElementById("applySetValuesBtn").addEventListener("click", () => runExclusive(() => runSetValues(false)))
@@ -1134,17 +1609,18 @@ document.getElementById("applySetValuesBtn").addEventListener("click", () => run
 // Function to run "Find anomalies" -- always read-only, so no dryRun concept here at all; only
 // the tag step (below) writes anything.
 async function runFindAnomalies() {
-  const startMonth = document.getElementById("anomalyStartMonth").value
-  const categories = selectedValues(document.getElementById("anomalyCategories"))
-  if (!startMonth) {
-    showError("Pick a start month first.")
+  const picker = BUDGET_PICKERS.anomaly
+  const categories = checkedCategoryIds("anomaly")
+  if (!picker.selStart) {
+    showError("Click a month header to pick which months to check.")
     return
   }
   if (categories.length === 0) {
     showError("Pick at least one category to check.")
     return
   }
-  const endMonth = document.getElementById("anomalyEndMonth").value || startMonth
+  const startMonth = picker.selStart
+  const endMonth = picker.selEnd
   try {
     const res = await api("/api/budget/anomalies", { method: "POST", body: JSON.stringify({ categories, startMonth, endMonth }) })
     clearError()
@@ -1262,6 +1738,20 @@ try {
 
 loadState()
 loadLiveSettings()
+
+// Restores whichever section was last chosen (per-browser cookie, same restart-survives-a-port-
+// change rationale as every other small preference here -- see getCookie/setCookie's own doc
+// comment), falling back to Budget. Runs down here, after every const the section's own loaders
+// touch is initialized -- calling it up beside the nav wiring would hit BUDGET_PICKERS while it
+// was still in its temporal dead zone. Applying it rather than trusting the HTML's default markup
+// is also what makes Budget's data load on a restored section, not just on a manual click.
+try {
+  const savedSection = getCookie("activeSection")
+  const knownSections = [...document.querySelectorAll(".section-item[data-section]")].map((i) => i.dataset.section)
+  activateSection(knownSections.includes(savedSection) ? savedSection : "budget")
+} catch {
+  activateSection("budget")
+}
 
 // Hot-reload: poll the server's per-process build id (see startAppServer in app-server.ts) and
 // reload the page the moment it changes -- static files (app.js/style.css/index.html) are already

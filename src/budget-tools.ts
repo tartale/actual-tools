@@ -143,17 +143,26 @@ export async function setBudgetValues(config: ActualConfig, options: SetBudgetVa
 // a wide start/end range (the same range the bulk action itself still applies across in full)
 // request and render an unusably wide grid; this caps just the table's own display, not what
 // setBudgetValues/findAnomalies actually operate on.
-export const BUDGET_TABLE_MAX_MONTHS = 6
+// Sized to the client's own month strip (STRIP_MONTHS in app.js), which is the widest span the UI
+// can ask for: the visible grid is only three months, but paging the window rolls through every
+// month between where it was and where it is going, and asks for all of them in one request so each
+// one scrolls past showing its own real figures. A jump from one end of the strip to the other is
+// 21 steps plus the three months landed on -- exactly this many.
+export const BUDGET_TABLE_MAX_MONTHS = 24
 
 export interface BudgetTableCategory {
   id: string
   name: string
+  // Actual's own "hidden" flag, passed through rather than filtered out here: the client hides
+  // these by default but can toggle them back on without a refetch.
+  hidden: boolean
   months: Record<string, { budgeted: number; spent: number; balance: number }>
 }
 
 export interface BudgetTableGroup {
   id: string
   name: string
+  hidden: boolean
   categories: BudgetTableCategory[]
 }
 
@@ -163,12 +172,15 @@ export interface BudgetTable {
 }
 
 // Function to fetch a read-only budgeted/spent/balance grid, one column-group per month (capped at
-// BUDGET_TABLE_MAX_MONTHS, taken from the START of the requested range -- the range's own start is
-// what a person is most likely mid-editing right now), grouped and ordered the same way Actual's
-// own category groups are, income excluded (never a valid target for either budget tool, so never
-// worth showing here either).
+// BUDGET_TABLE_MAX_MONTHS, taken from the END of the requested range -- the most recent months are
+// the ones worth landing on, the same way Actual's own budget page opens on the current month
+// rather than the oldest one it knows about). Neither the groups nor the categories inside them are
+// ever re-sorted, so the grid reads top to bottom in Actual's own budget-page order. Income is
+// excluded (never a valid target for either budget tool, so never worth showing here either);
+// hidden categories are passed through with their flag for the client to filter. The client scrolls
+// to any other window by asking for that window's own start/end -- see the month strip in app.js.
 export async function fetchBudgetTable(config: ActualConfig, startMonth: string, endMonth: string): Promise<BudgetTable> {
-  const months = monthRange(startMonth, endMonth).slice(0, BUDGET_TABLE_MAX_MONTHS)
+  const months = monthRange(startMonth, endMonth).slice(-BUDGET_TABLE_MAX_MONTHS)
   const monthCache = new Map<string, CategoryMonth[]>()
   const categoriesByMonth = await Promise.all(months.map((month) => getCachedMonthCategories(config, month, monthCache)))
   const byMonthThenCategory = new Map(months.map((month, index) => [month, new Map((categoriesByMonth[index] as CategoryMonth[]).map((c) => [c.id, c]))]))
@@ -181,11 +193,13 @@ export async function fetchBudgetTable(config: ActualConfig, startMonth: string,
       .map((group) => ({
         id: group.id,
         name: group.name,
+        hidden: Boolean(group.hidden),
         categories: group.categories
           .filter((category) => !category.is_income)
           .map((category) => ({
             id: category.id,
             name: category.name,
+            hidden: Boolean(category.hidden),
             months: Object.fromEntries(
               months.map((month) => {
                 const categoryMonth = byMonthThenCategory.get(month)?.get(category.id)

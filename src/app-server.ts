@@ -773,11 +773,19 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       if (req.method === "POST" && path === "/api/budget/set-values") {
         const body = (await readJsonBody(req)) as Record<string, unknown>
         const startMonth = parseBudgetMonth(body.startMonth, "startMonth")
+        const categories = parseBudgetCategories(body.categories)
+        // setBudgetValues itself still treats an empty filter as "every category" -- that is the
+        // CLI's own documented unfiltered sweep (`set-values` with no -c). Over the web the picker
+        // is a checkbox per category, where an empty selection reads as "nothing picked yet"
+        // rather than "sweep everything", so the route refuses it outright.
+        if (categories.length === 0) {
+          throw new Error("Pick at least one category to update.")
+        }
         const months = await setBudgetValues(actualConfig, {
           action: parseBudgetAction(body.action),
           startMonth,
           endMonth: parseBudgetMonth(body.endMonth ?? startMonth, "endMonth"),
-          categories: parseBudgetCategories(body.categories),
+          categories,
           dryRun: parseDryRun(body.dryRun),
         })
         sendJson(res, 200, { months })
@@ -812,11 +820,18 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
     }
   }
 
+  // Read from disk per request and explicitly never cached. Without a Cache-Control (or even an
+  // ETag/Last-Modified to revalidate against) a browser is free to apply heuristic freshness and
+  // reuse app.js/style.css without asking -- Firefox notably does. That silently defeats the whole
+  // hot-reload path below: the page dutifully reloads on a new build id and is then handed the same
+  // stale assets it already had. Worse, the two cache independently, so a fresh app.js against a
+  // stale style.css produces markup whose styling rules simply aren't there. There is no bandwidth
+  // argument against no-store for a handful of local files served over loopback.
   function sendFile(res: ServerResponse, filePath: string): void {
     try {
       const contents = readFileSync(filePath)
       const contentType = CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream"
-      res.writeHead(200, { "content-type": contentType, "content-length": contents.length })
+      res.writeHead(200, { "content-type": contentType, "content-length": contents.length, "cache-control": "no-store, must-revalidate" })
       res.end(contents)
     } catch {
       res.writeHead(404)

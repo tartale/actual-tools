@@ -334,7 +334,7 @@ describe("POST /api/budget/set-values", () => {
     })
     const res = await fetch(`${url}api/budget/set-values`, {
       method: "POST",
-      body: JSON.stringify({ action: "250", startMonth: "2026-01" }),
+      body: JSON.stringify({ action: "250", startMonth: "2026-01", categories: ["c1"] }),
     })
     expect(res.status).toBe(200)
     const body = await readJson<{ months: { month: string; lines: { status: string; newBudgeted: number }[] }[] }>(res)
@@ -347,11 +347,23 @@ describe("POST /api/budget/set-values", () => {
     })
     const res = await fetch(`${url}api/budget/set-values`, {
       method: "POST",
-      body: JSON.stringify({ action: "250", startMonth: "2026-01", dryRun: false }),
+      body: JSON.stringify({ action: "250", startMonth: "2026-01", dryRun: false, categories: ["c1"] }),
     })
     expect(res.status).toBe(200)
     const body = await readJson<{ months: { lines: { status: string }[] }[] }>(res)
     expect(body.months[0]?.lines[0]?.status).toBe("updated")
+  })
+
+  it("rejects an empty category selection rather than sweeping every category", async () => {
+    const url = await boot({
+      monthCategories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: 0, balance: 0, carryover: false }],
+    })
+    const res = await fetch(`${url}api/budget/set-values`, {
+      method: "POST",
+      body: JSON.stringify({ action: "250", startMonth: "2026-01", categories: [] }),
+    })
+    expect(res.status).toBe(400)
+    expect((await readJson<ErrorBody>(res)).error).toMatch(/at least one category/i)
   })
 
   it("rejects an unknown action", async () => {
@@ -389,6 +401,25 @@ describe("POST /api/budget/anomalies", () => {
     const url = await boot()
     const res = await fetch(`${url}api/budget/anomalies`, { method: "POST", body: JSON.stringify({ categories: [], startMonth: "2026-01" }) })
     expect(res.status).toBe(400)
+  })
+})
+
+describe("static UI files", () => {
+  it("serves them with no-store, so an edit is never masked by a cached copy", async () => {
+    // Without this the browser is free to apply heuristic freshness (no Cache-Control, no ETag, no
+    // Last-Modified to revalidate against) and reuse app.js/style.css without asking, which also
+    // silently defeats hot-reload: the page reloads on a new build id and is handed the same stale
+    // assets. app.js and style.css cache independently, so the two can drift apart -- fresh markup
+    // against styling rules that aren't there any more.
+    writeFileSync(join(dir, "index.html"), "<h1>ui</h1>")
+    writeFileSync(join(dir, "app.js"), "// ui")
+    writeFileSync(join(dir, "style.css"), "body{}")
+    const url = await boot()
+    for (const file of ["", "app.js", "style.css"]) {
+      const res = await fetch(`${url}${file}`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("cache-control")).toBe("no-store, must-revalidate")
+    }
   })
 })
 

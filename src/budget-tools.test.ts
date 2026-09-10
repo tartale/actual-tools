@@ -161,8 +161,59 @@ describe("fetchBudgetTable", () => {
     const table = await fetchBudgetTable(config, "2026-01", "2026-01")
     expect(table.months).toEqual(["2026-01"])
     expect(table.groups).toEqual([
-      { id: "g1", name: "Everyday", categories: [{ id: "c1", name: "Groceries", months: { "2026-01": { budgeted: 50000, spent: -45000, balance: 5000 } } }] },
+      {
+        id: "g1",
+        name: "Everyday",
+        hidden: false,
+        categories: [{ id: "c1", name: "Groceries", hidden: false, months: { "2026-01": { budgeted: 50000, spent: -45000, balance: 5000 } } }],
+      },
     ])
+  })
+
+  it("passes Actual's own hidden flag through on both groups and categories", async () => {
+    stubFetch([
+      { body: { data: [categoryMonth({ id: "c1" }), categoryMonth({ id: "c2" })] } },
+      {
+        body: {
+          data: [
+            {
+              id: "g1",
+              name: "Everyday",
+              is_income: false,
+              hidden: false,
+              categories: [
+                { id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1" },
+                { id: "c2", name: "Old Subscription", is_income: false, hidden: true, group_id: "g1" },
+              ],
+            },
+            { id: "g2", name: "Last Year's Trip", is_income: false, hidden: true, categories: [] },
+          ],
+        },
+      },
+    ])
+    // Hidden categories are passed through rather than filtered out here: the client hides them by
+    // default and the header menu toggles them back on without a refetch, so losing the flag on the
+    // way out would leave it with no way to tell them apart. A hidden GROUP still comes through
+    // with its own flag even though it has nothing inside it.
+    const table = await fetchBudgetTable(config, "2026-01", "2026-01")
+    expect(table.groups.map((group) => [group.name, group.hidden])).toEqual([
+      ["Everyday", false],
+      ["Last Year's Trip", true],
+    ])
+    expect(table.groups[0]?.categories.map((category) => [category.name, category.hidden])).toEqual([
+      ["Groceries", false],
+      ["Old Subscription", true],
+    ])
+  })
+
+  it("returns every month of a range that fits inside the cap, not just the visible window", async () => {
+    // What the client's month roll depends on: paging the window asks for the whole span it travels
+    // across in one request, so each month in between can scroll past showing its own real figures.
+    // A cap that trimmed this back to the three visible months left the landed-on month missing
+    // from the payload entirely.
+    stubFetch([{ body: { data: [] } }, { body: { data: [] } }])
+    const table = await fetchBudgetTable(config, "2026-05", "2026-11")
+    expect(table.months).toEqual(["2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10", "2026-11"])
   })
 
   it("fills in a zeroed entry for a category missing from a given month's response", async () => {
@@ -171,11 +222,13 @@ describe("fetchBudgetTable", () => {
     expect(table.groups[0]?.categories[0]?.months["2026-01"]).toEqual({ budgeted: 0, spent: 0, balance: 0 })
   })
 
-  it("caps the number of month columns at BUDGET_TABLE_MAX_MONTHS, taken from the start of the range", async () => {
+  it("caps the number of month columns at BUDGET_TABLE_MAX_MONTHS, taken from the end of the range", async () => {
     const { calls } = stubFetch([{ body: { data: [] } }, { body: { data: [] } }])
-    const table = await fetchBudgetTable(config, "2026-01", "2027-01") // 13 months requested
+    const table = await fetchBudgetTable(config, "2026-01", "2028-01") // 25 months requested
     expect(table.months).toHaveLength(BUDGET_TABLE_MAX_MONTHS)
-    expect(table.months[0]).toBe("2026-01")
+    // the requested end month is the one that must survive the cap -- the window is the most
+    // recent BUDGET_TABLE_MAX_MONTHS months, not the oldest ones
+    expect(table.months.at(-1)).toBe("2028-01")
     // one getCachedMonthCategories call per rendered month, plus one for fetchCategoryGroups
     expect(calls).toHaveLength(BUDGET_TABLE_MAX_MONTHS + 1)
   })

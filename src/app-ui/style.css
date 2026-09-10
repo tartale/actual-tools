@@ -262,13 +262,28 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .no-fields-note { grid-column: 1 / -1; font-size: 11.5px; color: var(--ink-faint); font-style: italic; padding-top: 2px; }
 
 .generate-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+/* The Action dropdown and the buttons that run it share one row -- the months are chosen in the
+   table's own headers now, so there are no month fields left to sit between them. */
+.action-row { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.action-row .field { flex: 1 1 260px; min-width: 220px; }
+.action-buttons { display: flex; align-items: center; gap: 10px; padding-bottom: 1px; }
+/* Results sit directly under the row that produced them -- below the category table they'd be a
+   screen away from the button that was just clicked, which reads as "nothing happened". Capped so
+   a long preview scrolls in place instead of pushing the table off the page. */
+.action-result:not(:empty) { margin-top: 14px; max-height: 320px; overflow-y: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); }
 .btn {
   font: inherit; font-weight: 500; font-size: 13px; color: var(--accent-ink); background: var(--accent);
   border: none; border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer; transition: background-color 0.15s, box-shadow 0.25s;
 }
 .btn:hover { background: var(--accent-hover); box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.3); }
-.btn:disabled { background: var(--surface-2); color: var(--ink-faint); cursor: not-allowed; }
 .btn.secondary { background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); }
+/* Muted and inert, without the "no entry" cursor -- a disabled control here means "not yet",
+   which is a prompt to go pick something, not a refusal worth flagging under the pointer. Listed
+   after .btn.secondary (equal specificity, so source order decides) and naming it explicitly, so a
+   disabled Preview and a disabled Apply look identical rather than the secondary one keeping its
+   border and brighter text. */
+.btn:disabled, .btn.secondary:disabled { background: var(--surface-2); color: var(--ink-faint); border: none; cursor: default; }
+.btn:disabled:hover, .btn.secondary:disabled:hover { background: var(--surface-2); box-shadow: none; }
 
 .gen-result { padding: 14px 16px; border-top: 1px solid var(--line-soft); }
 .gen-result[hidden] { display: none; }
@@ -305,30 +320,146 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .walkthrough-dismiss { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border: none; background: transparent; color: var(--ink-faint); font-size: 16px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .walkthrough-dismiss:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
 
-/* Budget table -- styled to read like Actual's own budget page: a group row you can fold, an
-   indented category row underneath with its own checkbox, and a Budgeted/Spent/Balance triplet per
-   month rendered as real table columns (not a fixed-height scroll box) so the panel just grows to
-   fit however many categories/months are showing, instead of clipping them behind a tiny listbox. */
-.budget-table { margin-top: 10px; overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); }
-.budget-table-el { width: 100%; border-collapse: collapse; font-size: 12px; }
-.budget-table-el th, .budget-table-el td { padding: 6px 10px; white-space: nowrap; }
-.budget-table-el thead th { position: sticky; top: 0; background: var(--surface-2); color: var(--ink-soft); font-weight: 500; text-align: right; border-bottom: 1px solid var(--line-soft); z-index: 1; }
-.budget-table-el thead tr:first-child th { text-align: center; font-weight: 600; color: var(--ink-strong); border-left: 1px solid var(--line-soft); }
-.budget-table-el thead tr:first-child th.bt-name-head { border-left: none; }
-.budget-table-el .bt-name-head { text-align: left; min-width: 220px; }
-.budget-table-el .bt-sub { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.03em; border-left: 1px solid var(--line-soft); }
-.budget-table-el .bt-sub:nth-of-type(3n+1) { border-left: 1px solid var(--line-soft); }
-.budget-table-el tbody tr:not(.bt-group-header) { border-top: 1px solid color-mix(in srgb, var(--line-soft) 55%, transparent); }
-.budget-table-el .bt-group-header td { background: var(--surface-2); padding: 5px 10px; border-top: 1px solid var(--line-soft); }
+/* Budget table -- styled to read like Actual's own budget page: a group row you can fold (caret to
+   the left of its checkbox/name, matching Actual's own placement) showing that group's own
+   Budgeted/Spent/Balance totals, and category rows underneath with their own checkbox. Column
+   widths come from the <colgroup> app.js generates: a fixed 220px Category column, then 3*N
+   unsized month sub-columns that split the rest of a full-width fixed-layout table evenly -- so
+   the columns fill the panel and the count stays whole, with no natural overflow to clip a partial
+   trailing column from. The month strip below scrolls the window over the selected range. */
+/* No scroll container and no clipping: the table is fixed-layout at 100% width, so it can't
+   overflow, and the header menu below is a child of this wrapper -- an overflow here would clip it
+   the same way the header cell used to. */
+/* overflow:hidden contains the table while it slides between month windows. The header menu is
+   deliberately NOT in here -- it sits in .category-picker below, so this clip can't eat it (which
+   is exactly what a scroll container on this element used to do). */
+/* contain:inline-size so the over-wide filmstrip a roll scrolls across can't widen the page.
+   overflow:hidden clips it visually but the table's explicit width still counts toward this
+   wrapper's max-content contribution, which fed straight up the grid and stretched <main> to its
+   own max-width mid-roll -- the card's own buttons got pushed off the right edge for the length of
+   the animation. Inline-size containment sizes this box from its container instead, while leaving
+   the block axis free to grow with the rows as before. */
+.budget-table { position: relative; margin-top: 8px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); overflow: hidden; contain: inline-size; }
+.budget-table-el { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.budget-table-el th, .budget-table-el td { padding: 7px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.budget-table-el thead th { background: var(--surface-2); color: var(--ink-soft); font-weight: 500; text-align: right; border-bottom: 1px solid var(--line-soft); }
+.budget-table-el thead tr:first-child th { text-align: center; font-weight: 600; color: var(--ink-strong); }
+.budget-table-el thead th.bt-name-head { text-align: left; vertical-align: bottom; font-weight: 500; color: var(--ink-soft); }
+.budget-table-el .bt-sub { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+/* A visibly heavier rule where a new month's triplet starts (marked bt-month-start by app.js), a
+   lighter one between Budgeted/Spent/Balance within the same month -- so the eye reads "months"
+   first. Keyed off the class rather than nth-child, since the Category header spans both header
+   rows and would otherwise shift the count by one on the sub-header row. */
+.budget-table-el .bt-month-start { border-left: 2px solid var(--line-soft); }
+.budget-table-el th:not(.bt-month-start):not(.bt-name-head), .budget-table-el td:not(.bt-month-start):not(.bt-name) { border-left: 1px solid color-mix(in srgb, var(--line-soft) 40%, transparent); }
+.budget-table-el tbody tr:not(.bt-group-header) { border-top: 1px solid color-mix(in srgb, var(--line-soft) 45%, transparent); }
+.budget-table-el tbody tr.bt-row-alt { background: color-mix(in srgb, var(--surface-2) 35%, transparent); }
+.budget-table-el .bt-group-header td { background: var(--surface-2); padding: 6px 10px; border-top: 1px solid var(--line-soft); font-weight: 600; color: var(--ink-strong); }
 .budget-table-el .bt-group-header:first-child td { border-top: none; }
-.bt-fold-toggle { background: none; border: none; color: var(--ink-soft); cursor: pointer; font-size: 11px; width: 16px; padding: 0; vertical-align: middle; }
-.bt-group-check-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ink-strong); cursor: pointer; vertical-align: middle; }
-.bt-group-check-label input, .bt-name label input { accent-color: var(--accent); margin: 0; }
+/* The flex row lives on an inner box, NOT on the cell: display:flex on a <td> stops it generating
+   a table-cell box, so it ends up in an anonymous cell and position:sticky then sticks it to that
+   anonymous box instead of the scrollport -- during a roll the group names scrolled away while
+   every category name stayed put. */
+.budget-table-el .bt-group-header .bt-group-name { display: flex; align-items: center; gap: 6px; }
+.bt-fold-toggle { background: none; border: none; color: var(--ink-soft); cursor: pointer; font-size: 11px; line-height: 1; width: 20px; flex: none; padding: 0; }
+.bt-fold-toggle:hover { color: var(--ink-strong); }
+
+/* Category header's vertical-ellipsis menu, pinned right the way Actual's own is. */
+/* Still relative so the ⋮ button can pin to the cell's right edge; the dropdown itself no longer
+   lives in here. */
+.budget-table-el thead th.bt-name-head { position: relative; padding-right: 26px; overflow: visible; }
+.bt-head-menu { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); background: none; border: none; color: var(--ink-soft); font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: var(--radius-sm); cursor: pointer; }
+.bt-head-menu:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--line-soft) 60%, transparent); }
+/* Positioned against the wrapper, with top/left measured from the button when it opens. */
+.bt-menu { position: absolute; z-index: 20; min-width: 168px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45); padding: 4px; }
+.bt-menu[hidden] { display: none; }
+.bt-menu button { background: none; border: none; text-align: left; font: inherit; font-size: 12px; color: var(--ink); padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; }
+.bt-menu button:hover { background: var(--surface-2); color: var(--ink-strong); }
+.bt-group-check-label { display: inline-flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: var(--ink-strong); cursor: pointer; }
+.bt-group-check-label input, .budget-table-el .bt-name label input { accent-color: var(--accent); margin: 0; flex: none; }
 .budget-table-el .bt-name { text-align: left; }
-.budget-table-el .bt-name label { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--ink); font-weight: 400; }
-.budget-table-el .bt-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-soft); border-left: 1px solid color-mix(in srgb, var(--line-soft) 55%, transparent); }
-.budget-table-el tbody tr.bt-row:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.budget-table-el .bt-row .bt-name label { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 20px; cursor: pointer; color: var(--ink); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+.budget-table-el .bt-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.budget-table-el .bt-group-header .bt-num { color: var(--ink-strong); }
+/* A picked month shades top to bottom -- header, sub-header and every row -- so the column the
+   action will touch reads as one block rather than a highlighted header alone. Kept light enough
+   that the figures inside stay the thing you read. */
+.budget-table-el th.is-picked, .budget-table-el td.is-picked { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.budget-table-el .bt-group-header td.is-picked { background: color-mix(in srgb, var(--accent) 22%, var(--surface-2)); }
+.budget-table-el th.bt-month-head { cursor: pointer; user-select: none; }
+.budget-table-el th.bt-month-head:hover { background: color-mix(in srgb, var(--accent) 26%, var(--surface-2)); color: var(--ink-strong); }
+.budget-table-el tbody tr.bt-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .budget-table-el tr[hidden] { display: none; }
+/* Moving the month window rolls the grid sideways through every month in between, rather than
+   sliding the destination block into place from an offset -- see rollThroughMonths in app.js. The
+   journey is one over-wide table inside this wrapper's own scrollport, genuinely scrolled: months
+   leave to one side as the next ones arrive from the other, which is something a transform of the
+   destination alone can't show, since the months in between were never rendered at all. Timing and
+   easing live in app.js with the scroll, not here; prefers-reduced-motion is honoured there too,
+   by landing on the new months with no journey at all. */
+.budget-table-el.bt-filmstrip { pointer-events: none; }
+/* The Category column holds still while the figures travel past it -- the whole reason the roll
+   scrolls rather than transforms, since sticky answers to scrolling and not to transforms. */
+.budget-table-el.bt-filmstrip .bt-name,
+.budget-table-el.bt-filmstrip thead th.bt-name-head { position: sticky; left: 0; z-index: 2; }
+.budget-table-el.bt-filmstrip thead th.bt-name-head { z-index: 3; }
+/* Sticky cells have to carry their own opaque background: months scroll underneath them, and the
+   row-level backgrounds these cells normally show through to don't travel with a sticky child.
+   Mirrors the settled view's own striping so nothing changes colour when the roll ends. */
+.budget-table-el.bt-filmstrip .bt-row .bt-name { background: var(--surface); }
+.budget-table-el.bt-filmstrip .bt-row.bt-row-alt .bt-name { background: color-mix(in srgb, var(--surface-2) 35%, var(--surface)); }
+.budget-table-el.bt-filmstrip .bt-group-header .bt-name { background: var(--surface-2); }
+/* Rows that are only on screen because the header menu asked for them. Dimmed the way Actual dims
+   its own hidden categories, with the eye-off glyph app.js adds carrying the actual meaning --
+   dimming alone would be ambiguous next to .bt-zero's already-dimmed figures below. A hidden
+   group dims its category rows too, so the whole block reads as one aside from the everyday
+   budget. */
+.budget-table-el tr.bt-hidden .bt-name label,
+.budget-table-el tr.bt-hidden .bt-group-check-label { color: var(--ink-faint); font-style: italic; }
+.budget-table-el tr.bt-hidden .bt-num { opacity: 0.6; }
+.bt-hidden-mark { display: inline-flex; align-items: center; flex: none; color: var(--ink-faint); }
+
+/* A zero reads as "nothing happened here" in Actual's own table too -- dimmed so the figures that
+   actually moved are what the eye lands on. */
+.budget-table-el .bt-row .bt-num.bt-zero { color: var(--ink-faint); }
+/* A cell a Preview/Apply would change (or just changed): the figure shown is the new one, boxed so
+   the pending edits are findable at a glance without a written list beside the table. */
+.budget-table-el .bt-num.bt-changed {
+  color: var(--ink-strong);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok) 60%, transparent);
+}
+
+/* Both Budget tabs' category pickers sit directly under the action row -- this is the breathing
+   room between the two, which the grid above doesn't provide on its own. position:relative makes
+   this the anchor for the header menu, which lives here rather than inside the clipped table. */
+.category-picker { position: relative; margin-top: 18px; }
+
+/* Month strip -- Actual's own budget-page scroller: year labels above the months they cover, the
+   visible window highlighted in the accent, chevrons to step a month at a time. */
+.month-strip { display: flex; align-items: flex-end; gap: 4px; margin-top: 10px; }
+.month-strip[hidden] { display: none; }
+/* 220px matches the Category <col> app.js writes, so the months line up over the month columns
+   rather than starting above the category names. The Today/back controls sit in that gutter. */
+.month-strip-lead { width: 220px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 2px; padding-right: 6px; }
+.month-strip-today { display: inline-flex; align-items: center; background: none; border: none; color: var(--ink-soft); cursor: pointer; padding: 0 2px; }
+.month-strip-today:hover { color: var(--accent-selected); }
+.month-strip-months { display: grid; grid-template-rows: auto 7px auto; flex: 1; min-width: 0; gap: 1px 0; }
+/* The visible window is bracketed above the months it covers (a downward-opening ⊓), rather than
+   filling each month's own chip -- one span reads as one window. */
+.month-strip-bracket { grid-row: 2; align-self: end; height: 6px; border: 2px solid var(--accent); border-bottom: none; border-radius: 3px 3px 0 0; }
+.month-strip-year { grid-row: 1; font-size: 10.5px; font-weight: 600; color: var(--ink-faint); text-align: left; padding-left: 2px; }
+/* Every month on the strip scrolls the view. Three states: plain (reachable, outside the edit's
+   range), underlined (inside the Start/End range, so Preview/Apply will touch it), and filled
+   (the window currently on screen). */
+.month-strip-month { grid-row: 3; background: none; border: none; border-radius: var(--radius-sm); padding: 3px 0; font: inherit; font-size: 11.5px; color: var(--ink-faint); cursor: pointer; }
+.month-strip-month:hover { background: var(--surface-2); color: var(--ink-strong); }
+.month-strip-month.in-range { color: var(--ink-soft); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+.month-strip-month.is-visible { color: var(--accent-selected); font-weight: 600; }
+.month-strip-month.is-visible:hover { background: var(--surface-2); color: var(--accent-selected); }
+.month-strip-arrow { background: none; border: none; color: var(--ink-soft); font-size: 16px; line-height: 1; padding: 0 2px 3px; cursor: pointer; }
+.month-strip-arrow:hover { color: var(--ink-strong); }
 
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
