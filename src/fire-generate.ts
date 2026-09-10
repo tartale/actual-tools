@@ -414,6 +414,16 @@ export interface CheckResult {
   // The full simulation behind bridgeFindings, one entry per retirement age in the same order --
   // bridgeFindings is prose derived from these; this is what the client charts the burndown from.
   bridgeResults: BridgeResult[]
+  // The same at-a-glance numbers Generate's own result reports -- current portfolio total and the
+  // access-age/spending adjustments already baked into every projection above. Previously only
+  // shown as a side effect of clicking Download, which also writes a file and triggers a browser
+  // download every time; reading them here costs nothing extra (every value below is already
+  // computed, or a cheap pure function over data already fetched, elsewhere in this same function),
+  // so the client can show them just by opening or refreshing this tab.
+  portfolioAccountCount: number
+  portfolioTotal: number
+  ruleOf55Boosts: RuleOf55Boost[]
+  debtPayoffs: DebtPayoff[]
 }
 
 // Function to analyze the dashboard that is actually live in Actual, rather than generating a new
@@ -448,7 +458,13 @@ export async function checkDashboard(
     spendBasis = derived.basis
   }
 
-  const incomeStreams = [...options.incomeStreams, ...debtPayoffIncomeStreams(accounts, options.currentAge)]
+  const debtStreams = debtPayoffIncomeStreams(accounts, options.currentAge)
+  const incomeStreams = [...options.incomeStreams, ...debtStreams]
+  const debtPayoffs: DebtPayoff[] = debtStreams.map((stream) => ({
+    accountName: stream.name.replace(/ paid off$/, ""),
+    payoffAge: stream.startAge,
+    monthlyAmount: Math.round(stream.annualAmount / 12),
+  }))
 
   // Real data (a narrowed crossover category selection, a pension/Social Security figure, a debt
   // nearing payoff, a changed contribution) can drift out from under an already-imported dashboard
@@ -490,6 +506,21 @@ export async function checkDashboard(
     portfolioIds.map(async (accountId): Promise<[string, number]> => [accountId, await fetchAccountBalance(actualConfig, accountId, BALANCE_SINCE_DATE)]),
   )
   const balances = new Map(balanceEntries)
+  const portfolioTotal = portfolioIds.reduce((total, accountId) => total + (balances.get(accountId) ?? 0), 0)
+
+  // Reported against the latest configured retirement age, same as Generate's own identical loop:
+  // effectiveAccessAge's own gate (separationAge <= retirementAge) only gets easier to satisfy as
+  // retirementAge grows, so a boost that doesn't apply there can't apply for any earlier scenario
+  // on this plan either.
+  const latestRetirementAge = Math.max(...options.retirementAges)
+  const ruleOf55Boosts: RuleOf55Boost[] = []
+  for (const account of accounts) {
+    const boosted = effectiveAccessAge(account, latestRetirementAge)
+    if (boosted !== account.accessAge) {
+      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number })
+    }
+  }
+
   // Simulated once per retirement age and kept in full -- bridgeFindings below is prose derived
   // from these results, not a second computation, so the two can never disagree.
   const bridgeResults = options.retirementAges.map((retirementAge) =>
@@ -517,6 +548,10 @@ export async function checkDashboard(
     driftFindings,
     bridgeFindings,
     bridgeResults,
+    portfolioAccountCount: portfolioIds.length,
+    portfolioTotal,
+    ruleOf55Boosts,
+    debtPayoffs,
   }
 }
 

@@ -146,6 +146,23 @@ async function openAnalyzeTab(retirementAges: number[]): Promise<{ page: Page; e
 }
 
 describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
+  it("shows the Current numbers box on load, without ever claiming withdrawals are taxed", async () => {
+    // Regression: "withdrawals taxed" used to sit in the Bridge group's own label, but the tax rate
+    // is per-account (0% for a Roth or HSA, 22%/15% otherwise) -- a blanket claim overstated it for
+    // any portfolio with tax-free money in it.
+    const { page: ui, errors } = await openAnalyzeTab([50])
+    await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
+
+    const summary = await ui.evaluate(() => document.getElementById("analyzeSummary")?.textContent ?? "")
+    expect(summary).toContain("Portfolio accounts (2)")
+    expect(summary).toMatch(/\$2,040,000\.00/)
+    expect(summary).toContain("Spend")
+
+    expect(await ui.evaluate(() => document.body.textContent ?? "")).not.toContain("withdrawals taxed")
+    expect(errors).toEqual([])
+  }, 60000)
+
+
   it("draws a critical marker and an unlock reference line for a scenario that depletes", async () => {
     const { page: ui, errors } = await openAnalyzeTab([50])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })

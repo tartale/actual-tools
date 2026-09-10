@@ -82,6 +82,35 @@ was tried first and produces ugly sub-values (a $5M ceiling / 4 = $1.25M,
 which rounds to a not-actually-clean "$1.3M"). `niceAxisTicks(maxCents,
 targetCount)` picks the step directly instead.
 
+**Follow-up, same day: "withdrawals taxed" removed from the Bridge label, and
+a permanent "Current numbers" box added above Generate.** The user asked
+directly whether "withdrawals taxed" (the Bridge group's own subtitle) was
+correct -- checked against their real config.json: the rate is per-account
+(`withdrawalTaxRateFor` in fire-dashboard.ts -- 22% tax-deferred / 15% taxable
+/ 0% tax-free-or-none / or a hand-entered override), and their real portfolio
+has Roth + HSA accounts at 0%. The blanket phrase overstated it for exactly
+that money. Removed outright rather than reworded -- the label now reads just
+"Bridge · mean returns, X% inflation"; the per-account rate is still fully
+real in the simulation and documented in the README next to the existing
+"Withdrawal tax rate" per-account field.
+
+Separately, some of the info Generate's own result shows (portfolio total,
+annual spend + its basis, Rule of 55 boosts, debt-payoff spending reductions)
+was only ever visible as a side effect of clicking **Download dashboard**,
+which also writes a file and triggers a browser download. `checkDashboard`
+now computes and exposes all four on `CheckResult` too
+(`portfolioAccountCount`/`portfolioTotal`/`ruleOf55Boosts`/`debtPayoffs`) --
+every one of them was already a cheap pure function over data `checkDashboard`
+had fetched anyway, so this cost nothing extra per Check. A new **Current
+numbers** card sits permanently above Generate dashboard, populated by the
+same `/api/retirement/check` call `runCheck()` already makes on tab-open and
+Refresh -- one network call, one source of truth, no new side effect. The
+`.line`/`.line .num`/`.boost` CSS rules had to be un-scoped from `.gen-result`
+(they were descendant selectors requiring that ancestor) to work in this new,
+separate `.card-body` -- `.boost` also tightened to `.line.boost`, matching
+how it's actually applied (both classes on the same element), not a bare
+global class.
+
 **Testing**: `fire-analysis.test.ts` gained three timeline-specific cases
 (exact year-by-year values for a depleting scenario, length/bounds for a
 non-depleting one, the locked-to-accessible handoff at the exact unlock age)

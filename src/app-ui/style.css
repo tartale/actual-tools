@@ -294,9 +294,12 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 
 .gen-result { padding: 14px 16px; border-top: 1px solid var(--line-soft); }
 .gen-result[hidden] { display: none; }
-.gen-result .line { font-size: 12.5px; margin-bottom: 5px; }
-.gen-result .line .num { color: var(--accent-selected); font-weight: 500; }
-.gen-result .boost { color: var(--ok); }
+/* Standalone rather than scoped under .gen-result: the same "Portfolio accounts.../Spend.../Rule of
+   55 applied..." lines also appear in the always-visible Current numbers box above Generate, which
+   is plain .card-body content with no result panel of its own to scope under. */
+.line { font-size: 12.5px; margin-bottom: 5px; }
+.line .num { color: var(--accent-selected); font-weight: 500; }
+.line.boost { color: var(--ok); }
 .import-steps { padding: 12px 16px 16px; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--ink-soft); }
 .import-steps ol { margin: 6px 0 0; padding-left: 18px; }
 .import-steps li { margin-bottom: 3px; }

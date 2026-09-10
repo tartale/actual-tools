@@ -985,13 +985,33 @@ function renderFinding(finding) {
   return div
 }
 
+// Function to render the "Current numbers" box: the same at-a-glance figures Generate's own result
+// reports (portfolio total, spend and its basis, any Rule of 55/debt-payoff adjustment already
+// baked into every projection) minus the download-specific lines (the file name, the import steps)
+// that belong only to the act of generating, not to reading these numbers.
+function renderAnalyzeSummary(result) {
+  const boostLines = result.ruleOf55Boosts
+    .map((b) => `<div class="line boost">Rule of 55 applied: ${escapeHtml(b.accountName)} accessible from age ${b.to} (was ${b.from ?? "none"}).</div>`)
+    .join("")
+  const debtPayoffLines = result.debtPayoffs
+    .map((d) => `<div class="line boost">Spending reduced by ${moneySpan(d.monthlyAmount)}/mo once ${escapeHtml(d.accountName)} is paid off at age ${d.payoffAge}.</div>`)
+    .join("")
+  return `
+    <div class="line">Portfolio accounts (${result.portfolioAccountCount}): current total ${moneySpan(result.portfolioTotal)}</div>
+    <div class="line">Spend: ${moneySpan(result.annualSpend)}/yr${result.spendBasis ? ` (from your crossover widget's own selection: ${escapeHtml(result.spendBasis)})` : " (trailing 12 months, every category — no live crossover selection to narrow it yet)"}</div>
+    ${boostLines}
+    ${debtPayoffLines}`
+}
+
 async function runCheck() {
   const container = document.getElementById("checkResult")
+  const summary = document.getElementById("analyzeSummary")
   const refreshBtn = document.getElementById("refreshAnalysisBtn")
   refreshBtn.disabled = true
   container.innerHTML = `<div class="empty-note">Analyzing…</div>`
   try {
     const result = await api("/api/retirement/check")
+summary.innerHTML = renderAnalyzeSummary(result)
     container.innerHTML = ""
     if (result.driftFindings.length === 0 && result.bridgeFindings.length === 0) {
       container.innerHTML = `<div class="empty-note">No findings.</div>`
@@ -1007,13 +1027,14 @@ async function runCheck() {
     if (result.bridgeFindings.length > 0) {
       const group = document.createElement("div")
       group.className = "findings-group"
-      group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation, withdrawals taxed</div>`
+      group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
       const chart = renderBridgeChart(result.bridgeResults)
       if (chart) group.appendChild(chart)
       result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
       container.appendChild(group)
     }
   } catch (error) {
+    summary.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
     container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
   } finally {
     refreshBtn.disabled = false

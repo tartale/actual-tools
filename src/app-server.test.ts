@@ -282,6 +282,47 @@ describe("GET /api/retirement/check", () => {
     expect(body.monteCarloWidgetCount).toBe(0)
     expect(body.driftFindings[0]?.title).toContain("No Monte Carlo widgets")
   })
+
+  it("reports the same portfolio total, Rule of 55 boosts, and debt payoffs Generate's own result carries", async () => {
+    const url = await boot({
+      accounts: [
+        { id: "a1", name: "Brokerage", offbudget: true, closed: false },
+        { id: "401k", name: "Fidelity 401k", offbudget: true, closed: false },
+        { id: "mortgage", name: "Mortgage", offbudget: true, closed: false },
+      ],
+      transactionsByAccount: {
+        a1: [{ amount: 5000000, transfer_id: null }], // $50,000
+        "401k": [{ amount: 10000000, transfer_id: null }], // $100,000
+      },
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+    // Standard access age (59) beaten down to 55 by an early separation -- the exact boost the
+    // "Current numbers" box exists to surface, so it's worth reading before it happens.
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", ruleOf55SeparationAge: 55 }) })
+    await fetch(`${url}api/retirement/accounts/mortgage`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        type: "debt",
+        mortgageInterestRate: 0.05,
+        mortgageMonthlyPayment: 100000, // $1,000/mo
+        mortgageBalanceAsOfDate: "2026-01-01",
+        mortgageBalanceAsOf: 1000000, // $10,000 -- a handful of months to pay off
+      }),
+    })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    // Debt accounts are never part of the simulated portfolio -- only the two real pots count.
+    expect(body.portfolioAccountCount).toBe(2)
+    expect(body.portfolioTotal).toBe(15000000)
+    expect(body.ruleOf55Boosts).toEqual([{ accountName: "Fidelity 401k", from: 59, to: 55 }])
+    expect(body.debtPayoffs).toHaveLength(1)
+    expect(body.debtPayoffs[0]).toMatchObject({ accountName: "Mortgage", monthlyAmount: 100000 })
+    expect(typeof body.debtPayoffs[0]?.payoffAge).toBe("number")
+  })
 })
 
 describe("GET /api/retirement/live-settings", () => {

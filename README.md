@@ -575,6 +575,15 @@ the old category field for that account.
 
 ### Retirement — Analyze tab
 
+**Current numbers** — a permanent box above Generate, always populated as
+soon as this tab opens (or Analysis is refreshed), no download required:
+current portfolio total, the annual spend figure and its basis (the live
+crossover widget's own category selection, once one exists), and any
+Rule of 55 / debt-payoff adjustment already baked into every projection
+below. This used to be visible only as a side effect of clicking **Download
+dashboard**, which also writes a file and triggers a browser download every
+time — reading these numbers no longer requires either.
+
 **Generate dashboard** builds the same widgets `./actual reports fire`
 used to (a full-width net-worth widget, a safe-withdrawal-rate "crossover"
 projection, and a Monte Carlo retirement simulation, using Actual's own
@@ -670,7 +679,9 @@ editing in the app. Two things get checked:
 - **Bridge** — for each retirement age, whether the accounts you can
   actually reach at that age fund every year until the locked ones open
   up. This projects forward at each allocation's mean return with no
-  volatility and grosses withdrawals up for tax, applying the same
+  volatility and grosses withdrawals up for tax **at that account's own
+  rate** (0% for a Roth or HSA, a flat 22%/15% otherwise, or a per-account
+  override — see "Withdrawal tax rate" below), applying the same
   accessible-only funding rule Actual's own Monte Carlo engine uses — a
   *best* case, so a scenario that runs dry here runs dry in essentially
   every simulated run. Also nets out guaranteed income/debt payoff the
