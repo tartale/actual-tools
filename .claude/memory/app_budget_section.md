@@ -95,7 +95,21 @@ custom-amount box is disabled in place rather than hidden -- the repo already
 learned this once with the 401(k) fields; see [[fire-dashboard]].
 
 **The Category header has a select-all checkbox** with the same tri-state sync a
-group's box has (`setTriState`, shared by both). Two things to know: it operates
+group's box has (`setTriState`, shared by both). All three checkbox columns --
+header, group, category -- line up at the same offset (the cell's 10px padding
+plus a 20px indent). Getting there needed two fixes: the header cell's text is
+centred (`.budget-table-el thead tr:first-child th` wins on specificity over the
+`.bt-name-head` left-align), so its box is absolutely positioned against the
+cell rather than sitting in that flow; and the group's box was a fold-toggle
+gap to the right, fixed by dropping `.bt-group-name`'s `gap` to 0, since the
+caret glyph is narrower than the 20px box it sits in and still reads as
+separate.
+
+**The Tag flagged transactions button is visible for the whole anomalies
+action**, disabled until a run flags something, rather than appearing when one
+does -- what it does is worth knowing about before there is anything to do it
+to, and the action's buttons are then the same set from the moment it is
+selected. Two things to know: it operates
 on whatever is currently in the grid, so it takes hidden categories too when
 they are toggled on; and clicking it out of the indeterminate state selects
 everything, because indeterminate is a look rather than a third value a click

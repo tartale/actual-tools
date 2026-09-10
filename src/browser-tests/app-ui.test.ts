@@ -293,7 +293,7 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
         // The detail the findings list used to spell out now lives on the cell itself.
         tooltip: cells[0]?.getAttribute("title"),
         summary: document.getElementById("actionResult")?.textContent?.trim(),
-        tagOffered: !(document.getElementById("tagAnomaliesBtn") as HTMLElement).hidden,
+        tagEnabled: !(document.getElementById("tagAnomaliesBtn") as HTMLButtonElement).disabled,
       }
     })
     expect(flagged.count).toBe(1)
@@ -308,13 +308,13 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
     expect(flagged.summary).toMatch(/^Flagged 1 category across 1 month/)
     expect(ui.locator("#actionResult .finding")).toBeDefined()
     expect(await ui.evaluate(() => document.querySelectorAll("#actionResult .finding").length)).toBe(0)
-    // Tagging is offered beside the button that found them, once there is something to tag.
-    expect(flagged.tagOffered).toBe(true)
+    // Tagging becomes available once there is something to tag.
+    expect(flagged.tagEnabled).toBe(true)
 
     // The flag describes one run over one selection, so changing either drops it.
     await ui.selectOption("#budgetAction", "balance")
     expect(await ui.evaluate(() => document.querySelectorAll("#budgetTable .bt-flagged").length)).toBe(0)
-    expect(await ui.evaluate(() => (document.getElementById("tagAnomaliesBtn") as HTMLElement).hidden)).toBe(true)
+    expect(await ui.evaluate(() => (document.getElementById("tagAnomaliesBtn") as HTMLButtonElement).disabled)).toBe(true)
     expect(errors).toEqual([])
   }, 60000)
 
@@ -331,6 +331,16 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
       })
 
     expect(await state()).toMatchObject({ checked: false, indeterminate: false, selected: 0 })
+
+    // It governs the category checkbox column, so it has to sit in it -- the header's own text is
+    // centred, which is where this box ended up before it was pinned to the column instead.
+    const columns = await ui.evaluate(() => {
+      const left = (sel: string) => Math.round(document.querySelector(sel)!.getBoundingClientRect().left)
+      return { all: left("#budgetTable .bt-all-check"), group: left("#budgetTable .bt-group-check"), category: left("#budgetTable .bt-category-check") }
+    })
+    expect(columns.all).toBe(columns.category)
+    // The group's own box shares the column too -- it used to sit a fold-toggle's gap to the right.
+    expect(columns.group).toBe(columns.category)
 
     // Ticking it takes every category in the grid, hidden ones included now they are shown.
     await ui.locator("#budgetTable .bt-all-check").check()
@@ -385,14 +395,18 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
         preview: !(document.getElementById("previewSetValuesBtn") as HTMLElement).hidden,
         apply: !(document.getElementById("applySetValuesBtn") as HTMLElement).hidden,
         find: !(document.getElementById("findAnomaliesBtn") as HTMLElement).hidden,
+        tag: !(document.getElementById("tagAnomaliesBtn") as HTMLElement).hidden,
       }))
 
-    // A set-values action offers Preview/Apply and no Find.
-    expect(await buttons()).toMatchObject({ preview: true, apply: true, find: false })
+    // A set-values action offers Preview/Apply, and neither of the anomalies buttons.
+    expect(await buttons()).toMatchObject({ preview: true, apply: true, find: false, tag: false })
 
     await ui.selectOption("#budgetAction", "anomalies")
-    // Read-only, so there is nothing to preview and nothing to apply.
-    expect(await buttons()).toMatchObject({ preview: false, apply: false, find: true })
+    // Read-only, so there is nothing to preview and nothing to apply. Tagging stands beside Find
+    // for the whole action rather than appearing once a run has flagged something -- disabled
+    // until then, so the action's buttons are the same set from the moment it is selected.
+    expect(await buttons()).toMatchObject({ preview: false, apply: false, find: true, tag: true })
+    expect(await ui.locator("#tagAnomaliesBtn").isDisabled()).toBe(true)
 
     // The custom-amount box belongs to exactly one action, but stays in the layout for all of them:
     // taking it out of the flow moved every button beside it, laying the row out differently for

@@ -263,7 +263,8 @@ Budgeted/Spent/Balance column triplet per month.
 
 The checkbox in the **Category** header takes or clears every category in
 the grid at once, and shows the same three states a group's own checkbox
-does — empty, a dash for a partial selection, a tick for all of them.
+does — empty, a dash for a partial selection, a tick for all of them. It
+sits in the same column as the group and category boxes it governs.
 
 Unlike the CLI, **an empty category selection is refused rather than
 treated as "every category"**: over the web the picker is a checkbox per
@@ -321,8 +322,9 @@ typical" is exactly the kind of finding worth looking at. Like a preview,
 the flags describe one run over one selection, so changing the action, the
 months or the categories drops them.
 
-A run that flags something reveals a **Tag flagged transactions** button
-beside **Find anomalies**: it prepends a `#anomaly-high`/`#anomaly-low` tag
+A **Tag flagged transactions** button stands beside **Find anomalies** for
+the whole of this action, disabled until a run has actually flagged
+something: it prepends a `#anomaly-high`/`#anomaly-low` tag
 to the note of whichever transaction(s) in that month are themselves
 responsible (or, if none stands out individually, the single largest
 transaction that month), and lists what it tagged. **It writes

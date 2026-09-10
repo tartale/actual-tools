@@ -967,6 +967,9 @@ function applySelectedAction() {
   document.getElementById("previewSetValuesBtn").hidden = findingAnomalies
   document.getElementById("applySetValuesBtn").hidden = findingAnomalies
   document.getElementById("findAnomaliesBtn").hidden = !findingAnomalies
+  // Shown for the whole of the anomalies action, not just once something is flagged -- it is
+  // clearActionOverlays below that leaves it disabled until a run gives it something to tag.
+  document.getElementById("tagAnomaliesBtn").hidden = !findingAnomalies
   clearActionOverlays()
   if (PICKER.table) renderPickerTable(PICKER.table)
   updatePickerButtons()
@@ -1036,8 +1039,9 @@ function clearActionOverlays() {
   PICKER.preview = new Map()
   PICKER.flagged = new Map()
   document.getElementById("actionResult").innerHTML = ""
-  // Nothing is flagged any more, so there is nothing to tag.
-  document.getElementById("tagAnomaliesBtn").hidden = true
+  // Nothing is flagged any more, so there is nothing to tag -- disabled rather than taken away,
+  // so the action's buttons are the same set from the moment it is selected.
+  document.getElementById("tagAnomaliesBtn").disabled = true
 }
 
 function selectMonth(month, extend) {
@@ -1703,8 +1707,8 @@ async function runFindAnomalies() {
     picker.flagged = new Map(res.findings.map((finding) => [`${finding.category.id}|${finding.month}`, { direction: finding.direction, typicalCents: finding.typicalCents }]))
     renderPickerTable(picker.table)
     lastAnomalyQuery = { categories, startMonth, endMonth }
-    // Tagging is offered only once there is something to tag, beside the button that found it.
-    document.getElementById("tagAnomaliesBtn").hidden = res.findings.length === 0
+    // Tagging becomes available once there is something to tag.
+    document.getElementById("tagAnomaliesBtn").disabled = res.findings.length === 0
   } catch (error) {
     showError(error.message)
   }

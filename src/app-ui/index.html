@@ -279,9 +279,10 @@
               <button type="button" class="btn secondary" id="previewSetValuesBtn" disabled>Preview</button>
               <button type="button" class="btn" id="applySetValuesBtn" disabled>Apply changes</button>
               <button type="button" class="btn" id="findAnomaliesBtn" disabled hidden>Find anomalies</button>
-              <!-- Appears beside Find once a run has flagged something, rather than in a card of its
-                   own further down the page. -->
-              <button type="button" class="btn secondary" id="tagAnomaliesBtn" hidden>Tag flagged transactions</button>
+              <!-- Stands beside Find for the whole of this action rather than appearing once a run
+                   has flagged something: what it does is worth knowing about before there is
+                   anything to do it to. Disabled until a run actually flags something. -->
+              <button type="button" class="btn secondary" id="tagAnomaliesBtn" disabled hidden>Tag flagged transactions</button>
             </div>
           </div>
           <div class="action-result" id="actionResult"></div>

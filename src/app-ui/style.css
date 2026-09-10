@@ -369,7 +369,10 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
    a table-cell box, so it ends up in an anonymous cell and position:sticky then sticks it to that
    anonymous box instead of the scrollport -- during a roll the group names scrolled away while
    every category name stayed put. */
-.budget-table-el .bt-group-header .bt-group-name { display: flex; align-items: center; gap: 6px; }
+/* gap:0 so the group's own checkbox lands in the same column as the category checkboxes below it
+   (the cell's 10px padding plus the fold toggle's 20px). The toggle's glyph is narrower than the
+   20px box it sits in, so the caret and the checkbox still read as separated without a gap. */
+.budget-table-el .bt-group-header .bt-group-name { display: flex; align-items: center; gap: 0; }
 .bt-fold-toggle { background: none; border: none; color: var(--ink-soft); cursor: pointer; font-size: 11px; line-height: 1; width: 20px; flex: none; padding: 0; }
 .bt-fold-toggle:hover { color: var(--ink-strong); }
 
@@ -377,7 +380,11 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 /* Still relative so the ⋮ button can pin to the cell's right edge; the dropdown itself no longer
    lives in here. */
 .budget-table-el thead th.bt-name-head { position: relative; padding-right: 26px; overflow: visible; }
-.bt-all-check { accent-color: var(--accent); margin: 0 8px 0 0; vertical-align: -1px; cursor: pointer; }
+/* Pinned to the same column as the category checkboxes below it (their label's own 20px indent on
+   top of the cell's 10px padding), rather than sitting in the header's centred text flow -- it
+   governs that column, so it has to line up with it. Absolute against the cell, which is already
+   positioned for the menu button, so only the box moves and the "Category" label stays put. */
+.bt-all-check { position: absolute; left: 30px; bottom: 9px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .bt-head-menu { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); background: none; border: none; color: var(--ink-soft); font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: var(--radius-sm); cursor: pointer; }
 .bt-head-menu:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--line-soft) 60%, transparent); }
 /* Positioned against the wrapper, with top/left measured from the button when it opens. */
