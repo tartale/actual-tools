@@ -1,6 +1,6 @@
 ---
 name: bridge-burndown-chart
-description: "Design/status of the bridge burndown chart on ./actual app's Retirement -> Analyze tab -- why it isn't (and can't be) an Actual dashboard widget, the domain-windowing fix for a real scale-distortion bug, and the dataviz-skill decisions behind it"
+description: "Design/status of the bridge burndown chart on ./actual app's Retirement page -- why it isn't (and can't be) an Actual dashboard widget, the domain-windowing fix for a real scale-distortion bug, the dataviz-skill decisions behind it, the Configure/Analyze tab merge into one foldable-card page, and the Drift->Stale rename"
 metadata: 
   node_type: memory
   type: project
@@ -228,3 +228,65 @@ See [[fire-dashboard]] for the Bridge/Check analysis this chart visualizes,
 and [[app-budget-section]] for the browser-test harness pattern this reuses
 (no stub Actual server needed -- `startAppServer` runs inside the test
 process, stubbed the same way `app-server.test.ts` stubs it).
+
+**Fourth follow-up, same day: the Configure/Analyze tabs merged into one flat page, then a
+round of code-review CRs on the result.** "Sketch it first" (ASCII mockup +
+two `AskUserQuestion`s: Drift kept leading Generate dashboard; fold state
+persists per-section) preceded implementing it.
+
+- **Tab merge**: the two tabs became 7 foldable `.card[data-section]` sections in one column
+  (Plan, Simulation settings, Retirement income, Accounts, Current numbers, Analysis, Generate
+  dashboard), each with a `.card-fold-toggle` (▼/▶) + `.card-fold` wrapper, an Expand
+  all/Collapse all control where the tab bar used to be, and per-section fold state in a
+  `retirementCollapsed` cookie (`RETIREMENT_SECTIONS`/`DEFAULT_COLLAPSED_SECTIONS`/
+  `setSectionFolded`/`saveSectionFolds`/`applySectionFolds` in app.js). `activateSection`'s
+  `retirementChecked` flag still gates `runCheck()` to once-per-landing, not on every nav away
+  and back to Retirement -- folding a section was verified to never re-trigger or gate the data
+  inside it.
+- **CR round 1** (five items from one "looks great, a couple CRs" message): Current numbers +
+  Drift moved to the very top of the page (no longer a foldable card); one Refresh button
+  (top, beside Expand/Collapse all) replaced two separate ones (`refreshAnalysisBtn` on Current
+  numbers, `refreshLiveSettingsBtn` on "Configured in the Actual Dashboard") via a new
+  `refreshAll()` that runs both concurrently; "drift" renamed to "stale" client-side and in
+  `CheckResult.staleFindings` (detector function names like `detectPotDrift` were deliberately
+  left alone -- internal/technical, not the user-facing label); the card-head hint
+  right-alignment bug was `.saved-flag`'s `opacity: 0` base state still reserving ~36px of
+  layout width even hidden (fixed: `display: none`/`.show { display: inline }`, trading away the
+  fade transition); and a debounced `scheduleRecheck()` (500ms, cleared/reset on each call) added
+  inside the three functions every edit funnels through (`patchPlan`/`patchAccount`/
+  `reorderAccounts`), plus a `checkRequestId` guard in `runCheck()` so an in-flight response from
+  a superseded call can never land after a newer one.
+- **CR round 2** (six more items, next message: "good breaking point; let's ship it" came right
+  after these landed): `./actual service start` silently absorbed an unknown option into a
+  `passthrough` array that only `--dev` mode ever consumed -- outside `--dev` it was collected
+  and then never used at all, so a typo'd flag looked accepted and did nothing; fixed by erroring
+  with usage when `passthrough` is non-empty and `--dev` wasn't passed (a documented option like
+  `--no-open` still reaches `--dev`'s own `node ./src/app.ts` call, which validates it itself).
+  Default image tag changed from `actual-tools:latest` to `actual-tools:local`, everywhere it's
+  named (`./actual`'s `buildImage`/`buildUsage`/`serviceStart`, `compose.yaml`). Current
+  numbers/Stale were pulled out of their own card entirely and merged into the summary tile row:
+  Portfolio's own tile absorbed the account count inline ("$999,999 (8 accounts)", computed
+  client-side from `STATE.accounts` the same way the tile total always was, not from the network
+  round trip); Spend/Rule of 55/debt-payoff became plain label/number tiles
+  (`renderSummaryStats`, appended to `#summaryTiles` once `/api/retirement/check` resolves,
+  replacing any previous dynamic tiles by class rather than accumulating them) instead of full
+  sentences ("...from your own crossover widget's selection..." dropped entirely); the "Current
+  numbers" heading disappeared along with its card; "Autosaves on change" removed from Plan's
+  card-head. New env vars from the containerization round got the same `AB_` prefix as
+  `AB_BASE_URL`/`AB_BUDGET_ID`/`AB_API_KEY`: `ACTUAL_DATA_DIR`/`ACTUAL_HOST_ALIAS`/`ACTUAL_PORT` ->
+  `AB_DATA_DIR`/`AB_HOST_ALIAS`/`AB_PORT`, renamed everywhere (dispatcher, compose.yaml, .envrc,
+  README, this project's own memory). And the duplicate-input-vs-display pattern the user named
+  ("'retirement ages' is in the top, but then editable in 'Plan'") applied to all three
+  read-only summary tiles that echoed an editable Plan field verbatim -- Current age, Retirement
+  ages, and Plan to age tiles were removed outright (Portfolio wasn't touched: it's computed, not
+  entered anywhere, so showing it once at the top isn't a duplicate of anything).
+- **Two browser tests were stale from the tab merge** and only surfaced when the full suite
+  finally ran (interactive mode had deferred that until "let's ship it"): `app-ui.test.ts`'s
+  regression test for a `[data-tab]`-scoped click handler asserted against `panel-configure`/
+  `panel-analyze`/`.panel.active`, none of which exist anymore -- rewritten to guard the modern
+  equivalent risk instead (folding Plan, navigating to Budget and back, asserting the fold
+  survived), and mutation-checked by making `activateSection` force-reset Plan's fold on landing.
+  `bridge-chart.test.ts`'s `openAnalyzeTab` helper clicked a `[data-tab="analyze"]` that no
+  longer exists (Analysis isn't folded by default, so nothing needs opening) and its one
+  assertion read `#analyzeSummary` (also gone) -- renamed to `openRetirementPage`, dropped the
+  click, and switched the assertion to reading tile text out of `#summaryTiles`.

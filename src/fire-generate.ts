@@ -422,7 +422,7 @@ export interface CheckResult {
   // Null when no crossover widget's selection could be used, i.e. fallbackAnnualSpend was used instead.
   spendBasis: string | null
   inflationMean: number
-  driftFindings: Finding[]
+  staleFindings: Finding[]
   bridgeFindings: Finding[]
   // The full simulation behind bridgeFindings, one entry per retirement age in the same order --
   // bridgeFindings is prose derived from these; this is what the client charts the burndown from.
@@ -497,7 +497,7 @@ export async function checkDashboard(
     // same incomplete-config error clearly if the person tries it.
   }
 
-  const driftFindings: Finding[] =
+  const staleFindings: Finding[] =
     monteCarloMetas.length === 0
       ? [
           {
@@ -561,7 +561,7 @@ export async function checkDashboard(
     annualSpend,
     spendBasis,
     inflationMean,
-    driftFindings,
+    staleFindings,
     bridgeFindings,
     bridgeResults,
     portfolioAccountCount: portfolioIds.length,

@@ -316,7 +316,7 @@ describe("GET /api/retirement/check", () => {
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
     expect(body.monteCarloWidgetCount).toBe(0)
-    expect(body.driftFindings[0]?.title).toContain("No Monte Carlo widgets")
+    expect(body.staleFindings[0]?.title).toContain("No Monte Carlo widgets")
   })
 
   it("reports the same portfolio total, Rule of 55 boosts, and debt payoffs Generate's own result carries", async () => {
@@ -388,7 +388,7 @@ describe("GET /api/retirement/check", () => {
     const res = await fetch(`${url}api/retirement/check`)
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
-    const titles = body.driftFindings.map((f) => f.title)
+    const titles = body.staleFindings.map((f) => f.title)
     expect(titles).toContain('No live Monte Carlo widget named "Monte Carlo — Retire at 50" yet.')
     expect(titles).toContain('No live Monte Carlo widget named "Monte Carlo — Retire at 51" yet.')
     expect(titles).toContain('"Monte Carlo" is on the live dashboard but no longer matches a configured retirement age.')

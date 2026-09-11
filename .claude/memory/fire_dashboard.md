@@ -361,11 +361,11 @@ build-time probe that fails the build if the base image's Node is too old to
 strip types (the alternative is a baffling syntax error at run time).
 
 **Two container gotchas, both hit for real and both now behind env vars in
-.envrc**: `ACTUAL_DATA_DIR`, because a relative bind-mount path in compose
+.envrc**: `AB_DATA_DIR`, because a relative bind-mount path in compose
 resolves against the *daemon's host* -- inside the sandbox the repo is
 /workspace but the host knows it as /volume1/workspace/projects/actual-tools,
 so `./data` named a directory the daemon could not see ("Bind mount failed").
-And `ACTUAL_HOST_ALIAS`, because a bridge-network container resolved
+And `AB_HOST_ALIAS`, because a bridge-network container resolved
 `tartalenas.local` to the NAS's LAN address 10.0.1.3 and then could not reach
 it -- every request hung to timeout and surfaced as a bare "fetch failed".
 Mapping that hostname to `host-gateway` fixes it while keeping port mapping,

@@ -132,6 +132,7 @@ async function patchPlan(partial, savedFlagId) {
     clearError()
     render()
     flashSaved(savedFlagId)
+    scheduleRecheck()
   } catch (error) {
     showError(error.message)
   }
@@ -142,6 +143,7 @@ async function patchAccount(id, partial) {
     STATE = await api(`/api/retirement/accounts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(partial) })
     clearError()
     render()
+    scheduleRecheck()
   } catch (error) {
     showError(error.message)
   }
@@ -152,6 +154,7 @@ async function reorderAccounts(orderedIds) {
     STATE = await api("/api/retirement/accounts/order", { method: "PATCH", body: JSON.stringify({ orderedIds }) })
     clearError()
     render()
+    scheduleRecheck()
   } catch (error) {
     showError(error.message)
   }
@@ -177,11 +180,9 @@ function render() {
 }
 
 function renderSummary() {
-  const portfolioTotal = STATE.accounts.filter((a) => a.isPortfolio).reduce((sum, a) => sum + a.balance, 0)
-  document.getElementById("sumPortfolio").innerHTML = moneySpan(portfolioTotal)
-  document.getElementById("sumAge").textContent = STATE.currentAge ?? "—"
-  document.getElementById("sumAges").textContent = STATE.dashboard.retirementAges.length ? STATE.dashboard.retirementAges.join(", ") : "—"
-  document.getElementById("sumPlanToAge").textContent = STATE.dashboard.planToAge
+  const portfolioAccounts = STATE.accounts.filter((a) => a.isPortfolio)
+  const portfolioTotal = portfolioAccounts.reduce((sum, a) => sum + a.balance, 0)
+  document.getElementById("sumPortfolio").innerHTML = `${moneySpan(portfolioTotal)} <span class="tile-note">(${portfolioAccounts.length} account${portfolioAccounts.length === 1 ? "" : "s"})</span>`
   document.getElementById("accountCountHint").textContent = `${STATE.accounts.length} open accounts`
 }
 
@@ -352,13 +353,23 @@ function renderLiveSettings(settings) {
 }
 
 async function loadLiveSettings() {
-  const btn = document.getElementById("refreshLiveSettingsBtn")
-  btn.disabled = true
   try {
     LIVE_SETTINGS = await api("/api/retirement/live-settings")
     renderLiveSettings(LIVE_SETTINGS)
   } catch (error) {
     document.getElementById("liveSettings").innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+  }
+}
+
+// The one Refresh button (top of page, beside Expand/Collapse all) pulls fresh data for the whole
+// page at once -- the summary tiles/Stale/Analysis (runCheck) and "Configured in the Actual
+// Dashboard" (loadLiveSettings) used to be two separate buttons each scoped to its own card; see
+// scheduleRecheck for why editing a field no longer needs this button pressed to see the effect.
+async function refreshAll() {
+  const btn = document.getElementById("refreshBtn")
+  btn.disabled = true
+  try {
+    await Promise.all([runCheck(), loadLiveSettings()])
   } finally {
     btn.disabled = false
   }
@@ -985,34 +996,41 @@ function renderFinding(finding) {
   return div
 }
 
-// Function to render the "Current numbers" box: the same at-a-glance figures Generate's own result
-// reports (portfolio total, spend and its basis, any Rule of 55/debt-payoff adjustment already
-// baked into every projection) minus the download-specific lines (the file name, the import steps)
-// that belong only to the act of generating, not to reading these numbers.
-function renderAnalyzeSummary(result) {
-  const boostLines = result.ruleOf55Boosts
-    .map((b) => `<div class="line boost">Rule of 55 applied: ${escapeHtml(b.accountName)} accessible from age ${b.to} (was ${b.from ?? "none"}).</div>`)
-    .join("")
-  const debtPayoffLines = result.debtPayoffs
-    .map((d) => `<div class="line boost">Spending reduced by ${moneySpan(d.monthlyAmount)}/mo once ${escapeHtml(d.accountName)} is paid off at age ${d.payoffAge}.</div>`)
-    .join("")
-  return `
-    <div class="line">Portfolio accounts (${result.portfolioAccountCount}): current total ${moneySpan(result.portfolioTotal)}</div>
-    <div class="line">Spend: ${moneySpan(result.annualSpend)}/yr${result.spendBasis ? ` (from your crossover widget's own selection: ${escapeHtml(result.spendBasis)})` : " (trailing 12 months, every category — no live crossover selection to narrow it yet)"}</div>
-    ${boostLines}
-    ${debtPayoffLines}`
+// Function to add the Spend/Rule of 55/debt-payoff tiles to the summary row once
+// /api/retirement/check resolves -- the same at-a-glance figures Generate's own result reports,
+// minus the download-specific lines (the file name, the import steps) that belong only to the act
+// of generating, and minus the prose ("from your own crossover widget's selection...") in favor of
+// plain label/number tiles matching Portfolio's own. Removes and replaces any tiles a previous call
+// added, rather than appending onto them, so a Refresh (or an auto re-check) doesn't pile up stale
+// copies alongside fresh ones.
+function renderSummaryStats(result) {
+  const container = document.getElementById("summaryTiles")
+  container.querySelectorAll(".tile-dynamic").forEach((el) => el.remove())
+  const tiles = [{ label: "Spend", value: `${moneySpan(result.annualSpend)}/yr` }]
+  result.ruleOf55Boosts.forEach((b) => {
+    tiles.push({ label: escapeHtml(b.accountName), value: `Rule of 55, age ${b.to}` })
+  })
+  result.debtPayoffs.forEach((d) => {
+    tiles.push({ label: escapeHtml(d.accountName), value: `${moneySpan(d.monthlyAmount)}/mo, paid off at ${d.payoffAge}` })
+  })
+  tiles.forEach((t) => {
+    const div = document.createElement("div")
+    div.className = "tile tile-dynamic"
+    div.innerHTML = `<div class="label">${t.label}</div><div class="value num">${t.value}</div>`
+    container.appendChild(div)
+  })
 }
 
-// Function to render the Drift findings-group into the Generate dashboard card: whether the
-// dashboard actually imported into Actual has fallen out of sync with what generating right now
-// would produce is exactly the reason to click that card's own button, so it leads there instead of
-// sitting in Analysis next to the unrelated Bridge simulation.
-function renderDriftResult(findings) {
-  const container = document.getElementById("driftResult")
-  // Nothing at all when there's nothing to say -- no drift is the ordinary, expected state, not
-  // something worth a line of its own next to a button whose whole point is fixing drift when it
-  // exists.
+// Function to render the Stale findings-group -- whether the dashboard actually imported into
+// Actual (or the tiles above, on this page) has fallen out of sync with what re-checking right now
+// finds is exactly the reason this sits at the very top of the page, rather than off in Analysis
+// next to the unrelated Bridge simulation, or buried under a card someone could leave collapsed.
+function renderStaleResult(findings) {
+  const container = document.getElementById("staleResult")
   container.innerHTML = ""
+  // Hidden, not just empty -- nothing stale is the ordinary, expected state, not something worth a
+  // visible-but-blank card.
+  container.hidden = findings.length === 0
   if (findings.length === 0) {
     return
   }
@@ -1023,23 +1041,27 @@ function renderDriftResult(findings) {
 }
 
 // Centered spinner + label, sized by whichever container it's placed in (min-height: inherit pulls
-// #analyzeSummary/#checkResult's own min-height -- see style.css) -- shown while either panel is
-// actually fetching, on the very first load and on every Refresh alike, so the panel is never left
-// showing stale content (or a tiny, differently-sized placeholder) while new data is on the way.
+// #checkResult's own min-height -- see style.css) -- shown while Analysis is actually fetching, on
+// the very first load and on every Refresh alike, so the panel is never left showing stale content
+// (or a tiny, differently-sized placeholder) while new data is on the way.
 const LOADING_MARKUP = `<div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Loading…</div>`
 
+// Guards against two overlapping runCheck() calls landing out of order -- a real risk now that a
+// plain field edit can trigger one (see scheduleRecheck) on top of the manual Refresh button and
+// the once-per-landing call on first opening the page. Only the response to the most recently
+// started call is ever applied; an older one that happens to resolve later is dropped instead of
+// briefly showing stale numbers over fresh ones.
+let checkRequestId = 0
+
 async function runCheck() {
+  const requestId = ++checkRequestId
   const container = document.getElementById("checkResult")
-  const summary = document.getElementById("analyzeSummary")
-  const drift = document.getElementById("driftResult")
-  const refreshBtn = document.getElementById("refreshAnalysisBtn")
-  refreshBtn.disabled = true
-  summary.innerHTML = LOADING_MARKUP
   container.innerHTML = LOADING_MARKUP
   try {
     const result = await api("/api/retirement/check")
-    summary.innerHTML = renderAnalyzeSummary(result)
-    renderDriftResult(result.driftFindings)
+    if (requestId !== checkRequestId) return
+    renderSummaryStats(result)
+    renderStaleResult(result.staleFindings)
     container.innerHTML = ""
     if (result.bridgeFindings.length === 0) {
       container.innerHTML = `<div class="empty-note">No findings.</div>`
@@ -1053,12 +1075,25 @@ async function runCheck() {
     result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
     container.appendChild(group)
   } catch (error) {
-    summary.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
-    drift.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+    if (requestId !== checkRequestId) return
     container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
-  } finally {
-    refreshBtn.disabled = false
+    showError(error.message, () => runCheck())
   }
+}
+
+// Function to schedule a re-check a beat after the most recent edit, rather than one right after
+// every single field -- an account's fields (or several plan fields in a row) tend to change in a
+// quick burst, and re-hitting /api/retirement/check after each keystroke's own change event would
+// both spam the endpoint and flash the summary tiles/Stale/Analysis through several intermediate
+// states before landing on the final one. Only patchPlan/patchAccount/reorderAccounts call this,
+// each after its own STATE update already succeeded -- not on a failed save.
+let recheckTimer = null
+function scheduleRecheck() {
+  if (recheckTimer) clearTimeout(recheckTimer)
+  recheckTimer = setTimeout(() => {
+    recheckTimer = null
+    runCheck()
+  }, 500)
 }
 
 function downloadFile(filename, content, mimeType) {
@@ -1081,9 +1116,9 @@ async function runGenerate() {
     const r = await api("/api/retirement/generate", { method: "POST" })
     const filename = r.outputPath.split("/").pop()
     downloadFile(filename, r.dashboardJson, "application/json")
-    // Portfolio total, spend, Rule of 55 boosts and debt payoffs are the same figures the
-    // permanent Current numbers box above already shows -- see renderAnalyzeSummary -- so this
-    // result only states what's actually new: the file this run produced and how to bring it in.
+    // Portfolio total, spend, Rule of 55 boosts and debt payoffs are the same figures the summary
+    // tiles above already show -- see renderSummaryStats -- so this result only states what's
+    // actually new: the file this run produced and how to bring it in.
     result.innerHTML = `
       <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span>.${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>
       <div class="import-steps">
@@ -1177,34 +1212,75 @@ document.getElementById("mcSimulationCount").addEventListener("change", (e) => {
   const count = e.target.value === "" ? null : parseInt(e.target.value, 10)
   runExclusive(() => patchPlan({ monteCarloSimulationCount: count === null || count <= 0 ? null : count }, "savedSimSettings"))
 })
-document.getElementById("refreshLiveSettingsBtn").addEventListener("click", loadLiveSettings)
-
 document.getElementById("generateBtn").addEventListener("click", runGenerate)
-document.getElementById("refreshAnalysisBtn").addEventListener("click", runCheck)
+document.getElementById("refreshBtn").addEventListener("click", refreshAll)
 
-// Function to switch the visible Configure/Analyze tab -- shared by the click handler below and
-// the on-load restoration further down, so a reload lands back on whichever tab was showing rather
-// than always resetting to Configure. Keyed off [data-tab] and scoped to this section's own panels,
-// NOT a bare .tab/.panel sweep: Budget's tabs share the .tab class for styling but carry
-// data-budget-tab instead, so a bare .tab selector matched them too and built
-// getElementById("panel-undefined") -- null, which threw. The throw landed halfway through, after
-// .active had already been stripped from every .panel on the page including this section's,
-// leaving Retirement blank once you switched back to it.
-function activateRetirementTab(name) {
-  document.querySelectorAll("[data-tab]").forEach((t) => t.classList.toggle("active", t.dataset.tab === name))
-  document.querySelectorAll("#page-retirement .panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + name))
+// --- Retirement page: foldable sections (was a Configure/Analyze tab bar) ---
+
+// The 6 foldable cards, in document order, each identified by its own data-section value. The
+// summary tiles and Stale (see #summaryTiles/#staleResult in index.html) sit above these, always
+// visible, not foldable -- they're "what's true right now," not a setting someone would want to
+// tuck away. Simulation settings and Retirement income default collapsed (set once, rarely
+// revisited); the rest default open. DEFAULT_COLLAPSED_SECTIONS is what a first-ever visit (no
+// cookie yet) applies; after that, saveSectionFolds keeps the cookie authoritative for every reload.
+const RETIREMENT_SECTIONS = ["plan", "simulation-settings", "retirement-income", "accounts", "analysis", "generate-dashboard"]
+const DEFAULT_COLLAPSED_SECTIONS = ["simulation-settings", "retirement-income"]
+
+// Function to fold or unfold one section -- shared by an individual card's own toggle and
+// Expand/Collapse all, so both always leave the caret, aria state, and body in step. Folding a
+// section only hides it; it never gates or re-triggers loading the data inside it (Analysis and the
+// always-visible summary tiles/Stale above all come from the one /api/retirement/check call
+// runCheck already makes on landing on this page, whether or not that particular card happens to be
+// open).
+function setSectionFolded(name, folded) {
+  const card = document.querySelector(`[data-section="${name}"]`)
+  if (!card) return
+  const toggle = card.querySelector(".card-fold-toggle")
+  toggle.setAttribute("aria-expanded", String(!folded))
+  toggle.textContent = folded ? "▶" : "▼"
+  card.querySelector(".card-fold").hidden = folded
 }
 
-document.querySelectorAll("[data-tab]").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    activateRetirementTab(tab.dataset.tab)
-    try {
-      setCookie("activeRetirementTab", tab.dataset.tab)
-    } catch {
-      // Cookies disabled -- the switch still works for this page view, it just won't be remembered.
-    }
-    if (tab.dataset.tab === "analyze") runCheck()
+// Function to persist exactly which sections are collapsed right now, the same per-browser-cookie
+// mechanism activeSection/activeRetirementTab already used -- see getCookie/setCookie's own doc
+// comment for why a cookie over e.g. localStorage.
+function saveSectionFolds() {
+  const collapsed = RETIREMENT_SECTIONS.filter((name) => document.querySelector(`[data-section="${name}"] .card-fold`)?.hidden)
+  try {
+    setCookie("retirementCollapsed", collapsed.join(","))
+  } catch {
+    // Cookies disabled -- folding still works for this page view, it just won't be remembered.
+  }
+}
+
+// Function to restore fold state on load -- an absent cookie (first-ever visit) applies
+// DEFAULT_COLLAPSED_SECTIONS; an empty saved cookie (everything was expanded) applies none, which
+// getCookie's own "" vs null distinction makes possible without a separate sentinel.
+function applySectionFolds() {
+  let collapsed = DEFAULT_COLLAPSED_SECTIONS
+  try {
+    const saved = getCookie("retirementCollapsed")
+    if (saved !== null) collapsed = saved === "" ? [] : saved.split(",")
+  } catch {
+    // Cookies disabled -- the hardcoded defaults above still apply for this page view.
+  }
+  RETIREMENT_SECTIONS.forEach((name) => setSectionFolded(name, collapsed.includes(name)))
+}
+
+document.querySelectorAll(".card-fold-toggle").forEach((toggle) => {
+  toggle.addEventListener("click", () => {
+    const card = toggle.closest("[data-section]")
+    setSectionFolded(card.dataset.section, !card.querySelector(".card-fold").hidden)
+    saveSectionFolds()
   })
+})
+document.getElementById("expandAllBtn").addEventListener("click", () => {
+  RETIREMENT_SECTIONS.forEach((name) => setSectionFolded(name, false))
+  saveSectionFolds()
+})
+document.getElementById("collapseAllBtn").addEventListener("click", () => {
+  RETIREMENT_SECTIONS.forEach((name) => setSectionFolded(name, true))
+  saveSectionFolds()
 })
 
 // --- Section switching (the sidebar's Budget/Retirement nav) ---
@@ -1220,14 +1296,20 @@ function activateSection(name) {
     if (!PICKER.table) loadPickerTable()
   }
   // Mirrors the budget branch above: only fires when Retirement is actually the section being
-  // landed on (never unconditionally at boot, which would cost a real network call on every load
-  // regardless of which section a person actually opens), and only when Analyze is the tab already
-  // restored onto it -- activateRetirementTab has to run before this, at boot, for that class check
-  // to reflect the real restored tab rather than whatever the static HTML happened to mark active.
-  if (name === "retirement" && document.getElementById("panel-analyze").classList.contains("active")) {
+  // landed on, never unconditionally at boot (which would cost a real network call on every load
+  // regardless of which section a person actually opens). No tab to gate on any more -- Current
+  // numbers/Stale sit above the fold entirely, and Analysis is just a card on this page now, folded
+  // or not.
+  if (name === "retirement" && !retirementChecked) {
+    retirementChecked = true
     runCheck()
   }
 }
+// Set the moment runCheck is actually called for the page's own boot-time landing, not on every
+// later re-entry into the Retirement section within the same page view -- Refresh (or a real edit
+// that re-runs it) covers those; activateSection itself must not re-fetch just because someone
+// clicked away to Budget and back.
+let retirementChecked = false
 
 document.querySelectorAll(".section-item[data-section]").forEach((item) => {
   item.addEventListener("click", () => {
@@ -2144,13 +2226,7 @@ loadLiveSettings()
 // open on.
 applySelectedAction()
 
-try {
-  const savedTab = getCookie("activeRetirementTab")
-  const knownTabs = [...document.querySelectorAll("[data-tab]")].map((t) => t.dataset.tab)
-  activateRetirementTab(knownTabs.includes(savedTab) ? savedTab : "configure")
-} catch {
-  activateRetirementTab("configure")
-}
+applySectionFolds()
 
 try {
   const savedSection = getCookie("activeSection")

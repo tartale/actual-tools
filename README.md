@@ -182,13 +182,13 @@ holding the port, so it doesn't matter which way it was started.
 Two things about running the container that are worth knowing before they
 bite:
 
-- **`ACTUAL_DATA_DIR`** — `config.json` lives in a mounted directory
+- **`AB_DATA_DIR`** — `config.json` lives in a mounted directory
   (`./data`), and a relative path there resolves against the *docker
   daemon's host*, not against wherever compose was run from. Those differ
   whenever the daemon is remote or the repo is reached through a container,
   and the symptom is `Bind mount failed: '…' does not exist`. Set this to
   the host's own absolute path in that case.
-- **`ACTUAL_HOST_ALIAS`** — a container on the bridge network often can't
+- **`AB_HOST_ALIAS`** — a container on the bridge network often can't
   reach the host's LAN address even though it resolves; requests just hang
   and surface as a bare `fetch failed`. Set this to the hostname in
   `AB_BASE_URL` and compose maps it to `host-gateway`, which routes back
@@ -369,14 +369,37 @@ immediately** — there is no dry-run checkbox here, unlike the CLI's `-n`.
 The preview is the Find run itself: nothing can be tagged until a Find has
 flagged it, and what will be tagged is already boxed in the grid.
 
-### Retirement — Configure tab
+### Retirement
+
+One flat page, not a set of tabs: **Plan**, **Simulation settings**,
+**Retirement income**, **Accounts**, **Analysis**, and **Generate
+dashboard** are foldable cards, opened or closed independently, with an
+**Expand all**/**Collapse all** control and a single **Refresh** button
+above them — Refresh re-runs everything on the page in one request (the
+same `/api/retirement/check` call every card below reads from, plus
+reloading "Configured in the Actual Dashboard"), rather than each card
+needing its own. Editing a field also re-runs that same check on its own,
+a beat after you stop typing — Current numbers, Stale, and Analysis stay
+live as you work, not just after an explicit Refresh. Each card's fold
+state is remembered per browser across a reload, via a cookie, the same
+way which of Budget/Retirement was open already was.
+
+At the very top, above every card: a row of tiles — **Portfolio** (current
+total, with the number of accounts behind it) is always there; **Spend**
+and, once they apply, a tile per **Rule of 55** boost and per **debt
+payoff** fill in as soon as the page's own check resolves. A **Stale**
+card appears right below the tiles — only when there actually is
+something stale, never a placeholder saying there isn't — flagging
+anything about the dashboard actually imported into Actual (or these very
+tiles) that no longer matches what regenerating right now would produce;
+see "Check" further below for exactly what it looks at.
 
 The first time you open the page with nothing imported into Actual yet, a
 **"Getting started"** banner walks through four steps end to end: fill in
-Plan/Accounts here → Analyze tab → Download dashboard → import it into
-Actual via Reports → new page → "…" menu → Import → **open the crossover
-widget on that page and narrow its account/category checklist down to
-what should actually count** (it starts out covering everything
+Plan/Accounts here → scroll to **Generate dashboard** → Download dashboard
+→ import it into Actual via Reports → new page → "…" menu → Import →
+**open the crossover widget on that page and narrow its account/category
+checklist down to what should actually count** (it starts out covering everything
 non-income, which is rarely right — and matters beyond just that one
 widget, since the Monte Carlo widget's own spend figure is read back from
 that same selection on every future regenerate, not recalculated
@@ -411,18 +434,17 @@ figure on the page (an Actual-style privacy toggle) — handy before
 sharing a screen; it's a per-browser display preference, not saved to
 `config.json`.
 
-**Configured in the Actual Dashboard** (below Plan, its own Refresh
-button): a read-only snapshot of whatever's actually live on your
-imported "FIRE" page right now, split into its own **Crossover** and
-**Simulation** sections (safe withdrawal rate/projection type/estimated
-return for the former; withdrawal strategy, tax model, withdrawal rule,
-inflation, and everything else this app deliberately doesn't let you edit
-directly for the latter — see "Regenerating preserves customizations"
-below). A field also set in **Simulation settings** shows its value in
-purple — hover it to highlight the matching input down in Simulation
-settings, so it's obvious where to go change it. If the live value here
-doesn't match what you configured, Analyze → Check will flag it as
-needing a regenerate/re-import.
+**Configured in the Actual Dashboard** (below Plan): a read-only snapshot
+of whatever's actually live on your imported "FIRE" page right now, split
+into its own **Crossover** and **Simulation** sections (safe withdrawal
+rate/projection type/estimated return for the former; withdrawal
+strategy, tax model, withdrawal rule, inflation, and everything else this
+app deliberately doesn't let you edit directly for the latter — see
+"Regenerating preserves customizations" below). A field also set in
+**Simulation settings** shows its value in purple — hover it to highlight
+the matching input down in Simulation settings, so it's obvious where to
+go change it. If the live value here doesn't match what you configured,
+Check will flag it as Stale, needing a regenerate/re-import.
 
 **Simulation settings** (optional): withdrawal strategy, return model, tax
 model, inflation (mean/std dev), minimum withdrawal, and simulation
@@ -547,7 +569,7 @@ modeled here) can be withdrawn tax- and penalty-free at any age, before
 touching earnings — unlike every other account here, and unlike a Roth
 401(k)/403(b) pre-rollover, which has no such rule. Entering your
 cumulative contributions splits that amount out as always-accessible for
-the Analyze tab's **Bridge** check, clamped to the account's live balance
+the **Bridge** check (in Analysis, below), clamped to the account's live balance
 (a market drop can leave less in the account than you've contributed).
 **This only affects Bridge, not the generated Monte Carlo widget** — Actual's
 own pot format has no way to give one account two different access ages
@@ -572,20 +594,6 @@ look are a Traditional/Roth IRA vs. its 401(k)-family counterpart, and an
 inherited IRA (matched by "BDA"/"beneficiary"/"inherited" in the name).
 Editing any field on a migrated account writes the current shape, dropping
 the old category field for that account.
-
-### Retirement — Analyze tab
-
-**Current numbers** — a permanent box, first on the tab, always populated
-as soon as it opens: current portfolio total, the annual spend figure and
-its basis (the live crossover widget's own category selection, once one
-exists), and any Rule of 55 / debt-payoff adjustment already baked into
-every projection below. This used to be visible only as a side effect of
-clicking **Download dashboard**, which also writes a file and triggers a
-browser download every time — reading these numbers no longer requires
-either. Its **Refresh** button re-runs the one `/api/retirement/check` call
-every panel on this tab is built from, so it updates Current numbers, the
-Drift findings in Generate dashboard below, and Analysis together — never
-just one of the three.
 
 **Generate dashboard** builds the same widgets `./actual reports fire`
 used to (a full-width net-worth widget, a safe-withdrawal-rate "crossover"
@@ -612,7 +620,7 @@ selection exists to read back. The crossover widget's own **Target Income
 its own projection (multiplying the expense figure, never the raw historical
 data it's charted against) — so setting it to 90% lowers this app's own
 spend assumption by the same 10%, everywhere that figure is used (Monte
-Carlo, Bridge, the Current numbers box below), rather than only affecting
+Carlo, Bridge, the Spend tile above), rather than only affecting
 Actual's own crossover chart. A residual difference from the crossover
 widget's *own displayed number* can still remain — its projection type
 (Hampel/median/mean) applies its own statistical smoothing on top of the
@@ -674,9 +682,9 @@ behind your Actual HTTP API's experimental-operations setting; a clear
 message appears if it's off), so it sees whatever you've actually been
 editing in the app. Two things get checked:
 
-- **Drift** — shown at the top of the **Generate dashboard** card itself
-  (silent when there's none — no "no drift" line to read past), since
-  regenerating is the fix for every finding here. Checks a widget's stored
+- **Stale** — shown at the very top of the page, right below the tiles
+  (silent when there's nothing stale — no "nothing's stale" line to read
+  past), since regenerating is the fix for every finding here. Checks a widget's stored
   access ages against what your current config would generate, accounts
   the crossover counts that the simulation doesn't model (or vice versa),
   any **Simulation settings** field you've pinned that isn't live on every
@@ -711,8 +719,8 @@ editing in the app. Two things get checked:
   that funds the whole plan gets neither. This chart cannot live in
   Actual's own dashboard — every one of Actual's widget types (checked
   against upstream, not guessed) is a query over your ledger, with no
-  slot for a projected series like this one, so it stays here on the
-  Analyze tab. A scenario that never depletes is only drawn 20 years past
+  slot for a projected series like this one, so it stays here, in the
+  Analysis card. A scenario that never depletes is only drawn 20 years past
   its own retirement age, not all the way to the end of the plan: a
   portfolio whose growth outpaces its spending can compound to genuinely
   enormous nominal figures over a 40+ year horizon, which would swamp the
@@ -777,8 +785,8 @@ src/                     TypeScript sources and their tests
   cli-format.ts          shared TypeScript help-text formatting
   fire-accounts.ts       account types/classification (heuristics + config.json overrides) and the FireConfig schema
   fire-dashboard.ts      builds Actual-native dashboard widget JSON (vendored widget types) + generated/existing-file merge
-  fire-analysis.ts       pure bridge-projection and drift/mismatch-finding logic behind the Analyze tab's Check
-  fire-generate.ts       generateDashboard/checkDashboard -- the non-CLI logic behind the Analyze tab
+  fire-analysis.ts       pure bridge-projection and stale/mismatch-finding logic behind Retirement's own Check
+  fire-generate.ts       generateDashboard/checkDashboard -- the non-CLI logic behind the Retirement page
   irs-limits.ts          loads irs-limits.json, the IRS contribution limits reference file
   app-server.ts          the companion app's node:http server, routes namespaced under /api/retirement/
   app-ui/                the companion app's static page (plain HTML/CSS/vanilla JS, no build step)

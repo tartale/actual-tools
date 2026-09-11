@@ -56,10 +56,10 @@ function buildUsage() {
   echo "With no subcommand, type-checks the TypeScript sources." >&2
   echo >&2
   cliSection "Subcommands" \
-    "image" "Build the container image the service runs (tags actual-tools:latest)."
+    "image" "Build the container image the service runs (tags actual-tools:local)."
   echo >&2
   cliSection "Options (image)" \
-    "-t, --tag TAG" "Tag to apply instead of actual-tools:latest." \
+    "-t, --tag TAG" "Tag to apply instead of actual-tools:local." \
     "--platform P" "Build for this platform instead of the host's."
   exit "${exitCode}"
 }
@@ -150,7 +150,7 @@ function commandBuild() {
 function buildImage() {
   requireDocker
 
-  local tag="actual-tools:latest"
+  local tag="actual-tools:local"
   local platformArgs=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -324,20 +324,28 @@ function serviceStart() {
     exec node --watch ./src/app.ts --port "${port}" "${passthrough[@]}"
   fi
 
+  # Only --dev has anywhere to forward an option like --no-open to (app.ts itself, above); outside
+  # --dev those were silently collected and then never used at all, so a typo'd flag looked accepted
+  # and just did nothing instead of failing.
+  if [[ ${#passthrough[@]} -gt 0 ]]; then
+    echo "Unknown option: ${passthrough[0]}" >&2
+    serviceUsage
+  fi
+
   requireDocker
-  if ! docker image inspect actual-tools:latest &> /dev/null; then
-    echo "No actual-tools:latest image yet; build it with './actual build image'." >&2
+  if ! docker image inspect actual-tools:local &> /dev/null; then
+    echo "No actual-tools:local image yet; build it with './actual build image'." >&2
     exit 1
   fi
   # config.json is written here, so the directory has to exist before the mount does: docker would
   # otherwise create it as root and the app could not write into it. Only for the default location --
-  # an ACTUAL_DATA_DIR pointing at the daemon's host may well not be a path this side can create, and
+  # an AB_DATA_DIR pointing at the daemon's host may well not be a path this side can create, and
   # silently making a local directory of that name would hide the real problem rather than fix it.
-  if [[ -z "${ACTUAL_DATA_DIR:-}" ]]; then
+  if [[ -z "${AB_DATA_DIR:-}" ]]; then
     mkdir -p "${THIS_SCRIPT_DIR}/data"
   fi
   # Published port only; inside the container it is always 4247. See compose.yaml.
-  ACTUAL_PORT="${port}" docker compose up -d
+  AB_PORT="${port}" docker compose up -d
   echo
   serviceStatus --port "${port}"
 }

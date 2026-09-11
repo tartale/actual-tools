@@ -362,24 +362,23 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
     expect(await state()).toMatchObject({ checked: false, indeterminate: false, selected: 0 })
   }, 60000)
 
-  it("switches between sections without disturbing Retirement's own tabs", async () => {
-    // Regression: the Retirement tab handler used to select on the bare .tab class and deactivate
-    // every .panel on the page. Budget no longer has tabs of its own for that to collide with, but
-    // the handler stays scoped to [data-tab] and its own section's panels, and moving between
-    // sections must still leave the tab state it finds alone.
+  it("switches between sections without disturbing Retirement's own fold state", async () => {
+    // Regression, updated for the Configure/Analyze tab merge: Retirement's own state used to be
+    // which tab was active; it's now which cards are folded. The same risk applies either way --
+    // navigating to Budget and back must leave it exactly as it was, not reset to the defaults.
     const { page: ui, errors } = await openBudgetPage()
-    const activePanels = () => ui.evaluate(() => [...document.querySelectorAll(".panel.active")].map((p) => p.id).sort())
-
-    expect(await activePanels()).toEqual(["panel-configure"])
     await ui.locator('.section-item[data-section="retirement"]').click()
     expect(await ui.evaluate(() => document.getElementById("page-retirement")?.classList.contains("active"))).toBe(true)
 
-    await ui.locator('[data-tab="analyze"]').click()
-    expect(await activePanels()).toEqual(["panel-analyze"])
+    // Plan starts expanded by default -- fold it.
+    await ui.locator('[data-section="plan"] .card-fold-toggle').click()
+    expect(await ui.evaluate(() => (document.querySelector('[data-section="plan"] .card-fold') as HTMLElement).hidden)).toBe(true)
+
     await ui.locator('.section-item[data-section="budget"]').click()
     expect(await ui.evaluate(() => document.getElementById("page-budget")?.classList.contains("active"))).toBe(true)
-    // Retirement's own tab choice survives the trip through another section.
-    expect(await activePanels()).toEqual(["panel-analyze"])
+    await ui.locator('.section-item[data-section="retirement"]').click()
+    // Plan's fold survives the round trip through another section.
+    expect(await ui.evaluate(() => (document.querySelector('[data-section="plan"] .card-fold') as HTMLElement).hidden)).toBe(true)
     expect(errors).toEqual([])
   }, 60000)
 

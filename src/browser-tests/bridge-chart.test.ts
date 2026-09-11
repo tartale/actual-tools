@@ -10,7 +10,7 @@ import { startAppServer } from "../app-server.ts"
 import type { RunningServer } from "../app-server.ts"
 import type { ActualConfig } from "../actual-helpers.ts"
 
-// Browser-driven tests for the bridge burndown chart on the Retirement -> Analyze tab. Route tests
+// Browser-driven tests for the bridge burndown chart on the Retirement page's Analysis card. Route tests
 // already cover simulateBridge's own math (fire-analysis.test.ts) and that /api/retirement/check
 // carries bridgeResults over the wire (app-server.test.ts); what neither reaches is whether the
 // chart built from that response actually draws the right lines, markers, and legend -- the same
@@ -117,10 +117,11 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-// Opens the real Analyze tab against a real server with the plan above already set (via the same
+// Opens the Retirement page against a real server with the plan above already set (via the same
 // PATCH route the app's own Plan card uses), waits for the chart to render, and fails the test on
-// any uncaught page error.
-async function openAnalyzeTab(retirementAges: number[]): Promise<{ page: Page; errors: string[] }> {
+// any uncaught page error. No tab to open any more -- Analysis is just a card on the one flat page,
+// not folded by default, so runCheck's own result (fired once on landing) is already visible.
+async function openRetirementPage(retirementAges: number[]): Promise<{ page: Page; errors: string[] }> {
   vi.stubGlobal("fetch", mockActualFetch())
   server = await startAppServer({
     actualConfig,
@@ -140,23 +141,24 @@ async function openAnalyzeTab(retirementAges: number[]): Promise<{ page: Page; e
   opened.on("pageerror", (error) => errors.push(error.message))
   await opened.goto(server.url)
   await opened.locator('.section-item[data-section="retirement"]').click()
-  await opened.locator('[data-tab="analyze"]').click()
   await opened.waitForSelector("#checkResult .finding, #checkResult .empty-note", { timeout: 20000 })
   return { page: opened, errors }
 }
 
 describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
-  it("shows the Current numbers box on load, without ever claiming withdrawals are taxed", async () => {
+  it("shows the summary tiles on load, without ever claiming withdrawals are taxed", async () => {
     // Regression: "withdrawals taxed" used to sit in the Bridge group's own label, but the tax rate
     // is per-account (0% for a Roth or HSA, 22%/15% otherwise) -- a blanket claim overstated it for
     // any portfolio with tax-free money in it.
-    const { page: ui, errors } = await openAnalyzeTab([50])
+    const { page: ui, errors } = await openRetirementPage([50])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
 
-    const summary = await ui.evaluate(() => document.getElementById("analyzeSummary")?.textContent ?? "")
-    expect(summary).toContain("Portfolio accounts (2)")
-    expect(summary).toMatch(/\$2,040,000\.00/)
-    expect(summary).toContain("Spend")
+    const tiles = await ui.evaluate(() =>
+      [...document.querySelectorAll("#summaryTiles .tile")].map((t) => t.textContent ?? ""),
+    )
+    expect(tiles.some((t) => t.includes("(2 accounts)"))).toBe(true)
+    expect(tiles.some((t) => /\$2,040,000\.00/.test(t))).toBe(true)
+    expect(tiles.some((t) => t.includes("Spend"))).toBe(true)
 
     expect(await ui.evaluate(() => document.body.textContent ?? "")).not.toContain("withdrawals taxed")
     expect(errors).toEqual([])
@@ -164,7 +166,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
 
 
   it("draws a critical marker and an unlock reference line for a scenario that depletes", async () => {
-    const { page: ui, errors } = await openAnalyzeTab([50])
+    const { page: ui, errors } = await openRetirementPage([50])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
 
     const chart = await ui.evaluate(() => {
@@ -187,9 +189,9 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     expect(chart.endLabel).toMatch(/^depletes \d+$/)
     expect(chart.dashedLines).toBe(1)
 
-    // Matches the prose finding right below it -- same age, same run, told two ways. The Drift
-    // group renders its own .finding elements above this one, so the Bridge group has to be found
-    // by its own label rather than taking the first .finding on the page.
+    // Matches the prose finding right below it -- same age, same run, told two ways. The Stale
+    // group (if there is one) renders its own .finding elements above this one, so the Bridge group
+    // has to be found by its own label rather than taking the first .finding on the page.
     const findingText = await ui.evaluate(() => {
       const group = [...document.querySelectorAll(".findings-group")].find((g) => g.querySelector(".group-label")?.textContent?.startsWith("Bridge"))
       return group?.querySelector(".finding .title")?.textContent
@@ -200,7 +202,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
   }, 60000)
 
   it("draws a plain, unmarked line for a scenario that funds through the plan", async () => {
-    const { page: ui, errors } = await openAnalyzeTab([65])
+    const { page: ui, errors } = await openRetirementPage([65])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
 
     const chart = await ui.evaluate(() => {
@@ -226,7 +228,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
   }, 60000)
 
   it("compares two retirement ages on one chart, with a legend and independent lines", async () => {
-    const { page: ui, errors } = await openAnalyzeTab([50, 65])
+    const { page: ui, errors } = await openRetirementPage([50, 65])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
 
     const chart = await ui.evaluate(() => {
@@ -296,7 +298,6 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     opened.on("pageerror", (error) => errors.push(error.message))
     await opened.goto(server.url)
     await opened.locator('.section-item[data-section="retirement"]').click()
-    await opened.locator('[data-tab="analyze"]').click()
     await opened.waitForSelector("#checkResult .finding, #checkResult .empty-note", { timeout: 20000 })
     await opened.waitForTimeout(200)
 

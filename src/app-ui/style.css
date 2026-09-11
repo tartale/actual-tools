@@ -147,15 +147,24 @@ main { padding: 0 40px 56px; max-width: 1360px; }
 h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color: var(--ink-strong); text-wrap: balance; }
 .page-head p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12.5px; max-width: 48ch; }
 
-.summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 20px; }
+/* auto-fit rather than a fixed 4 columns -- Portfolio is the only tile always present; Spend and
+   any Rule of 55/debt-payoff tiles (see renderSummaryStats in app.js) are added once
+   /api/retirement/check resolves, and that's a variable count, not always 4. */
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 20px; }
 .summary .tile { background: var(--surface); padding: 11px 14px; }
 .summary .tile .label { font-size: 10px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); }
 .summary .tile .value { font-size: 17px; font-weight: 600; margin-top: 2px; color: var(--ink-strong); }
+.summary .tile .tile-note { font-size: 12px; font-weight: 400; color: var(--ink-faint); }
 
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); margin-bottom: 20px; }
-.tab { padding: 8px 2px; margin-right: 20px; font-size: 13px; font-weight: 500; color: var(--ink-faint); border-bottom: 2px solid transparent; cursor: pointer; user-select: none; background: none; border-top: none; border-left: none; border-right: none; font-family: inherit; }
-.tab.active { color: var(--ink-strong); border-bottom-color: var(--accent); }
-.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The Retirement page's own foldable-section controls -- was a Configure/Analyze tab bar (.tabs/
+   .tab, since removed: nothing else in the app used them). Expand/Collapse all sit where the tab
+   bar used to, right-aligned like the summary tiles above them. */
+.section-fold-controls { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 16px; }
+/* The caret + <h2> group, so .card-head's own space-between still has exactly two children -- this
+   group on the left, whatever hint/button a card already had on the right, untouched. */
+.card-head-title { display: flex; align-items: center; gap: 8px; }
+.card-fold-toggle { background: none; border: none; color: var(--ink-soft); font-size: 12px; line-height: 1; padding: 0; cursor: pointer; flex: none; }
+.card-fold-toggle:hover { color: var(--ink-strong); }
 
 .panel { display: none; }
 .panel.active { display: block; }
@@ -183,7 +192,7 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .input-affix.suffix-percent::after { content: "%"; right: 9px; }
 .input-affix.suffix-percent input { padding-right: 22px; }
 .input-affix:has(input:disabled)::before, .input-affix:has(input:disabled)::after { opacity: 0.5; }
-.field input:focus, select:focus, .toggle:focus-visible, .tab:focus-visible, .btn:focus-visible {
+.field input:focus, select:focus, .toggle:focus-visible, .btn:focus-visible {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
 }
 .field .derived, .acct-fields > .derived, .employer-block > .derived { font-size: 11px; color: var(--ink-faint); margin-top: 5px; grid-column: 1 / -1; }
@@ -207,8 +216,12 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .employer-block .field.full { grid-column: 1 / -1; }
 .employer-block.inactive { opacity: 0.55; }
 .radio-row { display: flex; gap: 16px; align-items: center; height: 100%; padding-top: 2px; }
-.saved-flag { font-size: 10.5px; color: var(--ok); opacity: 0; transition: opacity 0.3s; margin-left: 6px; }
-.saved-flag.show { opacity: 1; }
+/* display:none rather than opacity:0 -- an invisible-but-still-laid-out flag was reserving its own
+   width even at rest, throwing off the right edge of whichever card-head hint sat next to it (see
+   the sections whose hint has one vs. doesn't). Trades away the fade transition for hints that are
+   actually flush right in every state, not just the "shown" one. */
+.saved-flag { font-size: 10.5px; color: var(--ok); display: none; margin-left: 6px; }
+.saved-flag.show { display: inline; }
 .error-flag { font-size: 10.5px; color: var(--fail); margin-top: 5px; }
 
 .reorder-hint { padding: 0 16px 10px; }
@@ -294,22 +307,13 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 
 .gen-result { padding: 14px 16px; border-top: 1px solid var(--line-soft); }
 .gen-result[hidden] { display: none; }
-/* Standalone rather than scoped under .gen-result: the same "Portfolio accounts.../Spend.../Rule of
-   55 applied..." lines also appear in the always-visible Current numbers box above Generate, which
-   is plain .card-body content with no result panel of its own to scope under. */
 .line { font-size: 12.5px; margin-bottom: 5px; }
 .line .num { color: var(--accent-selected); font-weight: 500; }
-.line.boost { color: var(--ok); }
 .import-steps { padding: 12px 16px 16px; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--ink-soft); }
 .import-steps ol { margin: 6px 0 0; padding-left: 18px; }
 .import-steps li { margin-bottom: 3px; }
 
 .findings-group + .findings-group { border-top: 1px solid var(--line-soft); }
-/* Sits between the card head and the description/button row below it (Generate dashboard) --
-   bordered only while it actually has something in it (no drift is the ordinary case, and stays
-   truly empty rather than a "no drift" line -- see renderDriftResult), so an empty check doesn't
-   leave a lone divider sitting above nothing. */
-#driftResult:not(:empty) { border-bottom: 1px solid var(--line-soft); }
 .findings-group .group-label { padding: 11px 16px 4px; font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
 .finding { padding: 8px 16px 13px; display: grid; grid-template-columns: 60px 1fr; gap: 12px; align-items: start; }
 .chip { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: var(--radius-sm); text-align: center; white-space: nowrap; text-transform: capitalize; }
@@ -360,13 +364,11 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 
 .empty-note { padding: 14px 16px; font-size: 12.5px; color: var(--ink-faint); font-style: italic; }
 
-/* The two Analyze-tab panels that show a real loading state (Current numbers, Analysis) -- given a
-   fixed minimum height up front so the loading spinner isn't a tiny sliver that then jumps taller
-   the moment real content replaces it, and so a Refresh doesn't shrink-then-grow either. Sized to
-   each panel's own typical content: a handful of summary lines for one, the fixed-height Bridge
-   chart plus its findings for the other. .panel-loading pulls the same value via min-height:inherit
-   rather than repeating it, so the two numbers only ever need to change in one place each. */
-#analyzeSummary { min-height: 80px; }
+/* Analysis is the one panel left that shows a real loading state -- given a fixed minimum height up
+   front so the loading spinner isn't a tiny sliver that then jumps taller the moment real content
+   (the fixed-height Bridge chart plus its findings) replaces it, and so a Refresh doesn't
+   shrink-then-grow either. .panel-loading pulls the same value via min-height:inherit rather than
+   repeating it. */
 #checkResult { min-height: 380px; }
 .panel-loading {
   display: flex;

@@ -47,32 +47,44 @@
         <p>No FIRE dashboard is imported into Actual yet. Four steps to get one going:</p>
         <ol>
           <li>Below, fill in <strong>Plan</strong> (birth date, retirement ages to compare, plan-to-age) and check each account's <strong>type</strong> in <strong>Accounts</strong> — allocation, contributions, and everything else follow from that.</li>
-          <li>Switch to the <strong>Analyze</strong> tab and click <strong>Download dashboard</strong>.</li>
+          <li>Scroll to <strong>Generate dashboard</strong> and click <strong>Download dashboard</strong>.</li>
           <li>In Actual: <strong>Reports</strong> → new dashboard page (e.g. "FIRE") → <strong>"…"</strong> menu → <strong>Import</strong> → pick the file you just downloaded.</li>
           <li>Open the <strong>crossover</strong> widget on that page and pick which accounts/categories it should actually count (it starts out covering everything non-income, which is rarely what you want) — this matters: the Monte Carlo widget's own spending figure is read back from that same selection on every future regenerate, not recalculated separately.</li>
         </ol>
-        <p>Come back here any time after that — this page will show what's actually live under "Configured in the Actual Dashboard" below, and Analyze → Check flags anything that's drifted out of sync as you keep editing.</p>
+        <p>Come back here any time after that — this page will show what's actually live under "Configured in the Actual Dashboard" below, and Stale (at the very top) flags anything that's fallen out of sync as you keep editing.</p>
       </div>
 
-      <div class="summary">
+      <!-- Portfolio (instant, from STATE) plus whatever /api/retirement/check adds once it resolves
+           (Spend, any Rule of 55/debt-payoff adjustment) -- all plain label/number tiles, no
+           sentences, no separate "Current numbers" card or heading; see renderSummary/
+           renderSummaryStats in app.js. No Current age/Retirement ages/Plan to age tiles here any
+           more either -- those duplicated the Plan card's own editable fields below, just read-only,
+           which was two boxes for one value. -->
+      <div class="summary" id="summaryTiles">
         <div class="tile"><div class="label">Portfolio</div><div class="value num" id="sumPortfolio">—</div></div>
-        <div class="tile"><div class="label">Current age</div><div class="value num" id="sumAge">—</div></div>
-        <div class="tile"><div class="label">Retirement ages</div><div class="value num" id="sumAges">—</div></div>
-        <div class="tile"><div class="label">Plan to age</div><div class="value num" id="sumPlanToAge">—</div></div>
       </div>
 
-      <div class="tabs">
-        <button type="button" class="tab active" data-tab="configure">Configure</button>
-        <button type="button" class="tab" data-tab="analyze">Analyze</button>
-      </div>
+      <!-- Stale findings: always visible, not a foldable card, right below the tiles above -- these
+           are alerts, not settings, so they stay out from under a fold a person could leave
+           collapsed. Hidden (not just empty) while there's nothing to say -- see renderStaleResult. -->
+      <div class="card" id="staleResult" hidden></div>
 
-      <!-- CONFIGURE -->
-      <div class="panel active" id="panel-configure">
-        <div class="card">
+      <!-- One flat page, foldable cards -- was two tabs (Configure/Analyze); expand/collapse-all
+           takes the tab bar's old spot. Fold state persists per section across a reload the same
+           way the tab choice used to (see applySectionFolds/saveSectionFolds in app.js). Refresh
+           pulls fresh data for the whole page -- the tiles/Stale above, Analysis and "Configured in
+           the Actual Dashboard" below -- from one button, rather than the two separate ones each
+           used to have. -->
+      <div class="section-fold-controls">
+        <button type="button" class="btn secondary" id="refreshBtn">Refresh</button>
+        <button type="button" class="btn secondary" id="expandAllBtn">Expand all</button>
+        <button type="button" class="btn secondary" id="collapseAllBtn">Collapse all</button>
+      </div>
+        <div class="card" data-section="plan">
           <div class="card-head">
-            <h2>Plan</h2>
-            <span class="hint">Autosaves on change</span>
+            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Plan</h2></span>
           </div>
+          <div class="card-fold">
           <div class="card-body">
             <div class="plan-grid">
               <div class="field">
@@ -95,17 +107,18 @@
           <div class="card-body live-settings-body">
             <div class="card-head" style="padding:0;border:none;">
               <h3>Configured in the Actual Dashboard</h3>
-              <button type="button" class="btn secondary" id="refreshLiveSettingsBtn">Refresh</button>
             </div>
             <div id="liveSettings"><div class="empty-note">Loading…</div></div>
           </div>
+          </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-section="simulation-settings">
           <div class="card-head">
-            <h2>Simulation settings</h2>
+            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Simulation settings</h2></span>
             <span class="hint">Pinned values apply to every retirement-age comparison<span class="saved-flag" id="savedSimSettings">saved</span></span>
           </div>
+          <div class="card-fold">
           <div class="card-body">
             <div class="derived" style="margin-top:0;margin-bottom:10px;">Leave a field empty to let Actual manage it per widget as usual. To pin one, copy the value currently shown under "Configured in the Actual Dashboard" above, or set your own — every retirement-age comparison will then use exactly that value.</div>
             <div class="income-grid">
@@ -154,13 +167,15 @@
               </div>
             </div>
           </div>
+          </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-section="retirement-income">
           <div class="card-head">
-            <h2>Retirement income</h2>
+            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Retirement income</h2></span>
             <span class="hint">Optional — reduces the portfolio draw once each starts<span class="saved-flag" id="savedIncome">saved</span></span>
           </div>
+          <div class="card-fold">
           <div class="card-body">
             <div class="income-section">
               <div class="income-label">Pension</div>
@@ -204,60 +219,43 @@
               </div>
             </div>
           </div>
+          </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-section="accounts">
           <div class="card-head">
-            <h2>Accounts</h2>
+            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Accounts</h2></span>
             <span class="hint" id="accountCountHint">—</span>
           </div>
+          <div class="card-fold">
           <div class="derived reorder-hint" id="reorderHint" hidden>Withdrawal strategy is "Drain pots in order" — drag accounts below by the ⠿ handle to set the order pots are drained in.</div>
           <div class="accounts" id="accountsList"><div class="empty-note">Loading accounts…</div></div>
-        </div>
-      </div>
-
-      <!-- ANALYZE -->
-      <div class="panel" id="panel-analyze">
-        <div class="card">
-          <div class="card-head">
-            <h2>Current numbers</h2>
-            <!-- Refreshes everything on this tab, not just this card: Current numbers, Drift (in
-                 Generate dashboard below) and Analysis all come from the one /api/retirement/check
-                 call runCheck makes, so one button re-runs all three together. -->
-            <button type="button" class="btn secondary" id="refreshAnalysisBtn">Refresh</button>
-          </div>
-          <div class="card-body">
-            <div id="analyzeSummary"><div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Loading…</div></div>
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-section="analysis">
           <div class="card-head">
-            <h2>Analysis</h2>
+            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Analysis</h2></span>
           </div>
+          <div class="card-fold">
           <div id="checkResult">
             <div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Loading…</div>
           </div>
+          </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-section="generate-dashboard">
           <div class="card-head">
-            <h2>Generate dashboard</h2>
+            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Generate dashboard</h2></span>
           </div>
-          <!-- Whether the dashboard actually imported into Actual has drifted from what generating
-               right now would produce -- the reason you'd click below -- so it leads the card
-               rather than sitting in Analysis next to the unrelated Bridge simulation. Populated by
-               the same /api/retirement/check call Current numbers and Analysis already share.
-               Empty (no placeholder, no "no drift" line) until there's actually something to say --
-               see #driftResult's own CSS for why it stays truly empty rather than just untextted. -->
-          <div id="driftResult"></div>
+          <div class="card-fold">
           <div class="card-body generate-row">
             <div style="font-size:12px;color:var(--ink-soft);max-width:48ch;">Builds net-worth, crossover, and Monte Carlo widgets from live balances and the accounts on the left. Import once into a new Actual dashboard page — regenerating never overwrites your hand edits there.</div>
             <button type="button" class="btn" id="generateBtn">Download dashboard</button>
           </div>
           <div class="gen-result" id="genResult" hidden></div>
+          </div>
         </div>
-      </div>
       </div>
 
       <div class="page active" id="page-budget">
