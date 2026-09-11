@@ -15,8 +15,8 @@ and `src/match-uncleared.ts` (all TypeScript now — the last one replaced
 `match-uncleared.sh` on 2026-09-05, see [[set-budget-migration]]) all talk to
 it with the `x-api-key` header. The unprefixed `BASE_URL`/`BUDGET_ID`/`API_KEY` names
 were retired on 2026-09-04. `DRY_RUN` (unprefixed) was deliberately kept
-un-namespaced per the user: they use `DRY_RUN` as a universal convention
-across every tool they build, not specific to this project.
+un-namespaced — a cross-project convention, not specific to this repo; see the
+user's own env-var-naming memory (user scope) for why.
 
 Confirmed live shape (all amounts in cents):
 - `GET /budgets/{budgetId}/categorygroups` → `{ data: [{ id, name,

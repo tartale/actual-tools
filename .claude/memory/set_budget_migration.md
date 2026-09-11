@@ -71,8 +71,8 @@ silent no-op.
 **Every `--help` in this repo shares one typer/rich-inspired look** (2026-09-04),
 per the user's request: a bold `Usage:` line, then labelled `─ Section ────`
 rules with a name/description column aligned per-section. Checked for an
-existing Node library first (per the user's explicit preference to reuse one
-over hand-rolling); none matched without a real downside — `citty` was
+existing Node library first (see the user's own reuse-before-hand-rolling
+memory, user scope); none matched without a real downside — `citty` was
 closest but doesn't auto-detect non-TTY output (colour leaks into redirected
 files unless the caller sets `NO_COLOR`), and the framework-style libraries
 (commander, gunshi) don't produce this layout by default at all. Landed on

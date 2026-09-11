@@ -7,7 +7,7 @@ metadata:
   modified: 2026-09-04T20:05:00.000Z
 ---
 
-Two standing rules for the actual-tools repo's toolchain:
+The user's general bake-into-image/pin-by-major policy (user-scope memory) applied concretely here:
 
 1. **Anything installable at container-build-time goes in
    `.claude/sandbox/plugin.sh`**, not into an ad-hoc install at session time,
