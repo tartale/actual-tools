@@ -268,6 +268,42 @@ describe("POST /api/retirement/generate", () => {
     expect(body.annualSpend).toBe(120000) // ...but spend only counts the crossover's own selection (10000 x 12)
     expect(body.spendBasis).toContain("1 categories")
   })
+
+  it("applies the crossover widget's own Target Income % to spend, the same way Actual applies it to its own projection", async () => {
+    // Actual calls this field "Target Income (% of expenses)" in its own crossover UI
+    // (expenseAdjustmentFactor on the wire) and multiplies its own projected-expense figure by it --
+    // never the raw historical series. This app's spend assumption has to apply the same multiplier
+    // to the same trailing average, or every simulation built on it (Monte Carlo, Bridge, the
+    // Current numbers box) silently answers a different question than Actual's own widget does the
+    // moment this is set to anything but 100%.
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
+      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false }],
+      dashboardRows: [
+        {
+          id: "page1",
+          name: "FIRE",
+          dashboard_page_id: "page1",
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-a"], incomeAccountIds: [], expenseAdjustmentFactor: 0.9 },
+        },
+      ],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
+    expect(res.status).toBe(200)
+    const body = await readJson<GenerateResult>(res)
+    expect(body.annualSpend).toBe(108000) // 10000 x 12 x 0.9
+    expect(body.spendBasis).toContain("× 90% target income")
+  })
 })
 
 describe("GET /api/retirement/check", () => {

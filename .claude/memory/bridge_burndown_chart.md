@@ -111,6 +111,34 @@ separate `.card-body` -- `.boost` also tightened to `.line.boost`, matching
 how it's actually applied (both classes on the same element), not a bare
 global class.
 
+**Second follow-up, same day: Target Income % was silently ignored, and it
+was live-wrong for the user.** Asked directly whether "Spend" factors in the
+crossover widget's own "Target Income %" slider. Checked upstream (not
+guessed): that field is `expenseAdjustmentFactor` on the wire, labeled
+"Target Income (% of expenses)" in Actual's own `Crossover.tsx`, and Actual's
+own `crossover-spreadsheet.ts` multiplies its PROJECTED expense figure by it
+(never the raw historical series) to decide its own crossover point. This
+app's `spendFromCrossover` (fire-generate.ts) computed a plain trailing
+average and never read that field at all -- even though the app already
+*displays* it read-only under "Configured in the Actual Dashboard" (`row("Expense
+adjustment", ...)` in app.js), so the gap was between showing the number and
+using it, not not knowing it existed.
+
+Checked the user's own live settings before calling this hypothetical: their
+real Target Income is 90%, not the default 100%, so this had been live-wrong
+-- Monte Carlo, Bridge, and the new Current numbers box were all overstating
+spend by about 11% (100/90) the whole time. Fixed by multiplying
+`monthlyTotal * 12` by `meta.expenseAdjustmentFactor ?? 1` (the `?? 1`
+matters: this value came off a live widget fetched as `unknown`, and upstream
+itself defaults it the same way -- CrossoverCardMeta's own non-optional type
+is a compile-time promise this runtime data was never guaranteed to keep).
+`spendBasis` gets a `, × 90% target income` suffix whenever the factor isn't
+1, so the adjustment is visible in the same sentence as the number it
+changed, not just a silent multiplier. One function fix corrects both callers
+(`generateDashboard` and `checkDashboard` both call `spendFromCrossover`),
+verified against the user's real budget: $148,812.12/yr (unadjusted) ->
+$133,930.91/yr (× 0.9), the exact expected product.
+
 **Testing**: `fire-analysis.test.ts` gained three timeline-specific cases
 (exact year-by-year values for a depleting scenario, length/bounds for a
 non-depleting one, the locked-to-accessible handoff at the exact unlock age)

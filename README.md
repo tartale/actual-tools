@@ -604,7 +604,13 @@ trip categories, a dependent's separate expenses, ...), Generate uses that
 same narrower selection and date range, so the two widgets' spend figures
 stay consistent with each other. The broader "every category, trailing 12
 months" figure is only a first-generation fallback, before any crossover
-selection exists to read back. A residual difference from the crossover
+selection exists to read back. The crossover widget's own **Target Income
+(% of expenses)** slider is applied too, the same way Actual applies it to
+its own projection (multiplying the expense figure, never the raw historical
+data it's charted against) — so setting it to 90% lowers this app's own
+spend assumption by the same 10%, everywhere that figure is used (Monte
+Carlo, Bridge, the Current numbers box below), rather than only affecting
+Actual's own crossover chart. A residual difference from the crossover
 widget's *own displayed number* can still remain — its projection type
 (Hampel/median/mean) applies its own statistical smoothing on top of the
 same trailing data, which this app doesn't reproduce.

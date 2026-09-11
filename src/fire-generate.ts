@@ -75,10 +75,22 @@ async function spendFromCrossover(config: ActualConfig, meta: CrossoverCardMeta)
   for (const categoryId of meta.expenseCategoryIds) {
     monthlyTotal += averageSpent(await fetchHistoricalSpent(config, categoryId, endMonth, months, monthCache))
   }
-  return {
-    annualSpend: monthlyTotal * 12,
-    basis: `${meta.expenseCategoryIds.length} categories over ${months} months to ${endMonth}`,
-  }
+  // Actual's own crossover widget calls this "Target Income (% of expenses)" and applies it only to
+  // the PROJECTED expense figure that decides its own crossover point (upstream
+  // crossover-spreadsheet.ts: adjustedProjectedExpenses = projectedExpenses * expenseAdjustmentFactor),
+  // never to the raw historical series it's charted against. Applying it here too -- rather than the
+  // plain trailing average -- is what keeps every simulation built on this figure (Monte Carlo, the
+  // Bridge chart, the Current numbers box) answering the same spending question Actual's own crossover
+  // widget is, instead of silently reverting to 100% the moment someone sets it to anything else.
+  // `?? 1`, not a bare read: this value came off a live widget fetched as `unknown`, and upstream
+  // itself treats the field as optional with that same default, so CrossoverCardMeta's own
+  // non-optional type is a compile-time promise this runtime data was never guaranteed to keep.
+  const adjustmentFactor = meta.expenseAdjustmentFactor ?? 1
+  const annualSpend = Math.round(monthlyTotal * 12 * adjustmentFactor)
+  const basis =
+    `${meta.expenseCategoryIds.length} categories over ${months} months to ${endMonth}` +
+    (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
+  return { annualSpend, basis }
 }
 
 // Function to read a previously written dashboard file, if any, so mergeGeneratedDashboard can
