@@ -575,14 +575,17 @@ the old category field for that account.
 
 ### Retirement — Analyze tab
 
-**Current numbers** — a permanent box above Generate, always populated as
-soon as this tab opens (or Analysis is refreshed), no download required:
-current portfolio total, the annual spend figure and its basis (the live
-crossover widget's own category selection, once one exists), and any
-Rule of 55 / debt-payoff adjustment already baked into every projection
-below. This used to be visible only as a side effect of clicking **Download
-dashboard**, which also writes a file and triggers a browser download every
-time — reading these numbers no longer requires either.
+**Current numbers** — a permanent box, first on the tab, always populated
+as soon as it opens: current portfolio total, the annual spend figure and
+its basis (the live crossover widget's own category selection, once one
+exists), and any Rule of 55 / debt-payoff adjustment already baked into
+every projection below. This used to be visible only as a side effect of
+clicking **Download dashboard**, which also writes a file and triggers a
+browser download every time — reading these numbers no longer requires
+either. Its **Refresh** button re-runs the one `/api/retirement/check` call
+every panel on this tab is built from, so it updates Current numbers, the
+Drift findings in Generate dashboard below, and Analysis together — never
+just one of the three.
 
 **Generate dashboard** builds the same widgets `./actual reports fire`
 used to (a full-width net-worth widget, a safe-withdrawal-rate "crossover"
@@ -671,17 +674,25 @@ behind your Actual HTTP API's experimental-operations setting; a clear
 message appears if it's off), so it sees whatever you've actually been
 editing in the app. Two things get checked:
 
-- **Drift** — a widget's stored access ages against what your current
-  config would generate, accounts the crossover counts that the
-  simulation doesn't model (or vice versa), any **Simulation settings**
-  field you've pinned that isn't live on every Monte Carlo widget yet, and
-  whether each widget's actual **spending/contribution figures** still
-  match what Generate would produce right now for that same retirement
-  age — this is what catches a narrowed crossover category selection, a
-  new pension/Social Security number, a debt nearing payoff, or a changed
-  contribution amount, none of which the checks above cover on their own.
-  Any of these usually means the dashboard predates a config change and
-  needs re-importing.
+- **Drift** — shown at the top of the **Generate dashboard** card itself
+  (silent when there's none — no "no drift" line to read past), since
+  regenerating is the fix for every finding here. Checks a widget's stored
+  access ages against what your current config would generate, accounts
+  the crossover counts that the simulation doesn't model (or vice versa),
+  any **Simulation settings** field you've pinned that isn't live on every
+  Monte Carlo widget yet, whether each widget's actual
+  **spending/contribution figures** still match what Generate would
+  produce right now for that same retirement age, and **whether a
+  configured retirement age has no Monte Carlo widget on the dashboard at
+  all yet** — not the same thing as an existing widget's figures being
+  stale: adding a second retirement age changes Generate's own naming for
+  every widget (a lone scenario is just "Monte Carlo"; two or more each
+  become "Monte Carlo — Retire at N"), so a dashboard generated back when
+  there was only one age matches none of the freshly expected names the
+  moment another is added, and every account already having a live pot
+  from that one original widget means the access-age check alone never
+  catches it either. Any of these usually means the dashboard predates a
+  config change and needs re-importing.
 - **Bridge** — for each retirement age, whether the accounts you can
   actually reach at that age fund every year until the locked ones open
   up. This projects forward at each allocation's mean return with no

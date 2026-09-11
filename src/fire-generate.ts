@@ -27,6 +27,7 @@ import {
   calculateMortgagePayoff,
   detectCrossoverMismatch,
   detectMonteCarloSettingsDrift,
+  detectMonteCarloWidgetSetDrift,
   detectPotDrift,
   detectSpendingPhaseDrift,
   simulateBridge,
@@ -486,11 +487,13 @@ export async function checkDashboard(
   // returnAssumptionsFor's own throw) fail this whole read-only analysis -- Generate is where that
   // needs to be a hard stop, not Check.
   let spendingPhaseDriftFindings: Finding[] = []
+  let widgetSetDriftFindings: Finding[] = []
   try {
     const freshWidgets = buildMonteCarloWidgets(0, 6, accounts, options.currentAge, options.retirementAges, options.planToAge, annualSpend, options.monteCarloAssumptions, incomeStreams)
     spendingPhaseDriftFindings = detectSpendingPhaseDrift(freshWidgets, monteCarloMetas)
+    widgetSetDriftFindings = detectMonteCarloWidgetSetDrift(freshWidgets, monteCarloMetas)
   } catch {
-    // Leave it empty -- the other drift checks below still run, and Generate will surface the
+    // Leave both empty -- the other drift checks below still run, and Generate will surface the
     // same incomplete-config error clearly if the person tries it.
   }
 
@@ -507,6 +510,7 @@ export async function checkDashboard(
           ...detectPotDrift(monteCarloMetas, accounts, options.retirementAges),
           ...detectCrossoverMismatch(crossoverMetas, accounts),
           ...detectMonteCarloSettingsDrift(monteCarloMetas, options.pinnedMonteCarloFields, options.monteCarloAssumptions),
+          ...widgetSetDriftFindings,
           ...spendingPhaseDriftFindings,
         ]
 

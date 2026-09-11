@@ -359,6 +359,40 @@ describe("GET /api/retirement/check", () => {
     expect(body.debtPayoffs[0]).toMatchObject({ accountName: "Mortgage", monthlyAmount: 100000 })
     expect(typeof body.debtPayoffs[0]?.payoffAge).toBe("number")
   })
+
+  it("flags a retirement age added since the dashboard was last generated, even though every account already has a live pot", async () => {
+    // The real bug: buildMonteCarloWidgets names a widget bare "Monte Carlo" with exactly one
+    // configured age, and "Monte Carlo -- Retire at N" once there's more than one -- so a live
+    // dashboard generated back when there was a single age matches NONE of the freshly expected
+    // names the moment a second age is added. detectPotDrift alone never catches this: the account
+    // already has a live pot (from the one existing widget), so nothing there looks wrong either.
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
+      dashboardRows: [
+        {
+          id: "w1",
+          dashboard_page_id: "page1",
+          type: "monte-carlo-card",
+          x: 0,
+          y: 0,
+          width: 12,
+          height: 6,
+          meta: { name: "Monte Carlo", pots: [{ accountId: "a1", accessAge: null }] },
+        },
+      ],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [50, 51], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    const titles = body.driftFindings.map((f) => f.title)
+    expect(titles).toContain('No live Monte Carlo widget named "Monte Carlo — Retire at 50" yet.')
+    expect(titles).toContain('No live Monte Carlo widget named "Monte Carlo — Retire at 51" yet.')
+    expect(titles).toContain('"Monte Carlo" is on the live dashboard but no longer matches a configured retirement age.')
+  })
 })
 
 describe("GET /api/retirement/live-settings", () => {

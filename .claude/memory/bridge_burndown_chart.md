@@ -111,6 +111,66 @@ separate `.card-body` -- `.boost` also tightened to `.line.boost`, matching
 how it's actually applied (both classes on the same element), not a bare
 global class.
 
+**Third follow-up, same day: Analyze-tab layout settled, and a real drift-detection gap fixed
+along the way.** A run of small, interactive-mode requests (no test/commit between them, per the
+user's own instruction, until this batch was checked and committed together):
+
+- Generate dashboard's own result no longer repeats portfolio/spend/boost/debt-payoff lines --
+  those live in Current numbers now; Generate's result states only what's actually new (the
+  filename, the merge-preserved note, the import steps).
+- The Configure/Analyze tab persists across a reload, the same cookie mechanism `activeSection`
+  already used (`activeRetirementTab`) -- was previously always resetting to Configure. Restoring
+  it also runs `runCheck()` on load when Analyze is the restored tab AND Retirement is the
+  restored section (mirroring Budget's own "only lazily load when actually landing on it" guard,
+  not an unconditional network call on every page load regardless of where someone ends up).
+- Drift findings moved out of Analysis and into their own `#driftResult` box leading the
+  **Generate dashboard** card -- regenerating is the fix for every drift finding, so it leads the
+  card with the button that does that, instead of sitting next to the unrelated Bridge chart. Empty
+  (no placeholder, no "no drift" line -- `container.innerHTML = ""`, and `#driftResult:not(:empty)`
+  is what the card's own divider line keys off, so an empty check leaves no stray border either)
+  until there's actually something to say.
+- The Refresh button moved from Analysis's own card-head to Current numbers' -- it always refreshed
+  all three (Current numbers, Drift, Analysis) via one `/api/retirement/check` call, so it belongs
+  wherever the button reads most naturally, not necessarily beside the card it happens to share a
+  name with.
+- Card order is now Current numbers -> Analysis -> Generate dashboard.
+- Both loading states (`#analyzeSummary`, `#checkResult`) became a centered spinner + "Loading…"
+  (`.panel-loading`/`.spinner`, a `@keyframes spin` respecting `prefers-reduced-motion`) instead of
+  left-aligned `.empty-note` text, with `min-height` set on each container (80px / 380px) so the
+  loading state doesn't render as a tiny sliver that jumps taller the instant real content arrives.
+  `.panel-loading` pulls the same number via `min-height: inherit` rather than repeating it.
+
+**The real bug, reported directly by the user**: added two more retirement ages, and Drift said
+nothing, even though the live dashboard still only had the original single Monte Carlo widget.
+Traced to two compounding facts, neither of them a slip -- confirmed by reading
+`buildMonteCarloWidgets` and both drift checks in full, not guessed:
+- `buildMonteCarloWidgets` names a widget bare `"Monte Carlo"` with exactly one configured
+  retirement age, and `"Monte Carlo — Retire at N"` once there are two or more -- so adding a
+  second age doesn't just need a NEW widget, it changes the ORIGINAL scenario's own expected name
+  too. A dashboard generated back when there was one age matches none of the freshly-expected names
+  the instant a second is added.
+- `detectPotDrift` (access ages) never noticed because it flags an account with NO live pot
+  *anywhere*, and the account already has one, from the one original widget -- it has never asked
+  "does a widget for this exact SCENARIO exist," only "does this account have a pot somewhere."
+  `detectSpendingPhaseDrift`'s own doc comment explicitly said this case was covered by
+  `detectPotDrift` instead; it wasn't, and that comment was corrected in the same change (an
+  existing test, `"skips a scenario with nothing live yet, rather than flagging it as drift"`,
+  already asserted this exact silent-skip as intentional -- correctly so for THAT function's own
+  narrow job of comparing spending phases between widgets that both already exist; the actual gap
+  was that nothing else was asking the "does the widget exist at all" question).
+- Fixed with a new, separate check, `detectMonteCarloWidgetSetDrift` (fire-analysis.ts): compares
+  the SET of widget names Generate would produce against the SET actually live, symmetric in both
+  directions -- a fresh name with no live match ("warn": you need to regenerate) and a live name
+  matching no fresh one ("info": orphaned, remove by hand or let a regenerate replace the page).
+  Wired into `checkDashboard` alongside the other drift checks, reusing the same `freshWidgets` the
+  existing `detectSpendingPhaseDrift` call already builds.
+- Mutation-checked at both layers: removing the `detectMonteCarloWidgetSetDrift` call from
+  `checkDashboard` was NOT caught by the existing unit tests (fire-analysis.test.ts) -- they only
+  proved the function correct in isolation, not that anything actually called it. Added a
+  route-level test (app-server.test.ts) reproducing the user's exact scenario end-to-end (one live
+  widget named "Monte Carlo", two configured retirement ages) specifically to close that gap; it
+  does fail when the wiring is removed.
+
 **Second follow-up, same day: Target Income % was silently ignored, and it
 was live-wrong for the user.** Asked directly whether "Spend" factors in the
 crossover widget's own "Target Income %" slider. Checked upstream (not

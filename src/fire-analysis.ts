@@ -425,6 +425,44 @@ const PINNABLE_FIELD_VALUES: ReadonlyArray<keyof MonteCarloAssumptions> = [
   "simulationCount",
 ]
 
+// Function to catch a configured retirement-age scenario with no live widget at all yet -- not a
+// mismatch WITHIN an existing widget (detectPotDrift/detectSpendingPhaseDrift's job), the widget
+// itself missing outright. Real, not hypothetical: buildMonteCarloWidgets names a widget
+// "Monte Carlo — Retire at N" once there's more than one configured age, but plain "Monte Carlo"
+// with only one -- so going from one retirement age to several doesn't just need new widgets
+// alongside the old one, the ORIGINAL scenario's own expected name changes too, and a dashboard
+// generated back when there was only one age matches NONE of the freshly expected names any more.
+// Matches by name, the same identifier Generate itself gives each widget and the only one a fresh
+// widget and a live one share.
+export function detectMonteCarloWidgetSetDrift(
+  freshWidgets: readonly { meta: { name?: string } | null }[],
+  liveMetas: readonly MonteCarloCardMeta[],
+): Finding[] {
+  const freshNames = new Set(freshWidgets.map((widget) => widget.meta?.name).filter((name): name is string => typeof name === "string"))
+  const liveNames = new Set(liveMetas.filter((meta) => typeof meta.name === "string").map((meta) => meta.name as string))
+
+  const findings: Finding[] = []
+  for (const name of freshNames) {
+    if (!liveNames.has(name)) {
+      findings.push({
+        level: "warn",
+        title: `No live Monte Carlo widget named "${name}" yet.`,
+        detail: ["A retirement age was added, or the set of configured ages changed, since the last export. Regenerate and re-import to add it."],
+      })
+    }
+  }
+  for (const name of liveNames) {
+    if (!freshNames.has(name)) {
+      findings.push({
+        level: "info",
+        title: `"${name}" is on the live dashboard but no longer matches a configured retirement age.`,
+        detail: ["Remove it by hand, or regenerate and re-import a fresh dashboard page to replace the whole set."],
+      })
+    }
+  }
+  return findings
+}
+
 // Function to compare each pinned "Simulation settings" field (see fire-dashboard.ts's
 // monteCarloAssumptionsWithOverrides) against what's actually live on every Monte Carlo widget --
 // a pinned field exists specifically so every retirement-age comparison widget uses the same
@@ -501,8 +539,13 @@ export function detectCrossoverMismatch(
 // a narrowed crossover category selection, a new pension/Social Security figure, a debt nearing
 // payoff, or a changed account contribution -- none of which detectPotDrift (access ages) or
 // detectCrossoverMismatch (which accounts/categories are counted, not how much they add up to)
-// would ever flag. A scenario with nothing live yet is skipped here -- detectPotDrift's own "no pot
-// in the dashboard" finding already covers that case.
+// would ever flag. A scenario with nothing live yet is skipped here -- there's no spending phase to
+// compare it against -- but IS a real gap this function doesn't cover: detectPotDrift only flags an
+// account with NO live pot anywhere, and every account in an existing scenario already has one, so
+// adding a whole new retirement-age scenario (same accounts, one more age) sailed past both checks
+// with no finding at all. See detectMonteCarloWidgetSetDrift below, which is what actually covers
+// that case -- an account having a pot somewhere and a SCENARIO existing at all are different
+// questions, and no other check was asking the second one.
 export function detectSpendingPhaseDrift(
   freshWidgets: readonly { meta: { name?: string; spendingPhases?: unknown; contributions?: unknown } | null }[],
   liveMetas: readonly MonteCarloCardMeta[],

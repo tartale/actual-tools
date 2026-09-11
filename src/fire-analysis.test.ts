@@ -5,6 +5,7 @@ import {
   calculateMortgagePayoff,
   detectCrossoverMismatch,
   detectMonteCarloSettingsDrift,
+  detectMonteCarloWidgetSetDrift,
   detectPotDrift,
   detectSpendingPhaseDrift,
   simulateBridge,
@@ -471,6 +472,51 @@ describe("detectSpendingPhaseDrift", () => {
   it("skips a scenario with nothing live yet, rather than flagging it as drift", () => {
     const findings = detectSpendingPhaseDrift([freshWidget("Monte Carlo — Retire at 62", [{ annualWithdrawal: 100000 }])], [])
     expect(findings).toEqual([])
+  })
+})
+
+describe("detectMonteCarloWidgetSetDrift", () => {
+  function freshWidget(name: string) {
+    return { meta: { name } }
+  }
+  function liveMeta(name: string): MonteCarloCardMeta {
+    return { name }
+  }
+
+  it("stays quiet when every configured scenario already has a live widget", () => {
+    const findings = detectMonteCarloWidgetSetDrift([freshWidget("Monte Carlo — Retire at 55")], [liveMeta("Monte Carlo — Retire at 55")])
+    expect(findings).toEqual([])
+  })
+
+  it("reproduces the real bug: adding retirement ages renames the ORIGINAL scenario's own expected widget too", () => {
+    // buildMonteCarloWidgets names a widget bare "Monte Carlo" with exactly one configured age, and
+    // "Monte Carlo — Retire at N" once there's more than one -- so a dashboard generated back when
+    // there was a single age matches NONE of the freshly expected names the moment a second age is
+    // added, not just the new one. detectSpendingPhaseDrift's own by-name match (deliberately) has
+    // nothing to say about any of this; this is the check that has to catch it.
+    const findings = detectMonteCarloWidgetSetDrift(
+      [freshWidget("Monte Carlo — Retire at 50"), freshWidget("Monte Carlo — Retire at 51"), freshWidget("Monte Carlo — Retire at 52")],
+      [liveMeta("Monte Carlo")],
+    )
+    expect(findings).toHaveLength(4) // 3 missing fresh names + the one orphaned live name
+    expect(findings.filter((f) => f.level === "warn")).toHaveLength(3)
+    expect(findings.filter((f) => f.level === "warn").map((f) => f.title)).toEqual([
+      'No live Monte Carlo widget named "Monte Carlo — Retire at 50" yet.',
+      'No live Monte Carlo widget named "Monte Carlo — Retire at 51" yet.',
+      'No live Monte Carlo widget named "Monte Carlo — Retire at 52" yet.',
+    ])
+    const orphan = findings.find((f) => f.level === "info")
+    expect(orphan?.title).toBe('"Monte Carlo" is on the live dashboard but no longer matches a configured retirement age.')
+  })
+
+  it("flags only the ages that actually changed, not every scenario, when one age is swapped for another", () => {
+    const findings = detectMonteCarloWidgetSetDrift(
+      [freshWidget("Monte Carlo — Retire at 55"), freshWidget("Monte Carlo — Retire at 60")],
+      [liveMeta("Monte Carlo — Retire at 55"), liveMeta("Monte Carlo — Retire at 58")],
+    )
+    expect(findings).toHaveLength(2)
+    expect(findings.find((f) => f.level === "warn")?.title).toContain("Retire at 60")
+    expect(findings.find((f) => f.level === "info")?.title).toContain("Retire at 58")
   })
 })
 

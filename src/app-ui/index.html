@@ -221,9 +221,22 @@
         <div class="card">
           <div class="card-head">
             <h2>Current numbers</h2>
+            <!-- Refreshes everything on this tab, not just this card: Current numbers, Drift (in
+                 Generate dashboard below) and Analysis all come from the one /api/retirement/check
+                 call runCheck makes, so one button re-runs all three together. -->
+            <button type="button" class="btn secondary" id="refreshAnalysisBtn">Refresh</button>
           </div>
           <div class="card-body">
-            <div id="analyzeSummary"><div class="empty-note">Open this tab to load.</div></div>
+            <div id="analyzeSummary"><div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Loading…</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Analysis</h2>
+          </div>
+          <div id="checkResult">
+            <div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Loading…</div>
           </div>
         </div>
 
@@ -231,21 +244,18 @@
           <div class="card-head">
             <h2>Generate dashboard</h2>
           </div>
+          <!-- Whether the dashboard actually imported into Actual has drifted from what generating
+               right now would produce -- the reason you'd click below -- so it leads the card
+               rather than sitting in Analysis next to the unrelated Bridge simulation. Populated by
+               the same /api/retirement/check call Current numbers and Analysis already share.
+               Empty (no placeholder, no "no drift" line) until there's actually something to say --
+               see #driftResult's own CSS for why it stays truly empty rather than just untextted. -->
+          <div id="driftResult"></div>
           <div class="card-body generate-row">
             <div style="font-size:12px;color:var(--ink-soft);max-width:48ch;">Builds net-worth, crossover, and Monte Carlo widgets from live balances and the accounts on the left. Import once into a new Actual dashboard page — regenerating never overwrites your hand edits there.</div>
             <button type="button" class="btn" id="generateBtn">Download dashboard</button>
           </div>
           <div class="gen-result" id="genResult" hidden></div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <h2>Analysis</h2>
-            <button type="button" class="btn secondary" id="refreshAnalysisBtn">Refresh</button>
-          </div>
-          <div id="checkResult">
-            <div class="empty-note">Open this tab to run the analysis.</div>
-          </div>
         </div>
       </div>
       </div>

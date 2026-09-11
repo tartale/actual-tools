@@ -305,6 +305,11 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .import-steps li { margin-bottom: 3px; }
 
 .findings-group + .findings-group { border-top: 1px solid var(--line-soft); }
+/* Sits between the card head and the description/button row below it (Generate dashboard) --
+   bordered only while it actually has something in it (no drift is the ordinary case, and stays
+   truly empty rather than a "no drift" line -- see renderDriftResult), so an empty check doesn't
+   leave a lone divider sitting above nothing. */
+#driftResult:not(:empty) { border-bottom: 1px solid var(--line-soft); }
 .findings-group .group-label { padding: 11px 16px 4px; font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
 .finding { padding: 8px 16px 13px; display: grid; grid-template-columns: 60px 1fr; gap: 12px; align-items: start; }
 .chip { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: var(--radius-sm); text-align: center; white-space: nowrap; text-transform: capitalize; }
@@ -354,6 +359,35 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .bridge-tooltip-locked { color: var(--ink-faint); }
 
 .empty-note { padding: 14px 16px; font-size: 12.5px; color: var(--ink-faint); font-style: italic; }
+
+/* The two Analyze-tab panels that show a real loading state (Current numbers, Analysis) -- given a
+   fixed minimum height up front so the loading spinner isn't a tiny sliver that then jumps taller
+   the moment real content replaces it, and so a Refresh doesn't shrink-then-grow either. Sized to
+   each panel's own typical content: a handful of summary lines for one, the fixed-height Bridge
+   chart plus its findings for the other. .panel-loading pulls the same value via min-height:inherit
+   rather than repeating it, so the two numbers only ever need to change in one place each. */
+#analyzeSummary { min-height: 80px; }
+#checkResult { min-height: 380px; }
+.panel-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: inherit;
+  padding: 24px 16px;
+  color: var(--ink-faint);
+  font-size: 12.5px;
+  font-style: italic;
+  text-align: center;
+}
+.spinner { width: 20px; height: 20px; border: 2px solid var(--line-soft); border-top-color: var(--accent-selected); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}
 
 .top-error { background: var(--fail-soft); color: var(--fail); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 16px; font-size: 12.5px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .top-error[hidden] { display: none; }

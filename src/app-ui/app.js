@@ -1003,38 +1003,58 @@ function renderAnalyzeSummary(result) {
     ${debtPayoffLines}`
 }
 
+// Function to render the Drift findings-group into the Generate dashboard card: whether the
+// dashboard actually imported into Actual has fallen out of sync with what generating right now
+// would produce is exactly the reason to click that card's own button, so it leads there instead of
+// sitting in Analysis next to the unrelated Bridge simulation.
+function renderDriftResult(findings) {
+  const container = document.getElementById("driftResult")
+  // Nothing at all when there's nothing to say -- no drift is the ordinary, expected state, not
+  // something worth a line of its own next to a button whose whole point is fixing drift when it
+  // exists.
+  container.innerHTML = ""
+  if (findings.length === 0) {
+    return
+  }
+  const group = document.createElement("div")
+  group.className = "findings-group"
+  findings.forEach((f) => group.appendChild(renderFinding(f)))
+  container.appendChild(group)
+}
+
+// Centered spinner + label, sized by whichever container it's placed in (min-height: inherit pulls
+// #analyzeSummary/#checkResult's own min-height -- see style.css) -- shown while either panel is
+// actually fetching, on the very first load and on every Refresh alike, so the panel is never left
+// showing stale content (or a tiny, differently-sized placeholder) while new data is on the way.
+const LOADING_MARKUP = `<div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Loading…</div>`
+
 async function runCheck() {
   const container = document.getElementById("checkResult")
   const summary = document.getElementById("analyzeSummary")
+  const drift = document.getElementById("driftResult")
   const refreshBtn = document.getElementById("refreshAnalysisBtn")
   refreshBtn.disabled = true
-  container.innerHTML = `<div class="empty-note">Analyzing…</div>`
+  summary.innerHTML = LOADING_MARKUP
+  container.innerHTML = LOADING_MARKUP
   try {
     const result = await api("/api/retirement/check")
-summary.innerHTML = renderAnalyzeSummary(result)
+    summary.innerHTML = renderAnalyzeSummary(result)
+    renderDriftResult(result.driftFindings)
     container.innerHTML = ""
-    if (result.driftFindings.length === 0 && result.bridgeFindings.length === 0) {
+    if (result.bridgeFindings.length === 0) {
       container.innerHTML = `<div class="empty-note">No findings.</div>`
       return
     }
-    if (result.driftFindings.length > 0) {
-      const group = document.createElement("div")
-      group.className = "findings-group"
-      group.innerHTML = `<div class="group-label">Drift</div>`
-      result.driftFindings.forEach((f) => group.appendChild(renderFinding(f)))
-      container.appendChild(group)
-    }
-    if (result.bridgeFindings.length > 0) {
-      const group = document.createElement("div")
-      group.className = "findings-group"
-      group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
-      const chart = renderBridgeChart(result.bridgeResults)
-      if (chart) group.appendChild(chart)
-      result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
-      container.appendChild(group)
-    }
+    const group = document.createElement("div")
+    group.className = "findings-group"
+    group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
+    const chart = renderBridgeChart(result.bridgeResults)
+    if (chart) group.appendChild(chart)
+    result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
+    container.appendChild(group)
   } catch (error) {
     summary.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+    drift.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
     container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
   } finally {
     refreshBtn.disabled = false
@@ -1061,17 +1081,10 @@ async function runGenerate() {
     const r = await api("/api/retirement/generate", { method: "POST" })
     const filename = r.outputPath.split("/").pop()
     downloadFile(filename, r.dashboardJson, "application/json")
-    const boostLines = r.ruleOf55Boosts
-      .map((b) => `<div class="line boost">Rule of 55 applied: ${escapeHtml(b.accountName)} accessible from age ${b.to} (was ${b.from ?? "none"}).</div>`)
-      .join("")
-    const debtPayoffLines = r.debtPayoffs
-      .map((d) => `<div class="line boost">Spending reduced by ${moneySpan(d.monthlyAmount)}/mo once ${escapeHtml(d.accountName)} is paid off at age ${d.payoffAge}.</div>`)
-      .join("")
+    // Portfolio total, spend, Rule of 55 boosts and debt payoffs are the same figures the
+    // permanent Current numbers box above already shows -- see renderAnalyzeSummary -- so this
+    // result only states what's actually new: the file this run produced and how to bring it in.
     result.innerHTML = `
-      <div class="line">Portfolio accounts (${r.portfolioAccountCount}): current total ${moneySpan(r.portfolioTotal)}</div>
-      <div class="line">Expense categories (${r.expenseCategoryCount}): spend ${moneySpan(r.annualSpend)}/yr${r.spendBasis ? ` (from your crossover widget's own selection: ${escapeHtml(r.spendBasis)})` : " (trailing 12 months, every category — no live crossover selection to narrow it yet)"}</div>
-      ${boostLines}
-      ${debtPayoffLines}
       <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span>.${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>
       <div class="import-steps">
         Import it into Actual:
@@ -1169,17 +1182,27 @@ document.getElementById("refreshLiveSettingsBtn").addEventListener("click", load
 document.getElementById("generateBtn").addEventListener("click", runGenerate)
 document.getElementById("refreshAnalysisBtn").addEventListener("click", runCheck)
 
-// Keyed off [data-tab] and scoped to this section's own panels, NOT a bare .tab/.panel sweep:
-// Budget's tabs share the .tab class for styling but carry data-budget-tab instead, so a bare .tab
-// selector matched them too and built getElementById("panel-undefined") -- null, which threw. The
-// throw landed halfway through, after .active had already been stripped from every .panel on the
-// page including this section's, leaving Retirement blank once you switched back to it.
+// Function to switch the visible Configure/Analyze tab -- shared by the click handler below and
+// the on-load restoration further down, so a reload lands back on whichever tab was showing rather
+// than always resetting to Configure. Keyed off [data-tab] and scoped to this section's own panels,
+// NOT a bare .tab/.panel sweep: Budget's tabs share the .tab class for styling but carry
+// data-budget-tab instead, so a bare .tab selector matched them too and built
+// getElementById("panel-undefined") -- null, which threw. The throw landed halfway through, after
+// .active had already been stripped from every .panel on the page including this section's,
+// leaving Retirement blank once you switched back to it.
+function activateRetirementTab(name) {
+  document.querySelectorAll("[data-tab]").forEach((t) => t.classList.toggle("active", t.dataset.tab === name))
+  document.querySelectorAll("#page-retirement .panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + name))
+}
+
 document.querySelectorAll("[data-tab]").forEach((tab) => {
   tab.addEventListener("click", () => {
-    document.querySelectorAll("[data-tab]").forEach((t) => t.classList.remove("active"))
-    document.querySelectorAll("#page-retirement .panel").forEach((p) => p.classList.remove("active"))
-    tab.classList.add("active")
-    document.getElementById("panel-" + tab.dataset.tab).classList.add("active")
+    activateRetirementTab(tab.dataset.tab)
+    try {
+      setCookie("activeRetirementTab", tab.dataset.tab)
+    } catch {
+      // Cookies disabled -- the switch still works for this page view, it just won't be remembered.
+    }
     if (tab.dataset.tab === "analyze") runCheck()
   })
 })
@@ -1195,6 +1218,14 @@ function activateSection(name) {
   document.querySelectorAll(".page").forEach((p) => p.classList.toggle("active", p.id === "page-" + name))
   if (name === "budget") {
     if (!PICKER.table) loadPickerTable()
+  }
+  // Mirrors the budget branch above: only fires when Retirement is actually the section being
+  // landed on (never unconditionally at boot, which would cost a real network call on every load
+  // regardless of which section a person actually opens), and only when Analyze is the tab already
+  // restored onto it -- activateRetirementTab has to run before this, at boot, for that class check
+  // to reflect the real restored tab rather than whatever the static HTML happened to mark active.
+  if (name === "retirement" && document.getElementById("panel-analyze").classList.contains("active")) {
+    runCheck()
   }
 }
 
@@ -2112,6 +2143,14 @@ loadLiveSettings()
 // the amount box and the button pair can never disagree with whichever option the page happens to
 // open on.
 applySelectedAction()
+
+try {
+  const savedTab = getCookie("activeRetirementTab")
+  const knownTabs = [...document.querySelectorAll("[data-tab]")].map((t) => t.dataset.tab)
+  activateRetirementTab(knownTabs.includes(savedTab) ? savedTab : "configure")
+} catch {
+  activateRetirementTab("configure")
+}
 
 try {
   const savedSection = getCookie("activeSection")
