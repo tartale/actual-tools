@@ -176,7 +176,6 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
         hasStyleKey: Boolean(el.querySelector(".bridge-style-key")), // has locked money -- key shown
         criticalMarkers: el.querySelectorAll(".bridge-end-critical").length,
         unlockLines: el.querySelectorAll(".bridge-unlock-line").length,
-        unlockLabel: el.querySelector(".bridge-unlock-label")?.textContent,
         endLabel: el.querySelector(".bridge-end-label")?.textContent,
         dashedLines: el.querySelectorAll('path[stroke-dasharray]').length,
       }
@@ -184,8 +183,9 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     expect(chart.hasLegend).toBe(false)
     expect(chart.hasStyleKey).toBe(true)
     expect(chart.criticalMarkers).toBe(1)
+    // The unlock reference line is a plain line with no label of its own now (the age is already
+    // in the prose finding below), so there's nothing left to assert about it beyond the line count.
     expect(chart.unlockLines).toBe(1)
-    expect(chart.unlockLabel).toMatch(/^unlocks \d+$/)
     expect(chart.endLabel).toMatch(/^depletes at \d+$/)
     expect(chart.dashedLines).toBe(1)
 
@@ -212,7 +212,6 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
         unlockLines: el.querySelectorAll(".bridge-unlock-line").length,
         endLabels: el.querySelectorAll(".bridge-end-label").length,
         plainEndDots: el.querySelectorAll("circle:not(.bridge-end-critical)").length,
-        // Both accounts are already unlocked by 65, so nothing is locked at retirement.
         hasStyleKey: Boolean(el.querySelector(".bridge-style-key")),
       }
     })
@@ -223,7 +222,11 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     // (see BRIDGE_WINDOW_YEARS) omits it, and 65+20=85 is past this plan's own 100... wait, planToAge
     // is 100 so this scenario's natural end (100) exceeds the window (85) and IS windowed, hence no dot.
     expect(chart.plainEndDots).toBe(0)
-    expect(chart.hasStyleKey).toBe(false)
+    // Both accounts are already unlocked by 65 (retirement), but the 401k's own accessAge (59) is
+    // still 9 years out from currentAge (50) -- the accumulation phase drawn between them (see
+    // BridgeResult's own accumulation field) genuinely has locked money in it, even though nothing
+    // is locked by the time withdrawals actually start, so the style key is real here too.
+    expect(chart.hasStyleKey).toBe(true)
     expect(errors).toEqual([])
   }, 60000)
 

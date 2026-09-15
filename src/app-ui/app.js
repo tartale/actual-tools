@@ -116,6 +116,7 @@ async function loadState() {
   try {
     STATE = await api("/api/retirement/state")
     clearError()
+    saveSkeletonCache(STATE)
     render()
   } catch (error) {
     showError(error.message, () => loadState())
@@ -175,6 +176,17 @@ function render() {
   renderTaxBands()
   renderExpenseCategoryPicker()
   renderAccounts()
+  // Restoring "retirement" as the remembered active section (see the activateSection call at the
+  // bottom of this file) fires runCheck() synchronously at page load, well before this STATE fetch
+  // (a real ~3.7s round trip through Actual's own API) resolves -- so the very first call renders
+  // renderLoadingSkeleton's plain LOADING_MARKUP fallback, never the real axis/legend/title version
+  // that needs STATE. Re-running it here, now that STATE actually exists, upgrades that fallback in
+  // place. Only while the check itself is still pending (retirementChecked but not firstCheckDone
+  // yet) -- render() fires on every later STATE update too (any field edit's own patch), and must
+  // never clobber real chart content that's already showing with this loading placeholder again.
+  if (retirementChecked && !firstCheckDone) {
+    renderLoadingSkeleton()
+  }
 }
 
 function renderSummary() {
@@ -860,6 +872,12 @@ function moneyify(text) {
 // scenarios that remain.
 const BRIDGE_SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
 
+// Mirrors DEFAULT_MONTE_CARLO_ASSUMPTIONS in fire-dashboard.ts -- only used for the loading
+// skeleton's own group-label text (see renderLoadingSkeleton), since the real ones only ever
+// travel from server to client already resolved (inside a check response), never the other way.
+const DEFAULT_MONTE_CARLO_INFLATION_MEAN = 0.03
+const DEFAULT_MONTE_CARLO_SIMULATION_COUNT = 5000
+
 // Function to format cents as a compact dollar figure for the chart's own axis -- $0, $50K, $1.2M
 // -- never the full $50,000.00 usd() prints elsewhere, which would crowd a narrow axis gutter.
 function usdCompact(cents) {
@@ -913,7 +931,7 @@ function niceAxisTicks(maxCents, targetCount) {
 // its own line already stops naturally at the age it runs out, which is the entire point.
 const BRIDGE_WINDOW_YEARS = 20
 
-function renderBridgeChart(bridgeResults) {
+function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = []) {
   const usable = bridgeResults.filter((r) => r.timeline.length > 0 && r.accessibleAtRetirement + r.lockedAtRetirement > 0)
   if (usable.length === 0) return null
 
@@ -922,10 +940,24 @@ function renderBridgeChart(bridgeResults) {
   // ordinary, unremarkable way to read "still fine beyond here" (the legend, tooltip, and the prose
   // finding below all still carry the real number); a marker drawn away from the age it actually
   // describes would be a label lying about its own position.
+  // Joins history/accumulation/drawn into one continuous line with no seam: history's last point
+  // and accumulation's first are both just "today," and accumulation's last and drawn's first are
+  // both exactly accessibleAtRetirement/lockedAtRetirement (see the doc comments on BridgeResult's
+  // own history/accumulation fields) -- only actually dropped when the ages agree, so this stays
+  // correct however many of the three segments turn out to be empty.
+  const mergeBridgeSegments = (...segments) =>
+    segments.reduce((merged, segment) => {
+      if (segment.length === 0) return merged
+      const dupe = merged.length > 0 && merged[merged.length - 1].age === segment[0].age
+      return [...merged, ...segment.slice(dupe ? 1 : 0)]
+    }, [])
+
   const scenarios = usable.map((result) => {
     const naturalEndAge = result.timeline[result.timeline.length - 1].age
     const displayEndAge = result.depletionAge != null ? naturalEndAge : Math.min(naturalEndAge, result.retirementAge + BRIDGE_WINDOW_YEARS)
-    return { result, drawn: result.timeline.filter((point) => point.age <= displayEndAge), trimmed: displayEndAge < naturalEndAge }
+    const drawn = result.timeline.filter((point) => point.age <= displayEndAge)
+    const full = mergeBridgeSegments(result.history, result.accumulation, drawn)
+    return { result, drawn, full, trimmed: displayEndAge < naturalEndAge }
   })
 
   const width = 640
@@ -934,18 +966,39 @@ function renderBridgeChart(bridgeResults) {
   const plotWidth = width - margin.left - margin.right
   const plotHeight = height - margin.top - margin.bottom
 
-  const minAge = Math.min(...scenarios.map((s) => s.drawn[0].age))
-  // Reference lines for a locked tranche unlocking after depletion belong in the domain too, even
-  // for a scenario whose own line stops a little before that age -- otherwise the one thing the
-  // marker exists to show (how far off the next unlock is) would be the one thing cropped away.
-  const maxAge = Math.max(...scenarios.flatMap((s) => [s.drawn[s.drawn.length - 1].age, s.result.nextUnlockAfterDepletion ?? -Infinity]))
-  const maxBalance = Math.max(1, ...scenarios.flatMap((s) => s.drawn.flatMap((point) => [point.accessibleBalance, point.lockedBalance])))
+  // Same domain as the Monte Carlo chart (currentAge through planToAge), so the two are directly
+  // comparable at a glance -- widened past whatever a scenario's own line actually covers when a
+  // depletion or unlock age runs later than planToAge itself, and pulled earlier still by real
+  // account history (result.history), when there's any -- see checkDashboard's own history/
+  // historicalAges for how far back that can go.
+  const minAge = Math.min(currentAge, ...scenarios.map((s) => s.full[0].age))
+  const maxAge = Math.max(planToAge, ...scenarios.flatMap((s) => [s.drawn[s.drawn.length - 1].age, s.result.nextUnlockAfterDepletion ?? -Infinity]))
+  const maxBalance = Math.max(1, ...scenarios.flatMap((s) => s.full.flatMap((point) => [point.accessibleBalance, point.lockedBalance])))
   const yTicks = niceAxisTicks(maxBalance, 4)
   const yMax = yTicks[yTicks.length - 1]
 
   const scaleX = (age) => margin.left + (maxAge === minAge ? 0 : ((age - minAge) / (maxAge - minAge)) * plotWidth)
   const scaleY = (cents) => margin.top + plotHeight - (cents / yMax) * plotHeight
   const linePath = (points, key) => points.map((point, index) => `${index === 0 ? "M" : "L"}${scaleX(point.age).toFixed(1)},${scaleY(point[key]).toFixed(1)}`).join(" ")
+  // Pixel length of the same polyline linePath would draw, for dashOffsetEndingMidDash below --
+  // stroke-dasharray's on/off phase is purely a function of arc length, with no notion of "make
+  // sure a mark actually lands on the endpoint."
+  const pathPixelLength = (points, key) => {
+    let total = 0
+    for (let i = 1; i < points.length; i++) {
+      total += Math.hypot(scaleX(points[i].age) - scaleX(points[i - 1].age), scaleY(points[i][key]) - scaleY(points[i - 1][key]))
+    }
+    return total
+  }
+  // The stroke-dashoffset that puts the MIDDLE of an "on" dash exactly at the end of a path of the
+  // given length, for a "dashLength off gapLength" pattern. Without this, a dashed line's visible
+  // end depends purely on how its total length happens to divide by the pattern's period -- for
+  // the locked/accessible join below, where the dashed line is meant to visibly reach the exact
+  // point the solid line takes over, that's the difference between it looking connected or not.
+  const dashOffsetEndingMidDash = (length, dashLength, gapLength) => {
+    const period = dashLength + gapLength
+    return (((dashLength / 2 - length) % period) + period) % period
+  }
 
   const gridlines = yTicks
     .map(
@@ -972,11 +1025,32 @@ function renderBridgeChart(bridgeResults) {
   // scenarios retiring at different ages can still name the same locked account's own access age).
   const unlockAges = [...new Set(scenarios.map((s) => s.result.nextUnlockAfterDepletion).filter((age) => age != null))]
   const unlockLines = unlockAges
-    .map(
-      (age) =>
-        `<line x1="${scaleX(age).toFixed(1)}" y1="${margin.top}" x2="${scaleX(age).toFixed(1)}" y2="${height - margin.bottom}" class="bridge-unlock-line" />` +
-        `<text x="${scaleX(age).toFixed(1)}" y="${margin.top + 10}" class="bridge-unlock-label" text-anchor="${scaleX(age) > width - margin.right - 50 ? "end" : "start"}" dx="${scaleX(age) > width - margin.right - 50 ? -4 : 4}">unlocks ${age}</text>`,
-    )
+    .map((age) => `<line x1="${scaleX(age).toFixed(1)}" y1="${margin.top}" x2="${scaleX(age).toFixed(1)}" y2="${height - margin.bottom}" class="bridge-unlock-line" />`)
+    .join("")
+
+  // One shared reference line per distinct age at which an active 401(k)'s Rule-of-55 separation
+  // makes it accessible early (see effectiveAccessAge) -- neutral, like the unlock lines above,
+  // since more than one account can share the same boosted age. Drawn regardless of whether any
+  // scenario actually depletes, unlike the unlock lines: this is "here's when that account itself
+  // opens up," not "here's what would have saved a scenario that already ran out."
+  const ruleOf55Ages = [...new Set(ruleOf55Boosts.map((b) => b.to))].filter((age) => age > minAge && age <= maxAge)
+  const ruleOf55Lines = ruleOf55Ages
+    .map((age) => {
+      const amount = ruleOf55Boosts.filter((b) => b.to === age).reduce((total, b) => total + b.amount, 0)
+      const x = scaleX(age)
+      const label = `Rule of 55: +${usdCompact(amount)}`
+      // No canvas measurement available for an inline SVG string -- ~5.3px/char is a fair estimate
+      // for this label's font-size (9.5px), good enough to decide which side of "middle" would run
+      // the label off the plot area, which is all this needs.
+      const halfLabelWidth = (label.length * 5.3) / 2
+      const anchor = x + halfLabelWidth > width - margin.right ? "end" : x - halfLabelWidth < margin.left ? "start" : "middle"
+      const dx = anchor === "end" ? -4 : anchor === "start" ? 4 : 0
+      return (
+        `<line x1="${x.toFixed(1)}" y1="${margin.top}" x2="${x.toFixed(1)}" y2="${height - margin.bottom}" class="bridge-ruleof55-line" />` +
+        `<text x="${x.toFixed(1)}" y="8" class="bridge-ruleof55-label" text-anchor="${anchor}" dx="${dx}">${escapeHtml(label)}</text>` +
+        `<path d="M${(x - 4).toFixed(1)},14 L${x.toFixed(1)},19 L${(x + 4).toFixed(1)},14" fill="none" class="bridge-ruleof55-arrow" />`
+      )
+    })
     .join("")
 
   // Past 4 series, direct end-labels start to collide with each other rather than with the lines
@@ -984,32 +1058,72 @@ function renderBridgeChart(bridgeResults) {
   // carry one regardless (see the doc comment on BRIDGE_WINDOW_YEARS for why a funded one doesn't).
   const directLabels = scenarios.length <= 4
   const seriesSvg = scenarios
-    .map(({ result, drawn, trimmed }, index) => {
+    .map(({ result, drawn, full, trimmed }, index) => {
       const color = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
-      const lockedPoints = drawn.filter((point) => point.lockedBalance > 0)
+      // One continuous line across real history, the projected accumulation phase, and the
+      // withdrawal-phase simulation -- see mergeBridgeSegments above for why `full` has no seam at
+      // either join. Same solid-accessible/dashed-locked styling throughout; nothing here marks
+      // where real data ends and projection begins, since the finding text and (once hovered) the
+      // tooltip both already carry that distinction age-by-age.
+      //
+      const firstLockedIndex = full.findIndex((point) => point.lockedBalance > 0)
+      const lastLockedIndex = full.map((point) => point.lockedBalance > 0).lastIndexOf(true)
+      const hasUnlock = lastLockedIndex !== -1 && lastLockedIndex + 1 < full.length
+      // The TRUE combined value both lines converge on at the unlock age -- full[lastLockedIndex
+      // + 1].accessibleBalance, not full[lastLockedIndex].lockedBalance. Those two look like they
+      // should be the same figure (all of what was locked, become accessible) but aren't: the
+      // former has a further year of growth on it that the latter doesn't, so joining on the
+      // pre-growth figure left the dashed line's own endpoint visibly below where the solid line
+      // actually lands.
+      const unlockValue = hasUnlock ? full[lastLockedIndex + 1].accessibleBalance : 0
+      // Held flat one age further than the real data (lockedBalance is already 0 the moment it
+      // unlocks, at full[lastLockedIndex + 1]) and up to unlockValue, not its own pre-growth
+      // figure, so its endpoint is the exact point the solid line's jump lands on.
+      const lockedPoints =
+        firstLockedIndex === -1
+          ? []
+          : hasUnlock
+            ? [...full.slice(firstLockedIndex, lastLockedIndex + 1), { age: full[lastLockedIndex + 1].age, lockedBalance: unlockValue }]
+            : full.slice(firstLockedIndex, lastLockedIndex + 1)
+      // The jump itself: held flat to the SAME age the dashed line was extended to (its own low
+      // value didn't change between these two whole-year snapshots either, only locked's did),
+      // THEN straight up to unlockValue at that same x -- moving only the top of the jump to the
+      // unlock age and leaving the bottom at the prior age would draw a DIAGONAL spanning both
+      // ages instead of a vertical rise at one; both ends need to move together for the two lines
+      // to actually meet. full.slice(lastLockedIndex + 1) already starts at this same value (its
+      // own first point IS unlockValue), so nothing further needs inserting after it.
+      const accessiblePoints = hasUnlock
+        ? [...full.slice(0, lastLockedIndex + 1), { age: full[lastLockedIndex + 1].age, accessibleBalance: full[lastLockedIndex].accessibleBalance }, ...full.slice(lastLockedIndex + 1)]
+        : full
       const last = drawn[drawn.length - 1]
       const endX = scaleX(last.age)
       const endY = scaleY(last.accessibleBalance)
+      // The chart's own right edge now runs out to planToAge (see minAge/maxAge above), past where
+      // a windowed funded scenario's line actually stops -- so "runs off the right edge" no longer
+      // reads as "still fine" for it the way it used to. A small open chevron in the series' own
+      // color stands in for that: "still going, deliberately not drawn past here" (see
+      // BRIDGE_WINDOW_YEARS), rather than a line that just dead-ends with blank chart after it.
       const endMarker =
         result.depletionAge != null
           ? `<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="4.5" class="bridge-end-critical" />`
           : trimmed
-            ? ""
+            ? `<path d="M${(endX + 1).toFixed(1)},${(endY - 4).toFixed(1)} L${(endX + 7).toFixed(1)},${endY.toFixed(1)} L${(endX + 1).toFixed(1)},${(endY + 4).toFixed(1)}" fill="none" stroke="${color}" stroke-width="2" class="bridge-end-continues" />`
             : `<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="2" />`
       const endLabel =
         directLabels && result.depletionAge != null
           ? `<text x="${endX.toFixed(1)}" y="${(endY - 9).toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">depletes at ${result.depletionAge}</text>`
           : ""
+      const lockedDashOffset = lockedPoints.length > 1 ? dashOffsetEndingMidDash(pathPixelLength(lockedPoints, "lockedBalance"), 4, 3) : 0
       return `<g data-series="${index}">
-          ${lockedPoints.length > 1 ? `<path d="${linePath(lockedPoints, "lockedBalance")}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4 3" opacity="0.55" />` : ""}
-          <path d="${linePath(drawn, "accessibleBalance")}" fill="none" stroke="${color}" stroke-width="2" />
+          ${lockedPoints.length > 1 ? `<path d="${linePath(lockedPoints, "lockedBalance")}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4 3" stroke-dashoffset="${lockedDashOffset.toFixed(2)}" opacity="0.55" />` : ""}
+          <path d="${linePath(accessiblePoints, "accessibleBalance")}" fill="none" stroke="${color}" stroke-width="2" />
           ${endMarker}
           ${endLabel}
         </g>`
     })
     .join("")
 
-  const showsLocked = scenarios.some((s) => s.drawn.some((point) => point.lockedBalance > 0))
+  const showsLocked = scenarios.some((s) => s.full.some((point) => point.lockedBalance > 0))
 
   const wrap = document.createElement("div")
   wrap.className = "bridge-chart"
@@ -1019,6 +1133,7 @@ function renderBridgeChart(bridgeResults) {
       ${ageAxis}
       ${seriesSvg}
       ${unlockLines}
+      ${ruleOf55Lines}
       <line class="bridge-crosshair" x1="0" y1="${margin.top}" x2="0" y2="${height - margin.bottom}" hidden />
       <rect class="bridge-hit" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="transparent" />
     </svg>
@@ -1055,10 +1170,11 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
   const hit = wrap.querySelector(".bridge-hit")
   const crosshair = wrap.querySelector(".bridge-crosshair")
   const tooltip = wrap.querySelector(".bridge-tooltip")
-  // Keyed off what is actually DRAWN, not each scenario's full timeline -- a funded scenario's line
-  // may be windowed short of its real end (see BRIDGE_WINDOW_YEARS), and the tooltip should never
-  // offer a value for an age that isn't on screen to hover in the first place.
-  const byAge = scenarios.map(({ drawn }) => new Map(drawn.map((point) => [point.age, point])))
+  // Keyed off what is actually drawn (the merged history/accumulation/withdrawal line, `full`),
+  // not each scenario's raw timeline -- a funded scenario's line may be windowed short of its real
+  // end (see BRIDGE_WINDOW_YEARS), and the tooltip should never offer a value for an age that isn't
+  // on screen to hover in the first place.
+  const byAge = scenarios.map(({ full }) => new Map(full.map((point) => [point.age, point])))
 
   const move = (event) => {
     const rect = svg.getBoundingClientRect()
@@ -1131,7 +1247,7 @@ let mcChartInstanceCounter = 0
 // scenario happens to deplete). Outer band = 10th-90th percentile (80% of simulated runs), inner
 // band = 25th-75th (the interquartile range), solid line = median (50th). Returns null when there
 // is nothing to plot.
-function renderMonteCarloChart(monteCarloResults, currentAge) {
+function renderMonteCarloChart(monteCarloResults, currentAge, monteCarloHistory = []) {
   const usable = monteCarloResults.filter((r) => r.percentileBands.length > 0)
   if (usable.length === 0) return null
 
@@ -1146,7 +1262,11 @@ function renderMonteCarloChart(monteCarloResults, currentAge) {
   const plotWidth = width - margin.left - margin.right
   const plotHeight = height - margin.top - margin.bottom
 
-  const minAge = Math.min(...series.map((s) => s.points[0].age))
+  // Real account history (monteCarloHistory), not simulated, pulls the domain's start earlier
+  // still than currentAge -- contiguous with every series' own first point (band.year 0 is always
+  // exactly at currentAge), unlike Bridge's own history, which can leave a real gap before a later
+  // retirementAge. See checkDashboard's own history/historicalAges for how far back that can go.
+  const minAge = Math.min(currentAge, ...monteCarloHistory.map((point) => point.age), ...series.map((s) => s.points[0].age))
   const maxAge = Math.max(...series.map((s) => s.points[s.points.length - 1].age))
   // Scaled off the MEDIAN's own peak (with headroom), not the 75th/90th percentile bands:
   // compounding at the high end of a 30-40 year horizon can reach genuinely enormous nominal
@@ -1230,6 +1350,13 @@ function renderMonteCarloChart(monteCarloResults, currentAge) {
     })
   }
 
+  // One shared, neutral line (real data belongs to no one scenario) for the real total-balance
+  // history before currentAge -- extended through currentAge itself using the first series' own
+  // year-0 point (every scenario's simulation starts from the same real current balance, with no
+  // variance yet at year 0), so it meets the fan chart's own p50 line with no gap.
+  const historyPoints = monteCarloHistory.length > 0 ? [...monteCarloHistory, { age: currentAge, totalBalance: series[0].points[0].p50 }] : []
+  const historySvg = historyPoints.length > 1 ? `<path d="${linePath(historyPoints, "totalBalance")}" fill="none" stroke="var(--ink-soft)" stroke-width="2" />` : ""
+
   const seriesSvg = series
     .map(({ result, points }, index) => {
       const color = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
@@ -1263,7 +1390,7 @@ function renderMonteCarloChart(monteCarloResults, currentAge) {
       <defs><clipPath id="${clipId}"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" /></clipPath></defs>
       ${gridlines}
       ${ageAxis}
-      <g clip-path="url(#${clipId})">${seriesSvg}</g>
+      <g clip-path="url(#${clipId})">${historySvg}${seriesSvg}</g>
       <line class="bridge-crosshair" x1="0" y1="${margin.top}" x2="0" y2="${height - margin.bottom}" hidden />
       <rect class="bridge-hit" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="transparent" />
     </svg>
@@ -1406,11 +1533,183 @@ function renderStaleResult(findings) {
   container.appendChild(group)
 }
 
-// Centered spinner + label, sized by whichever container it's placed in (min-height: inherit pulls
-// #checkResult's own min-height -- see style.css) -- shown while Analysis is actually fetching, on
-// the very first load and on every Refresh alike, so the panel is never left showing stale content
-// (or a tiny, differently-sized placeholder) while new data is on the way.
-const LOADING_MARKUP = `<div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Loading…</div>`
+// Fallback for the rare case a check fires before STATE itself has loaded (see renderLoadingSkeleton) --
+// two plain chart-shaped slots (see [[no-layout-shift-ux-rule]]) at the real chart's own 640:240
+// aspect ratio, since there's nothing yet to build a real skeleton (axis/legend/title) from.
+const LOADING_MARKUP = `<div class="panel-loading chart-loading">
+  <div class="chart-loading-slot">
+    <div class="chart-loading-spinner"><div class="spinner" aria-hidden="true"></div>Loading…</div>
+  </div>
+  <div class="chart-loading-slot">
+    <div class="chart-loading-spinner"><div class="spinner" aria-hidden="true"></div>Loading…</div>
+  </div>
+</div>`
+
+// Function to build one chart's own loading placeholder -- everything a real
+// renderBridgeChart/renderMonteCarloChart call already knows before the /api/retirement/check
+// response even lands (the age axis, spanning currentAge-planToAge the same way the real charts
+// do; the legend, one swatch per configured retirement age; a $ axis scaled off today's real
+// portfolio total, since the actual future peak isn't known yet; the style key) drawn for real,
+// with only the data that truly depends on the response (the lines themselves) standing in as a
+// spinner. Same bridge-chart/bridge-chart-svg classes as the real thing so it's sized and styled
+// identically. `styleKey` is the literal HTML for whichever style-key row the real chart would
+// show (Accessible/Locked for Bridge, always shown for Monte Carlo) -- passed in rather than
+// decided here, since Bridge's own version is conditional on a real guess (does ANY portfolio
+// account still have a locked accessAge?) that belongs with the rest of that call's own inputs.
+function renderChartSkeleton(ariaLabel, currentAge, planToAge, retirementAges, portfolioTotal, styleKey) {
+  const width = 640
+  const height = 240
+  const margin = { top: 12, right: 16, bottom: 24, left: 54 }
+  const plotWidth = width - margin.left - margin.right
+  const plotHeight = height - margin.top - margin.bottom
+  const minAge = currentAge
+  const maxAge = planToAge
+  const scaleX = (age) => margin.left + (maxAge === minAge ? 0 : ((age - minAge) / (maxAge - minAge)) * plotWidth)
+
+  const span = maxAge - minAge
+  const ageStep = span > 40 ? 10 : span > 12 ? 5 : 1
+  const ageTicks = []
+  for (let age = Math.ceil(minAge / ageStep) * ageStep; age <= maxAge; age += ageStep) ageTicks.push(age)
+  if (ageTicks[0] !== minAge) ageTicks.unshift(minAge)
+  if (ageTicks[ageTicks.length - 1] !== maxAge) ageTicks.push(maxAge)
+  const ageAxis = ageTicks
+    .map((age) => `<text x="${scaleX(age).toFixed(1)}" y="${height - margin.bottom + 16}" class="bridge-axis-label" text-anchor="middle">${age}</text>`)
+    .join("")
+
+  // A real chart's own y-axis is scaled off whatever the actual simulation peaks at, which isn't
+  // known yet -- doubling today's real portfolio total is a plausible enough stand-in that the
+  // gridlines/labels look like a real, if soon-to-be-corrected, chart rather than an arbitrary
+  // guess, without pretending to forecast the plan's actual growth.
+  const yTicks = niceAxisTicks(Math.max(1, portfolioTotal) * 2, 4)
+  const yMax = yTicks[yTicks.length - 1]
+  const scaleY = (cents) => margin.top + plotHeight - (cents / yMax) * plotHeight
+  const gridlines = yTicks
+    .map(
+      (tickCents) =>
+        `<line x1="${margin.left}" y1="${scaleY(tickCents).toFixed(1)}" x2="${width - margin.right}" y2="${scaleY(tickCents).toFixed(1)}" class="bridge-grid" />` +
+        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${usdCompact(tickCents)}</text>`,
+    )
+    .join("")
+
+  const wrap = document.createElement("div")
+  wrap.className = "bridge-chart"
+  wrap.innerHTML = `
+    <div class="chart-svg-wrap">
+      <svg viewBox="0 0 ${width} ${height}" class="bridge-chart-svg" role="img" aria-label="${escapeHtml(ariaLabel)} (loading)">
+        ${gridlines}
+        ${ageAxis}
+      </svg>
+      <div class="chart-loading-overlay"><div class="chart-loading-spinner"><div class="spinner" aria-hidden="true"></div>Loading…</div></div>
+    </div>
+    ${
+      retirementAges.length > 1
+        ? `<div class="bridge-legend">${retirementAges
+            .map((age, index) => `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${age}</span>`)
+            .join("")}</div>`
+        : ""
+    }
+    ${styleKey}
+  `
+  return wrap
+}
+
+// localStorage, not the plan itself -- purely a same-browser hint so the very FIRST paint of a
+// fresh page load (before STATE has round-tripped through Actual's own API, ~3.7s in practice) can
+// still show a real skeleton instead of the bare LOADING_MARKUP fallback, on the extremely common
+// path where "retirement" is the remembered active section (see render()'s own doc comment) and so
+// the check fires before that fetch could possibly have landed. Reconciled the instant STATE does
+// load (render() re-runs renderLoadingSkeleton while the check is still pending), so a stale cache
+// (an age that ticked over, a retirement age added since) is never shown for more than a moment.
+const SKELETON_CACHE_KEY = "runway.retirementSkeleton.v1"
+
+function skeletonInputsFrom(state) {
+  if (state.currentAge == null) return null
+  const portfolioAccounts = state.accounts.filter((account) => account.isPortfolio)
+  return {
+    currentAge: state.currentAge,
+    planToAge: state.dashboard.planToAge,
+    retirementAges: state.dashboard.retirementAges,
+    inflationMean: state.dashboard.monteCarloInflationMean ?? DEFAULT_MONTE_CARLO_INFLATION_MEAN,
+    simulationCount: state.dashboard.monteCarloSimulationCount ?? DEFAULT_MONTE_CARLO_SIMULATION_COUNT,
+    portfolioTotal: portfolioAccounts.reduce((total, account) => total + account.balance, 0),
+    // A real guess (does any portfolio account still have a locked accessAge?), not a placeholder
+    // -- real accounts, real ages, just not run through the actual Bridge simulation yet.
+    hasLockedAccounts: portfolioAccounts.some((account) => account.accessAge != null && account.accessAge > state.currentAge),
+  }
+}
+
+function saveSkeletonCache(state) {
+  const inputs = skeletonInputsFrom(state)
+  if (!inputs) return
+  try {
+    localStorage.setItem(SKELETON_CACHE_KEY, JSON.stringify(inputs))
+  } catch {
+    // Storage disabled/unavailable -- the skeleton just falls back to the bare spinner next time.
+  }
+}
+
+function loadSkeletonCache() {
+  try {
+    const raw = localStorage.getItem(SKELETON_CACHE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+// Function to fill #checkResult with a per-chart loading skeleton (see renderChartSkeleton) --
+// everything it draws (age axis, legend, group-label text) is real plan config, not a placeholder
+// standing in for it, from STATE when it's already loaded or otherwise the same browser's own
+// cached copy of it (see SKELETON_CACHE_KEY above). Falls back to the plain LOADING_MARKUP only
+// when neither is available, i.e. a genuinely first-ever visit.
+function renderLoadingSkeleton() {
+  const container = document.getElementById("checkResult")
+  const inputs = (STATE && skeletonInputsFrom(STATE)) ?? loadSkeletonCache()
+  if (!inputs) {
+    container.innerHTML = LOADING_MARKUP
+    return
+  }
+  container.innerHTML = ""
+  const { currentAge, planToAge, retirementAges, inflationMean, simulationCount, portfolioTotal, hasLockedAccounts } = inputs
+  // Same style-key markup renderBridgeChart/renderMonteCarloChart themselves emit -- see
+  // renderChartSkeleton's own doc comment on why Bridge's is conditional and Monte Carlo's isn't.
+  const bridgeStyleKey = hasLockedAccounts
+    ? `<div class="bridge-style-key"><span class="bridge-key-line bridge-key-solid"></span>Accessible<span class="bridge-key-line bridge-key-dashed"></span>Locked</div>`
+    : ""
+  const monteCarloStyleKey = `<div class="bridge-style-key"><span class="mc-key-swatch mc-key-outer"></span>10th-90th<span class="mc-key-swatch mc-key-inner"></span>25th-75th<span class="bridge-key-line"></span>Median</div>`
+
+  // One placeholder finding row per retirement age -- both bridgeFindings and monteCarloFindings
+  // always come back one per configured age (see checkDashboard), so this is a real count, not a
+  // guess, reserving the space the real prose findings are about to fill so the chart itself
+  // doesn't visibly shift up once they land. detailLines is a real asymmetry between the two, not
+  // an arbitrary choice: monteCarloFinding (fire-analysis.ts) only ever prints its own one-line
+  // "median ending balance" alone when the plan's success rate is a clean 100%, and otherwise adds
+  // a second "depleted runs typically ran out..." line -- the common case, since very few plans
+  // clear literally every simulated run. bridgeFinding is the mirror image: one line for its own
+  // "funds every year" pass, two for either failure case.
+  const findingSkeleton = (detailLines) =>
+    `<div class="finding">
+        <span class="chip skeleton-chip">&nbsp;</span>
+        <div>
+          <div class="title"><span class="skeleton-bar" style="width:70%"></span></div>
+          ${Array.from({ length: detailLines }, () => `<div class="detail"><span class="skeleton-bar" style="width:45%"></span></div>`).join("")}
+        </div>
+      </div>`
+
+  const bridgeGroup = document.createElement("div")
+  bridgeGroup.className = "findings-group"
+  bridgeGroup.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(inflationMean * 1000) / 10}% inflation</div>`
+  bridgeGroup.appendChild(renderChartSkeleton("Bridge burndown", currentAge, planToAge, retirementAges, portfolioTotal, bridgeStyleKey))
+  bridgeGroup.insertAdjacentHTML("beforeend", retirementAges.map(() => findingSkeleton(1)).join(""))
+  container.appendChild(bridgeGroup)
+
+  const monteCarloGroup = document.createElement("div")
+  monteCarloGroup.className = "findings-group"
+  monteCarloGroup.innerHTML = `<div class="group-label">Monte Carlo · ${simulationCount.toLocaleString()} simulated runs</div>`
+  monteCarloGroup.appendChild(renderChartSkeleton("Monte Carlo simulation", currentAge, planToAge, retirementAges, portfolioTotal, monteCarloStyleKey))
+  monteCarloGroup.insertAdjacentHTML("beforeend", retirementAges.map(() => findingSkeleton(2)).join(""))
+  container.appendChild(monteCarloGroup)
+}
 
 // Guards against two overlapping runCheck() calls landing out of order -- a real risk now that a
 // plain field edit can trigger one (see scheduleRecheck) on top of the manual Refresh button and
@@ -1439,7 +1738,7 @@ function revealTopSectionIfReady() {
 async function runCheck() {
   const requestId = ++checkRequestId
   const container = document.getElementById("checkResult")
-  container.innerHTML = LOADING_MARKUP
+  renderLoadingSkeleton()
   try {
     const result = await api("/api/retirement/check")
     if (requestId !== checkRequestId) return
@@ -1457,7 +1756,7 @@ async function runCheck() {
       const group = document.createElement("div")
       group.className = "findings-group"
       group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
-      const chart = renderBridgeChart(result.bridgeResults)
+      const chart = renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts)
       if (chart) group.appendChild(chart)
       result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
       container.appendChild(group)
@@ -1467,7 +1766,7 @@ async function runCheck() {
       group.className = "findings-group"
       const simCount = result.monteCarloResults[0]?.simulationCount
       group.innerHTML = `<div class="group-label">Monte Carlo${simCount ? ` · ${simCount.toLocaleString()} simulated runs` : ""}</div>`
-      const chart = renderMonteCarloChart(result.monteCarloResults, result.currentAge)
+      const chart = renderMonteCarloChart(result.monteCarloResults, result.currentAge, result.monteCarloHistory)
       if (chart) group.appendChild(chart)
       result.monteCarloFindings.forEach((f) => group.appendChild(renderFinding(f)))
       container.appendChild(group)

@@ -4,7 +4,7 @@ description: How this repo's claude-sandbox image and package.json should pin to
 metadata:
   node_type: memory
   type: feedback
-  modified: 2026-09-04T20:05:00.000Z
+  modified: 2026-09-15T03:50:00.000Z
 ---
 
 The user's general bake-into-image/pin-by-major policy (user-scope memory) applied concretely here:
@@ -49,6 +49,19 @@ and `/ms-playwright` exists (`ensurePlaywrightBrowsers` in `actual`), before
 package's own postinstall reads the same variable and will then skip a
 redundant several-hundred-megabyte browser download. Off the image the
 variable is left alone so Playwright falls back to its own default.
+
+**`node --watch` gotcha (2026-09-15)**: `./actual service start --dev` runs
+the companion app under `node --watch ./src/app.ts`, which forks a child
+process per (re)start and is supposed to respawn that child on save. In this
+sandbox it has twice gone stale mid-session -- several real edits to
+`fire-generate.ts`/`app.js` landed on disk with the child never respawning,
+so `curl`/Playwright checks against the "live" dev server kept reading old
+response shapes (missing fields entirely, not just wrong values) with no
+error anywhere. Don't trust it once you notice a check reflects code from
+before your last edit -- `ps aux | grep app.ts`, check the child PID's start
+time against your last edit, and if it's stale, `kill` both the watch parent
+and its child and start a fresh `./actual service start --dev` rather than
+waiting for it to catch up.
 
 **Why**: the major is where backward compatibility actually matters, so
 pinning minor/patch just creates drift to clean up later with no

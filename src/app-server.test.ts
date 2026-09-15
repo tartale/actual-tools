@@ -485,7 +485,7 @@ describe("POST /api/retirement/generate", () => {
 })
 
 describe("GET /api/retirement/check", () => {
-  it("reports no Monte Carlo widgets found when the dashboard hasn't been imported yet", async () => {
+  it("has no stale findings when the dashboard hasn't been imported yet -- optional, not something to flag", async () => {
     const url = await boot({ accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }], dashboardRows: [] })
     await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90 }) })
     await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
@@ -494,8 +494,7 @@ describe("GET /api/retirement/check", () => {
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
     expect(body.monteCarloWidgetCount).toBe(0)
-    expect(body.staleFindings[0]?.title).toContain("No dashboard exported")
-    expect(body.staleFindings[0]?.level).toBe("info")
+    expect(body.staleFindings).toEqual([])
   })
 
   it("reports the same portfolio total, Rule of 55 boosts, and debt payoffs Generate's own result carries", async () => {
@@ -533,7 +532,7 @@ describe("GET /api/retirement/check", () => {
     // Debt accounts are never part of the simulated portfolio -- only the two real pots count.
     expect(body.portfolioAccountCount).toBe(2)
     expect(body.portfolioTotal).toBe(15000000)
-    expect(body.ruleOf55Boosts).toEqual([{ accountName: "Fidelity 401k", from: 59, to: 55 }])
+    expect(body.ruleOf55Boosts).toEqual([{ accountName: "Fidelity 401k", from: 59, to: 55, amount: 10000000 }])
     expect(body.debtPayoffs).toHaveLength(1)
     expect(body.debtPayoffs[0]).toMatchObject({ accountName: "Mortgage", monthlyAmount: 100000 })
     expect(typeof body.debtPayoffs[0]?.payoffAge).toBe("number")

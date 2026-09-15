@@ -196,6 +196,8 @@ function bridgeResult(overrides: Partial<BridgeResult> & Pick<BridgeResult, "ret
     lockedAtDepletion: 0,
     nextUnlockAfterDepletion: null,
     timeline: [],
+    history: [],
+    accumulation: [],
     ...overrides,
   }
 }
