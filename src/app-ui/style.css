@@ -151,15 +151,15 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
    any Rule of 55/debt-payoff tiles (see renderSummaryStats in app.js) are added once
    /api/retirement/check resolves, and that's a variable count, not always 4. */
 .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 20px; }
+.summary[hidden] { display: none; }
 .summary .tile { background: var(--surface); padding: 11px 14px; }
 .summary .tile .label { font-size: 10px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); }
 .summary .tile .value { font-size: 17px; font-weight: 600; margin-top: 2px; color: var(--ink-strong); }
 .summary .tile .tile-note { font-size: 12px; font-weight: 400; color: var(--ink-faint); }
 
-/* The Retirement page's own foldable-section controls -- was a Configure/Analyze tab bar (.tabs/
-   .tab, since removed: nothing else in the app used them). Expand/Collapse all sit where the tab
-   bar used to, right-aligned like the summary tiles above them. */
-.section-fold-controls { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 16px; }
+/* Refresh/Expand all/Collapse all/Export to Dashboard sit in .page-head itself, beside the
+   privacy toggle, rather than their own row above the cards. */
+.page-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 /* The caret + <h2> group, so .card-head's own space-between still has exactly two children -- this
    group on the left, whatever hint/button a card already had on the right, untouched. */
 .card-head-title { display: flex; align-items: center; gap: 8px; }
@@ -176,6 +176,7 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .card-body { padding: 16px; }
 
 .plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.plan-grid .field.full { grid-column: 1 / -1; margin-top: 4px; }
 .field label { display: block; font-size: 11px; font-weight: 500; color: var(--ink-soft); margin-bottom: 5px; }
 .field input[type="text"], .field input[type="date"], .field input[type="number"], select {
   width: 100%; font: inherit; font-size: 13px; padding: 5px; border: 1px solid var(--line);
@@ -197,7 +198,12 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 }
 .field .derived, .acct-fields > .derived, .employer-block > .derived { font-size: 11px; color: var(--ink-faint); margin-top: 5px; grid-column: 1 / -1; }
 .derived.warn-text { color: var(--warn); }
-.checkbox-label, .radio-row label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 400; color: var(--ink); cursor: pointer; }
+/* label.checkbox-label (not just .checkbox-label) so this ties .field label's own specificity
+   (class+type) instead of losing to it -- a checkbox-label nested inside a .field (the expense-
+   category toolbar's "Show hidden"/"Hide unchecked" toggles, any category row) was silently
+   rendered display:block by that rule, collapsing the flex gap below to nothing since gap only
+   applies to a flex/grid container. Declared after .field label so the tie breaks this way. */
+label.checkbox-label, .radio-row label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 400; color: var(--ink); cursor: pointer; }
 .checkbox-label input, .radio-row input { width: auto; margin: 0; accent-color: var(--accent); }
 
 /* Groups the "active employer plan" checkbox with the fields that only make sense when it's
@@ -243,21 +249,74 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
    bonds") -- one quarter-width column truncates it, so this field gets two. */
 .field.wide { grid-column: span 2; }
 
+/* The Spend configuration section's expense-category picker: always visible, no master toggle --
+   a null selection (nothing customized) renders every non-hidden category checked, matching the
+   server-side default -- see renderExpenseCategoryPicker in app.js. Each group is its own foldable
+   section (fold state kept in EXPENSE_CATEGORY_FOLDS, independent of STATE, so it survives the
+   re-render every checkbox change triggers) with a tri-state "select all in this group" checkbox
+   (setTriState, shared with the Budget table's own group checkboxes) and a live N/total count so a
+   folded group's selection is still legible without opening it -- single column per group (not a
+   multi-column grid) for scanability, one category name per line. The toolbar above it
+   (Expand/Collapse all, Show hidden, Hide unchecked) mirrors the Budget page's own category
+   picker's header menu, minus the menu -- these controls are used often enough here to stay
+   visible rather than tucked behind a "⋮". The list still scrolls rather than growing the card
+   indefinitely for a budget with many groups, but folding is the first tool for managing that. */
+.spend-config-buffer { margin-top: 20px; }
+.category-picker-toolbar { display: flex; align-items: center; gap: 14px; margin: 6px 0 8px; flex-wrap: wrap; }
+.category-picker-toolbar .checkbox-label { font-size: 11.5px; }
+.help-icon {
+  display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
+  margin-left: 6px; border-radius: 50%; border: 1px solid var(--line); background: none;
+  color: var(--ink-faint); font-size: 10px; line-height: 1; cursor: pointer; padding: 0; vertical-align: 1px;
+}
+.help-icon:hover { color: var(--ink-strong); border-color: var(--ink-soft); }
+.help-icon.active { color: var(--accent-selected); border-color: var(--accent); }
+/* One shared popover element, positioned against whichever .help-icon was last clicked (see
+   openHelpPopover in app.js) -- same single-shared-element pattern as .bt-menu, rather than one
+   popover per icon. Click-triggered, not hover, so the text stays up while you read it and on
+   touch devices where hover doesn't exist at all. */
+.help-popover {
+  position: fixed; z-index: 40; max-width: 300px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  padding: 10px 12px; font-size: 12px; font-weight: 400; color: var(--ink-soft); line-height: 1.5;
+  text-transform: none; letter-spacing: normal;
+}
+.help-popover[hidden] { display: none; }
+.help-popover p { margin: 0; }
+.help-popover p + p { margin-top: 8px; }
+#expenseCategoryPicker {
+  max-height: 340px; overflow-y: auto; padding: 4px 10px;
+  border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--surface-2);
+}
+.category-picker-group { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.category-picker-group:last-child { border-bottom: none; }
+.category-picker-group-head { display: flex; align-items: center; gap: 4px; }
+.category-picker-group-head .bt-group-check-label { flex: 1; min-width: 0; }
+.category-picker-count { font-size: 11px; color: var(--ink-faint); flex: none; }
+.category-picker-body { padding: 4px 0 2px 24px; }
+.category-picker-body[hidden] { display: none; }
+.category-picker-item { padding: 2px 0; }
+/* Dimmed the same way the Budget table dims a category Actual itself has hidden -- only shown at
+   all when "Show hidden" is checked. */
+.category-picker-item.hidden-category { color: var(--ink-faint); font-style: italic; }
+
 .income-section + .income-section { margin-top: 16px; }
 .income-label { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
+.income-label + .wr-params, .income-grid + .wr-params { margin-top: -4px; margin-bottom: 12px; }
+.wr-params[hidden] { display: none; }
+.hint-inline { text-transform: none; letter-spacing: normal; font-weight: 400; font-size: 11px; color: var(--ink-faint); margin-left: 8px; }
+.tax-band-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end; margin-bottom: 8px; }
+.tax-band-row .field { margin: 0; }
+.tax-band-remove { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-faint); font-size: 16px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
+.tax-band-remove:hover { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
+#addTaxBandBtn { margin-top: 4px; }
 .income-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
-
-.live-settings-body { border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 10px; }
-.live-settings-body h3 { font-size: 12px; font-weight: 500; margin: 0; color: var(--ink-strong); }
-.kv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 20px; }
-#liveSettings .kv-grid + .income-label { margin-top: 14px; }
-.kv-grid .kv { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px dashed var(--line-soft); font-size: 12px; }
-.kv-grid .kv .k { color: var(--ink-soft); }
-.kv-grid .kv .v { color: var(--ink); font-weight: 500; }
-/* A pinned value: purple to show it's set in Simulation settings, and hovering it highlights the
-   actual input/select down there that controls it -- see renderLiveSettings' hover wiring. */
-.kv-grid .kv .v.pinned { color: var(--accent-selected); cursor: help; }
-.sim-field-highlight { box-shadow: 0 0 0 2px var(--accent-selected); border-color: var(--accent); border-radius: var(--radius-sm); }
+/* Breathing room between each Simulation Settings sub-group (Withdrawal / Returns & taxes / Tax
+   bands / Inflation & simulation) -- see index.html's own grouping. */
+.income-grid + .income-label, .wr-params + .income-label, #taxBandsList + .income-label,
+#addTaxBandBtn + .income-label {
+  margin-top: 14px;
+}
 
 .contrib-row { display: flex; align-items: center; gap: 6px; }
 .contrib-row input[type="number"] { flex: 1; }
@@ -275,7 +334,6 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .limit-lines .empty { color: var(--ink-faint); font-style: italic; }
 .no-fields-note { grid-column: 1 / -1; font-size: 11.5px; color: var(--ink-faint); font-style: italic; padding-top: 2px; }
 
-.generate-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 /* The Action dropdown and the buttons that run it share one row -- the months are chosen in the
    table's own headers now, so there are no month fields left to sit between them. */
 .action-row { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
@@ -305,13 +363,10 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .btn:disabled, .btn.secondary:disabled { background: var(--surface-2); color: var(--ink-faint); border: none; cursor: default; }
 .btn:disabled:hover, .btn.secondary:disabled:hover { background: var(--surface-2); box-shadow: none; }
 
-.gen-result { padding: 14px 16px; border-top: 1px solid var(--line-soft); }
+.gen-result { padding-top: 12px; margin-top: 4px; border-top: 1px solid var(--line-soft); }
 .gen-result[hidden] { display: none; }
 .line { font-size: 12.5px; margin-bottom: 5px; }
 .line .num { color: var(--accent-selected); font-weight: 500; }
-.import-steps { padding: 12px 16px 16px; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--ink-soft); }
-.import-steps ol { margin: 6px 0 0; padding-left: 18px; }
-.import-steps li { margin-bottom: 3px; }
 
 .findings-group + .findings-group { border-top: 1px solid var(--line-soft); }
 .findings-group .group-label { padding: 11px 16px 4px; font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
@@ -353,6 +408,12 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .bridge-style-key { display: flex; align-items: center; gap: 6px; padding: 3px 4px 0; font-size: 10.5px; color: var(--ink-faint); }
 .bridge-key-line { width: 16px; height: 0; border-top: 2px solid var(--ink-faint); flex: none; }
 .bridge-key-dashed { border-top-style: dashed; margin-left: 10px; }
+/* Neutral (not per-series) swatches for the Monte Carlo chart's own style key -- these explain a
+   band WIDTH convention shared by every series, not one series' identity, the same reasoning as
+   Bridge's own accessible/locked key above using ink rather than a series color. */
+.mc-key-swatch { width: 14px; height: 10px; border-radius: 2px; flex: none; background: var(--ink-faint); }
+.mc-key-outer { opacity: 0.3; margin-left: 4px; }
+.mc-key-inner { opacity: 0.6; margin-left: 10px; }
 .bridge-tooltip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45); padding: 6px 9px; font-size: 11px; white-space: nowrap; }
 .bridge-tooltip[hidden] { display: none; }
 .bridge-tooltip-age { font-size: 10px; color: var(--ink-faint); margin-bottom: 3px; }
@@ -364,12 +425,18 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 
 .empty-note { padding: 14px 16px; font-size: 12.5px; color: var(--ink-faint); font-style: italic; }
 
-/* Analysis is the one panel left that shows a real loading state -- given a fixed minimum height up
-   front so the loading spinner isn't a tiny sliver that then jumps taller the moment real content
-   (the fixed-height Bridge chart plus its findings) replaces it, and so a Refresh doesn't
-   shrink-then-grow either. .panel-loading pulls the same value via min-height:inherit rather than
-   repeating it. */
+/* Analysis gets a fixed minimum height up front so the loading spinner isn't a tiny sliver that
+   then jumps taller the moment real content (the fixed-height Bridge chart plus its findings)
+   replaces it, and so a Refresh doesn't shrink-then-grow either. .panel-loading pulls the same
+   value via min-height:inherit rather than repeating it. */
 #checkResult { min-height: 380px; }
+/* Portfolio/mortgage-and-other tiles and Stale both come from the same first /api/retirement/check
+   as Analysis, so they share its "nothing to show yet" gap too -- shown in .top-loading's place
+   until STATE has loaded AND that first check has resolved (see the shared reveal gate in app.js),
+   then hidden for good; a field edit's own re-check updates the tiles/Stale in place afterward
+   without re-showing this, unlike Analysis, which re-shows its own spinner on every check. */
+.top-loading { min-height: 84px; border: 1px solid var(--line-soft); border-radius: var(--radius-md); margin-bottom: 20px; }
+.top-loading[hidden] { display: none; }
 .panel-loading {
   display: flex;
   flex-direction: column;
@@ -404,6 +471,28 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .walkthrough strong { color: var(--ink-strong); font-weight: 600; }
 .walkthrough-dismiss { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border: none; background: transparent; color: var(--ink-faint); font-size: 16px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .walkthrough-dismiss:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+
+/* Export to Dashboard modal -- this app's only true modal dialog (everything else is an inline
+   card or a small anchored dropdown like .bt-menu), so its chrome is defined fresh here rather
+   than reusing .card, which assumes it's laid out in normal document flow, not centered over a
+   backdrop. */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 30;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  position: relative; background: var(--surface); border: 1px solid var(--card-border);
+  border-radius: var(--radius-md); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 20px 24px;
+}
+.modal h2 { font-size: 16px; font-weight: 600; margin: 0 0 10px; color: var(--ink-strong); }
+.modal p { font-size: 12.5px; color: var(--ink-soft); margin: 8px 0; }
+.modal ol { margin: 8px 0; padding-left: 20px; font-size: 12.5px; color: var(--ink-soft); }
+.modal li { margin-bottom: 6px; }
+.modal .btn { margin-top: 4px; }
+.modal-close { position: absolute; top: 12px; right: 12px; width: 24px; height: 24px; border: none; background: transparent; color: var(--ink-faint); font-size: 18px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
+.modal-close:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
 
 /* Budget table -- styled to read like Actual's own budget page: a group row you can fold (caret to
    the left of its checkbox/name, matching Actual's own placement) showing that group's own
@@ -468,7 +557,10 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .bt-menu[hidden] { display: none; }
 .bt-menu button { background: none; border: none; text-align: left; font: inherit; font-size: 12px; color: var(--ink); padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; }
 .bt-menu button:hover { background: var(--surface-2); color: var(--ink-strong); }
-.bt-group-check-label { display: inline-flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: var(--ink-strong); cursor: pointer; }
+/* label.bt-group-check-label -- see label.checkbox-label above for why the type qualifier is
+   needed: the expense-category picker's group header nests this inside a .field, where .field
+   label's own display:block would otherwise win on specificity and silently collapse the gap. */
+label.bt-group-check-label { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: var(--ink-strong); cursor: pointer; }
 .bt-group-check-label input, .budget-table-el .bt-name label input { accent-color: var(--accent); margin: 0; flex: none; }
 .budget-table-el .bt-name { text-align: left; }
 .budget-table-el .bt-row .bt-name label { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 20px; cursor: pointer; color: var(--ink); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }

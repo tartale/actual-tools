@@ -8,6 +8,7 @@
 </head>
 <body>
   <div class="saving-pill">Saving…</div>
+  <div class="help-popover" id="helpPopover" role="tooltip" hidden></div>
   <div class="app">
     <aside class="rail">
       <div>
@@ -32,26 +33,30 @@
           <h1>Retirement</h1>
           <p>Account facts feed the FIRE dashboard's Monte Carlo simulation; everything else — withdrawal rate, tax model, inflation — stays owned by Actual itself.</p>
         </div>
-        <button type="button" class="icon-btn" id="privacyToggle" title="Toggle privacy mode" aria-label="Toggle privacy mode" aria-pressed="false">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M2 12C4.5 7 8 4.5 12 4.5S19.5 7 22 12c-2.5 5-6 7.5-10 7.5S4.5 17 2 12Z"/>
-            <circle cx="12" cy="12" r="3"/>
-            <path class="slash" d="M3 3l18 18"/>
-          </svg>
-        </button>
+        <div class="page-head-actions">
+          <button type="button" class="btn secondary" id="refreshBtn">Refresh</button>
+          <button type="button" class="btn secondary" id="expandAllBtn">Expand all</button>
+          <button type="button" class="btn secondary" id="collapseAllBtn">Collapse all</button>
+          <button type="button" class="btn" id="exportDashboardBtn">Export to Dashboard</button>
+          <button type="button" class="icon-btn" id="privacyToggle" title="Toggle privacy mode" aria-label="Toggle privacy mode" aria-pressed="false">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 12C4.5 7 8 4.5 12 4.5S19.5 7 22 12c-2.5 5-6 7.5-10 7.5S4.5 17 2 12Z"/>
+              <circle cx="12" cy="12" r="3"/>
+              <path class="slash" d="M3 3l18 18"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div class="walkthrough" id="walkthrough" hidden>
         <button type="button" class="walkthrough-dismiss" id="walkthroughDismiss" title="Dismiss" aria-label="Dismiss this walkthrough">×</button>
         <h2>Getting started</h2>
-        <p>No FIRE dashboard is imported into Actual yet. Four steps to get one going:</p>
+        <p>No FIRE dashboard is imported into Actual yet. Two steps to get one going:</p>
         <ol>
-          <li>Below, fill in <strong>Plan</strong> (birth date, retirement ages to compare, plan-to-age) and check each account's <strong>type</strong> in <strong>Accounts</strong> — allocation, contributions, and everything else follow from that.</li>
-          <li>Scroll to <strong>Generate dashboard</strong> and click <strong>Download dashboard</strong>.</li>
-          <li>In Actual: <strong>Reports</strong> → new dashboard page (e.g. "FIRE") → <strong>"…"</strong> menu → <strong>Import</strong> → pick the file you just downloaded.</li>
-          <li>Open the <strong>crossover</strong> widget on that page and pick which accounts/categories it should actually count (it starts out covering everything non-income, which is rarely what you want) — this matters: the Monte Carlo widget's own spending figure is read back from that same selection on every future regenerate, not recalculated separately.</li>
+          <li>Below, fill in <strong>Plan</strong>, <strong>Expense Projection</strong>, and <strong>Simulation Settings</strong>, and check each account's <strong>type</strong> in <strong>Accounts</strong> — allocation, contributions, and everything else follow from that.</li>
+          <li>Click <strong>Export to Dashboard</strong> above and follow the steps there to bring it into Actual.</li>
         </ol>
-        <p>Come back here any time after that — this page will show what's actually live under "Configured in the Actual Dashboard" below, and Stale (at the very top) flags anything that's fallen out of sync as you keep editing.</p>
+        <p>Come back here any time after that — Stale (at the very top) flags anything that's fallen out of sync as you keep editing.</p>
       </div>
 
       <!-- Portfolio (instant, from STATE) plus whatever /api/retirement/check adds once it resolves
@@ -60,7 +65,8 @@
            renderSummaryStats in app.js. No Current age/Retirement ages/Plan to age tiles here any
            more either -- those duplicated the Plan card's own editable fields below, just read-only,
            which was two boxes for one value. -->
-      <div class="summary" id="summaryTiles">
+      <div class="panel-loading top-loading" id="topLoading"><div class="spinner" aria-hidden="true"></div>Loading…</div>
+      <div class="summary" id="summaryTiles" hidden>
         <div class="tile"><div class="label">Portfolio</div><div class="value num" id="sumPortfolio">—</div></div>
       </div>
 
@@ -69,16 +75,25 @@
            collapsed. Hidden (not just empty) while there's nothing to say -- see renderStaleResult. -->
       <div class="card" id="staleResult" hidden></div>
 
-      <!-- One flat page, foldable cards -- was two tabs (Configure/Analyze); expand/collapse-all
-           takes the tab bar's old spot. Fold state persists per section across a reload the same
-           way the tab choice used to (see applySectionFolds/saveSectionFolds in app.js). Refresh
-           pulls fresh data for the whole page -- the tiles/Stale above, Analysis and "Configured in
-           the Actual Dashboard" below -- from one button, rather than the two separate ones each
-           used to have. -->
-      <div class="section-fold-controls">
-        <button type="button" class="btn secondary" id="refreshBtn">Refresh</button>
-        <button type="button" class="btn secondary" id="expandAllBtn">Expand all</button>
-        <button type="button" class="btn secondary" id="collapseAllBtn">Collapse all</button>
+      <!-- One flat page, foldable cards, each independently expanded or collapsed -- Expand/
+           Collapse all and Refresh live up in .page-head now, beside the privacy toggle. Fold
+           state persists per section across a reload (see applySectionFolds/saveSectionFolds in
+           app.js). Refresh pulls fresh data for the whole page -- the tiles/Stale above and
+           Analysis below -- from one button. -->
+      <div class="modal-backdrop" id="exportModalBackdrop" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
+          <button type="button" class="modal-close" id="exportModalClose" title="Close" aria-label="Close">×</button>
+          <h2 id="exportModalTitle">Export to Actual Dashboard</h2>
+          <p>Builds net-worth, crossover, and Monte Carlo widgets from live balances and the accounts in Accounts. Download the file, then bring it into Actual:</p>
+          <ol>
+            <li>Open your budget in Actual and go to <strong>Reports</strong>.</li>
+            <li>Create a new dashboard page (e.g. name it "FIRE") — or reuse one this app already generated.</li>
+            <li>On that page, open the <strong>"…"</strong> menu → <strong>Import</strong> → pick the file you download below.</li>
+          </ol>
+          <p class="derived">Importing replaces every widget already on the target page — always import onto a page you're fine wiping. Re-exporting and re-importing onto that same page is the normal way to refresh it; your hand edits there are preserved (see the README).</p>
+          <button type="button" class="btn" id="generateBtn">Download dashboard</button>
+          <div class="gen-result" id="genResult" hidden></div>
+        </div>
       </div>
         <div class="card" data-section="plan">
           <div class="card-head">
@@ -104,26 +119,64 @@
               </div>
             </div>
           </div>
-          <div class="card-body live-settings-body">
-            <div class="card-head" style="padding:0;border:none;">
-              <h3>Configured in the Actual Dashboard</h3>
+          </div>
+        </div>
+
+        <div class="card" data-section="spend-configuration">
+          <div class="card-head">
+            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Expense Projection</h2></span>
+            <span class="hint">Drives annual spend for Bridge and Monte Carlo<span class="saved-flag" id="savedSpendConfig">saved</span></span>
+          </div>
+          <div class="card-fold">
+          <div class="card-body">
+            <div class="income-grid">
+              <div class="field">
+                <label for="crossoverSafeWithdrawalRate">Safe withdrawal rate<button type="button" class="help-icon" data-help="The amount you plan to withdraw from your portfolio each year to fund your living expenses.">?</button></label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="crossoverSafeWithdrawalRate" placeholder="not entered"></div>
+              </div>
+              <div class="field">
+                <label for="crossoverEstimatedReturn">Estimated return<button type="button" class="help-icon" data-help="The expected annual return rate for your investments, used to project the growth of your portfolio.">?</button></label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="crossoverEstimatedReturn" placeholder="auto"></div>
+              </div>
+              <div class="field">
+                <label for="crossoverProjectionType">Projection type<button type="button" class="help-icon" data-help="How past expenses are projected into the future.&#10;&#10;Hampel Filtered Median: filters out outliers before calculating the median expense.&#10;&#10;Median: uses the median of all historical expenses, without filtering.&#10;&#10;Mean: uses the average of all historical expenses.">?</button></label>
+                <select id="crossoverProjectionType">
+                  <option value="">not entered</option>
+                  <option value="hampel">Hampel Filtered Median</option>
+                  <option value="median">Median</option>
+                  <option value="mean">Mean</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="crossoverExpenseAdjustment">Expense Adjustment<button type="button" class="help-icon" data-help="How much to scale your projected expenses by.&#10;&#10;100% plans to spend the same as your projected expenses. Above 100% plans to spend more in retirement; below 100% plans to spend less.">?</button></label>
+                <div class="input-affix suffix-percent"><input type="number" step="1" id="crossoverExpenseAdjustment" placeholder="100"></div>
+              </div>
             </div>
-            <div id="liveSettings"><div class="empty-note">Loading…</div></div>
+            <div class="field full spend-config-buffer">
+              <label>Expense categories<button type="button" class="help-icon" data-help="Used to estimate your future expenses.&#10;&#10;Select the categories that reflect your living expenses in retirement -- e.g. Food, Utilities, Entertainment, Medical.&#10;&#10;Exclude categories that won't continue in retirement -- e.g. retirement savings contributions.">?</button><span class="saved-flag" id="savedExpenseCategories">saved</span></label>
+              <div class="category-picker-toolbar">
+                <button type="button" class="btn secondary" id="expenseCategoriesExpandAll">Expand all</button>
+                <button type="button" class="btn secondary" id="expenseCategoriesCollapseAll">Collapse all</button>
+                <label class="checkbox-label"><input type="checkbox" id="expenseCategoriesShowHidden">Show hidden</label>
+                <label class="checkbox-label"><input type="checkbox" id="expenseCategoriesHideUnchecked">Hide unchecked</label>
+              </div>
+              <div id="expenseCategoryPicker"><div class="empty-note">Loading…</div></div>
+            </div>
           </div>
           </div>
         </div>
 
         <div class="card" data-section="simulation-settings">
           <div class="card-head">
-            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Simulation settings</h2></span>
-            <span class="hint">Pinned values apply to every retirement-age comparison<span class="saved-flag" id="savedSimSettings">saved</span></span>
+            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Simulation Settings</h2></span>
+            <span class="hint">Applies to every retirement-age comparison<span class="saved-flag" id="savedSimSettings">saved</span></span>
           </div>
           <div class="card-fold">
           <div class="card-body">
-            <div class="derived" style="margin-top:0;margin-bottom:10px;">Leave a field empty to let Actual manage it per widget as usual. To pin one, copy the value currently shown under "Configured in the Actual Dashboard" above, or set your own — every retirement-age comparison will then use exactly that value.</div>
+            <div class="income-label">Withdrawal</div>
             <div class="income-grid">
               <div class="field">
-                <label for="mcWithdrawalStrategy">Withdrawal strategy</label>
+                <label for="mcWithdrawalStrategy">Withdrawal strategy<button type="button" class="help-icon" data-help="How the annual withdrawal is taken when you have more than one pot.&#10;&#10;Split proportionally across pots: split across pots based on their current balances.&#10;&#10;Drain pots in order: drain the first pot before touching the next, in the order set in Accounts.&#10;&#10;Spend from the best performer first: each year, drain the pot with the highest return last year -- spend cash after a stock crash so it can recover, and spend stocks in boom years. The first year uses the listed order.&#10;&#10;Keep pots at their target mix: withdrawals come from whichever pots have grown above their share of your starting mix, pulling the portfolio back toward it.&#10;&#10;Pots that haven't reached their access age yet are skipped until they unlock.">?</button></label>
                 <select id="mcWithdrawalStrategy">
                   <option value="">not entered</option>
                   <option value="proportional">Split proportionally across pots</option>
@@ -133,7 +186,85 @@
                 </select>
               </div>
               <div class="field">
-                <label for="mcReturnModel">Return model</label>
+                <label for="mcMinimumWithdrawal">Minimum withdrawal<button type="button" class="help-icon" data-help="The annual withdrawal never drops below this amount, no matter what the rule says. It only applies in years with planned spending -- a spending phase set to 0 takes nothing.&#10;&#10;Like your planned spending, it's in today's money and rises with inflation. Set to 0 for no floor.">?</button></label>
+                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="mcMinimumWithdrawal" placeholder="not entered"></div>
+              </div>
+              <div class="field">
+                <label for="mcWithdrawalRuleType">Withdrawal rule<button type="button" class="help-icon" data-help="Dynamic strategies that adjust your withdrawal each year based on how the pots are doing, instead of blindly taking the same inflation-adjusted amount.">?</button></label>
+                <select id="mcWithdrawalRuleType">
+                  <option value="">not entered</option>
+                  <option value="none">None (fixed withdrawals)</option>
+                  <option value="guardrails">Guardrails (Guyton-Klinger)</option>
+                  <option value="ratcheting">Ratcheting (Kitces)</option>
+                  <option value="floor-ceiling">Floor &amp; ceiling (Bengen)</option>
+                  <option value="boundaries">Boundaries</option>
+                </select>
+              </div>
+            </div>
+            <div class="income-grid wr-params" id="wrParamsGuardrails" hidden>
+              <div class="field">
+                <label for="wrProsperityTriggerPct">Prosperity trigger</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrProsperityTriggerPct"></div>
+              </div>
+              <div class="field">
+                <label for="wrProsperityIncreasePct">Prosperity increase</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrProsperityIncreasePct"></div>
+              </div>
+              <div class="field">
+                <label for="wrPreservationTriggerPct">Preservation trigger</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrPreservationTriggerPct"></div>
+              </div>
+              <div class="field">
+                <label for="wrPreservationCutPct">Preservation cut</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrPreservationCutPct"></div>
+              </div>
+            </div>
+            <div class="income-grid wr-params" id="wrParamsRatcheting" hidden>
+              <div class="field">
+                <label for="wrBalanceThresholdMultiple">Balance threshold (× initial)</label>
+                <input type="number" step="0.1" id="wrBalanceThresholdMultiple">
+              </div>
+              <div class="field">
+                <label for="wrConsecutiveYears">Consecutive years</label>
+                <input type="number" min="1" step="1" id="wrConsecutiveYears">
+              </div>
+              <div class="field">
+                <label for="wrRatchetIncreasePct">Ratchet increase</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrRatchetIncreasePct"></div>
+              </div>
+            </div>
+            <div class="income-grid wr-params" id="wrParamsFloorCeiling" hidden>
+              <div class="field">
+                <label for="wrFloorPct">Floor</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrFloorPct"></div>
+              </div>
+              <div class="field">
+                <label for="wrCeilingPct">Ceiling</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrCeilingPct"></div>
+              </div>
+            </div>
+            <div class="income-grid wr-params" id="wrParamsBoundaries" hidden>
+              <div class="field">
+                <label for="wrUpperRateThreshold">Upper rate threshold</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrUpperRateThreshold"></div>
+              </div>
+              <div class="field">
+                <label for="wrUpperCutPct">Upper cut</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrUpperCutPct"></div>
+              </div>
+              <div class="field">
+                <label for="wrLowerRateThreshold">Lower rate threshold</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrLowerRateThreshold"></div>
+              </div>
+              <div class="field">
+                <label for="wrLowerIncreasePct">Lower increase</label>
+                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="wrLowerIncreasePct"></div>
+              </div>
+            </div>
+            <div class="income-label">Returns &amp; taxes</div>
+            <div class="income-grid">
+              <div class="field">
+                <label for="mcReturnModel">Return model<button type="button" class="help-icon" data-help="How each simulated year's investment return is generated.&#10;&#10;Random: drawn from a normal distribution around each pot's expected return and volatility. All pots experience the same market conditions each year, scaled by their own volatility.&#10;&#10;Historical, shuffled: drawn from actual US market years (1928 onwards) in random order.&#10;&#10;Historical sequences: replays real market history, one scenario per starting year.">?</button></label>
                 <select id="mcReturnModel">
                   <option value="">not entered</option>
                   <option value="normal">Random (normal distribution)</option>
@@ -142,27 +273,29 @@
                 </select>
               </div>
               <div class="field">
-                <label for="mcTaxModel">Tax model</label>
+                <label for="mcTaxModel">Tax model<button type="button" class="help-icon" data-help="Your yearly spending is what you keep after tax; the simulation withdraws extra to cover the tax.&#10;&#10;Flat rate: each pot has one effective tax rate on its withdrawals -- simple and jurisdiction-free.&#10;&#10;Tax bands: enter your own progressive bands, and each pot declares how much of a withdrawal counts as taxable income. The bands apply to each year's combined taxable withdrawals.">?</button></label>
                 <select id="mcTaxModel">
                   <option value="">not entered</option>
                   <option value="flat">Flat rate per pot</option>
                   <option value="bands">Tax bands (progressive)</option>
                 </select>
               </div>
+            </div>
+            <div class="income-label">Tax bands<button type="button" class="help-icon" data-help="Enter your own progressive bands. Each pot declares how much of a withdrawal counts as taxable income; the bands apply to each year's combined taxable withdrawals across every pot.">?</button><span class="hint-inline">Only used when Tax model is "Tax bands (progressive)"</span></div>
+            <div id="taxBandsList"></div>
+            <button type="button" class="btn secondary" id="addTaxBandBtn">Add band</button>
+            <div class="income-label">Inflation &amp; simulation</div>
+            <div class="income-grid">
               <div class="field">
-                <label for="mcInflationMean">Inflation (mean)</label>
+                <label for="mcInflationMean">Inflation (mean)<button type="button" class="help-icon" data-help="The average yearly rise in prices. When set, your planned spending grows with it so your spending power is maintained.&#10;&#10;Leave blank to keep withdrawals flat.">?</button></label>
                 <div class="input-affix suffix-percent"><input type="number" step="0.1" id="mcInflationMean" placeholder="not entered"></div>
               </div>
               <div class="field">
-                <label for="mcInflationStdDev">Inflation (std dev)</label>
+                <label for="mcInflationStdDev">Inflation (std dev)<button type="button" class="help-icon" data-help="Real-world inflation bounces around from year to year rather than staying fixed. When set, each simulated year draws its own inflation rate around the mean.&#10;&#10;Around 2% matches how much US inflation has varied in recent decades. Set to 0 to use the fixed mean rate every year.">?</button></label>
                 <div class="input-affix suffix-percent"><input type="number" step="0.1" id="mcInflationStdDev" placeholder="not entered"></div>
               </div>
               <div class="field">
-                <label for="mcMinimumWithdrawal">Minimum withdrawal</label>
-                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="mcMinimumWithdrawal" placeholder="not entered"></div>
-              </div>
-              <div class="field">
-                <label for="mcSimulationCount">Simulation count</label>
+                <label for="mcSimulationCount">Simulation count<button type="button" class="help-icon" data-help="How many random scenarios to run. More simulations give a steadier result but take slightly longer.">?</button></label>
                 <input type="number" min="1" step="1" id="mcSimulationCount" placeholder="not entered">
               </div>
             </div>
@@ -244,18 +377,6 @@
           </div>
         </div>
 
-        <div class="card" data-section="generate-dashboard">
-          <div class="card-head">
-            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Generate dashboard</h2></span>
-          </div>
-          <div class="card-fold">
-          <div class="card-body generate-row">
-            <div style="font-size:12px;color:var(--ink-soft);max-width:48ch;">Builds net-worth, crossover, and Monte Carlo widgets from live balances and the accounts on the left. Import once into a new Actual dashboard page — regenerating never overwrites your hand edits there.</div>
-            <button type="button" class="btn" id="generateBtn">Download dashboard</button>
-          </div>
-          <div class="gen-result" id="genResult" hidden></div>
-          </div>
-        </div>
       </div>
 
       <div class="page active" id="page-budget">

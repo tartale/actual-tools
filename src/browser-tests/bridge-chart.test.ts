@@ -186,7 +186,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     expect(chart.criticalMarkers).toBe(1)
     expect(chart.unlockLines).toBe(1)
     expect(chart.unlockLabel).toMatch(/^unlocks \d+$/)
-    expect(chart.endLabel).toMatch(/^depletes \d+$/)
+    expect(chart.endLabel).toMatch(/^depletes at \d+$/)
     expect(chart.dashedLines).toBe(1)
 
     // Matches the prose finding right below it -- same age, same run, told two ways. The Stale
@@ -254,10 +254,13 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     // a fraction of the full domain, which here spans retire-50's own two-point sliver (it depletes
     // almost immediately) all the way out to retire-65's 20-year window, and would easily land in
     // the empty gap between the two.
-    const hit = ui.locator(".bridge-hit")
+    // Scoped to :not(.mc-chart) -- the Monte Carlo fan chart renders alongside Bridge on the same
+    // page now and shares every one of these class names for its identical grid/axis/tooltip
+    // styling (see mc-chart's own doc comment in app.js).
+    const hit = ui.locator(".bridge-chart:not(.mc-chart) .bridge-hit")
     const box = await hit.boundingBox()
     await ui.evaluate(([x, y]) => {
-      document.querySelector(".bridge-hit")?.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true }))
+      document.querySelector(".bridge-chart:not(.mc-chart) .bridge-hit")?.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true }))
     }, [(box?.x ?? 0) + 3, (box?.y ?? 0) + (box?.height ?? 0) * 0.6])
     await ui.waitForTimeout(150)
     const tooltip = await ui.evaluate(() => ({
@@ -301,7 +304,11 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     await opened.waitForSelector("#checkResult .finding, #checkResult .empty-note", { timeout: 20000 })
     await opened.waitForTimeout(200)
 
-    expect(await opened.evaluate(() => document.querySelector(".bridge-chart"))).toBeNull()
+    // :not(.mc-chart): an empty portfolio has no Bridge chart either way, but this also confirms
+    // Monte Carlo doesn't fill the gap with its own chart -- see the portfolioIds.length guard in
+    // checkDashboard for why it shouldn't (the vendored engine's own fallback default pot).
+    expect(await opened.evaluate(() => document.querySelector(".bridge-chart:not(.mc-chart)"))).toBeNull()
+    expect(await opened.evaluate(() => document.querySelector(".mc-chart"))).toBeNull()
     expect(errors).toEqual([])
   }, 60000)
 })
