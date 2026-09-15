@@ -11,10 +11,12 @@ import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } 
 import {
   ACCOUNT_TYPES,
   ACCOUNT_TYPE_TRAITS,
+  CROSSOVER_PROJECTION_TYPES,
   MONTE_CARLO_ALLOCATION_PRESETS,
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
   MONTE_CARLO_RETURN_MODELS,
   MONTE_CARLO_TAX_MODELS,
+  MONTE_CARLO_WITHDRAWAL_RULE_TYPES,
   MONTE_CARLO_WITHDRAWAL_STRATEGIES,
   classifyAccounts,
   contributionLimitLines,
@@ -30,19 +32,23 @@ import type {
   AccountType,
   ClassifiedAccount,
   ContributionLimitGroup,
+  CrossoverProjectionType,
   EmployerContributionSummary,
   FireAccountOverride,
   FireConfig,
   MonteCarloAllocationPreset,
   MonteCarloReturnModel,
+  MonteCarloTaxBandMeta,
   MonteCarloTaxModel,
+  MonteCarloWithdrawalRuleMeta,
+  MonteCarloWithdrawalRuleType,
   MonteCarloWithdrawalStrategy,
 } from "./fire-accounts.ts"
 import { loadIrsLimits } from "./irs-limits.ts"
 import { calculateMortgagePayoff } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
-import { checkDashboard, fetchLiveDashboardSettings, generateDashboard } from "./fire-generate.ts"
-import { ALLOCATION_PRESET_RETURNS, WITHDRAWAL_TAX_RATES, monteCarloAssumptionsWithOverrides, pinnedMonteCarloFields, retirementIncomeStreams } from "./fire-dashboard.ts"
+import { checkDashboard, generateDashboard } from "./fire-generate.ts"
+import { ALLOCATION_PRESET_RETURNS, WITHDRAWAL_TAX_RATES, crossoverAssumptionsWithOverrides, monteCarloAssumptionsWithOverrides, pinnedCrossoverFields, pinnedMonteCarloFields, retirementIncomeStreams } from "./fire-dashboard.ts"
 
 // A plain node:http server -- no new dependency, matching this repo's zero-runtime-deps
 // convention. Routes are namespaced under /api/retirement/ so a future /api/budget/... or
@@ -352,6 +358,9 @@ function requirePlan(fireConfig: FireConfig): {
   incomeStreams: ReturnType<typeof retirementIncomeStreams>
   monteCarloAssumptions: ReturnType<typeof monteCarloAssumptionsWithOverrides>
   pinnedMonteCarloFields: ReturnType<typeof pinnedMonteCarloFields>
+  crossoverExpenseCategoryIds: string[] | null
+  crossoverAssumptions: ReturnType<typeof crossoverAssumptionsWithOverrides>
+  pinnedCrossoverFields: ReturnType<typeof pinnedCrossoverFields>
 } {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
@@ -370,6 +379,9 @@ function requirePlan(fireConfig: FireConfig): {
     incomeStreams: retirementIncomeStreams(fireConfig.dashboard),
     monteCarloAssumptions: monteCarloAssumptionsWithOverrides(fireConfig.dashboard),
     pinnedMonteCarloFields: pinnedMonteCarloFields(fireConfig.dashboard),
+    crossoverExpenseCategoryIds: fireConfig.dashboard.crossoverExpenseCategoryIds,
+    crossoverAssumptions: crossoverAssumptionsWithOverrides(fireConfig.dashboard),
+    pinnedCrossoverFields: pinnedCrossoverFields(fireConfig.dashboard),
   }
 }
 
@@ -675,6 +687,69 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           }
           dashboard.monteCarloSimulationCount = value
         }
+        if ("crossoverExpenseCategoryIds" in body) {
+          const value = body.crossoverExpenseCategoryIds
+          if (value !== null && (!Array.isArray(value) || value.length === 0 || value.some((id) => typeof id !== "string"))) {
+            throw new Error("crossoverExpenseCategoryIds must be a non-empty array of category id strings, or null.")
+          }
+          dashboard.crossoverExpenseCategoryIds = value as string[] | null
+        }
+        if ("crossoverSafeWithdrawalRate" in body) {
+          const value = body.crossoverSafeWithdrawalRate
+          if (value !== null && (typeof value !== "number" || value <= 0)) {
+            throw new Error("crossoverSafeWithdrawalRate must be a positive number or null.")
+          }
+          dashboard.crossoverSafeWithdrawalRate = value
+        }
+        if ("crossoverEstimatedReturn" in body) {
+          const value = body.crossoverEstimatedReturn
+          if (value !== null && typeof value !== "number") {
+            throw new Error("crossoverEstimatedReturn must be a number or null.")
+          }
+          dashboard.crossoverEstimatedReturn = value
+        }
+        if ("crossoverProjectionType" in body) {
+          if (body.crossoverProjectionType !== null && !CROSSOVER_PROJECTION_TYPES.includes(body.crossoverProjectionType as CrossoverProjectionType)) {
+            throw new Error(`crossoverProjectionType must be one of ${CROSSOVER_PROJECTION_TYPES.join(", ")}, or null.`)
+          }
+          dashboard.crossoverProjectionType = body.crossoverProjectionType as CrossoverProjectionType | null
+        }
+        if ("crossoverExpenseAdjustmentFactor" in body) {
+          const value = body.crossoverExpenseAdjustmentFactor
+          if (value !== null && (typeof value !== "number" || value <= 0)) {
+            throw new Error("crossoverExpenseAdjustmentFactor must be a positive number or null.")
+          }
+          dashboard.crossoverExpenseAdjustmentFactor = value
+        }
+        if ("monteCarloWithdrawalRule" in body) {
+          const rule = body.monteCarloWithdrawalRule
+          if (rule !== null) {
+            if (typeof rule !== "object" || Array.isArray(rule) || !MONTE_CARLO_WITHDRAWAL_RULE_TYPES.includes((rule as { type?: unknown }).type as MonteCarloWithdrawalRuleType)) {
+              throw new Error(`monteCarloWithdrawalRule.type must be one of ${MONTE_CARLO_WITHDRAWAL_RULE_TYPES.join(", ")}.`)
+            }
+            for (const [key, value] of Object.entries(rule)) {
+              if (key !== "type" && typeof value !== "number") {
+                throw new Error(`monteCarloWithdrawalRule.${key} must be a number.`)
+              }
+            }
+          }
+          dashboard.monteCarloWithdrawalRule = rule as MonteCarloWithdrawalRuleMeta | null
+        }
+        if ("monteCarloTaxBands" in body) {
+          const bands = body.monteCarloTaxBands
+          if (bands !== null) {
+            if (!Array.isArray(bands)) {
+              throw new Error("monteCarloTaxBands must be an array, or null.")
+            }
+            for (const band of bands as unknown[]) {
+              const b = band as { id?: unknown; from?: unknown; rate?: unknown }
+              if (typeof b !== "object" || b === null || typeof b.id !== "string" || (b.from !== undefined && typeof b.from !== "number") || (b.rate !== undefined && typeof b.rate !== "number")) {
+                throw new Error("Each monteCarloTaxBands entry must have a string id and numeric from/rate.")
+              }
+            }
+          }
+          dashboard.monteCarloTaxBands = bands as MonteCarloTaxBandMeta[] | null
+        }
         writeFireConfig(configPath, { ...fireConfig, dashboard })
         sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))
         return
@@ -742,11 +817,6 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           fallbackInflationMean: 0.03,
         })
         sendJson(res, 200, result)
-        return
-      }
-
-      if (req.method === "GET" && path === "/api/retirement/live-settings") {
-        sendJson(res, 200, await fetchLiveDashboardSettings(actualConfig))
         return
       }
 

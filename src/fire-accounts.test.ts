@@ -519,6 +519,114 @@ describe("loadFireConfig", () => {
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
     expect(() => loadFireConfig("/fake/path")).toThrow("planToAge must be a positive number")
   })
+
+  it("accepts a real crossoverExpenseCategoryIds selection", () => {
+    const goodConfig = { version: 1, accounts: [], dashboard: { crossoverExpenseCategoryIds: ["cat-1", "cat-2"] } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.crossoverExpenseCategoryIds).toEqual(["cat-1", "cat-2"])
+  })
+
+  it("defaults crossoverExpenseCategoryIds to null when unset", () => {
+    const goodConfig = { version: 1, accounts: [], dashboard: {} }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.crossoverExpenseCategoryIds).toBeNull()
+  })
+
+  it("throws on an empty crossoverExpenseCategoryIds array", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { crossoverExpenseCategoryIds: [] } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("crossoverExpenseCategoryIds must be a non-empty array of category id strings, or null")
+  })
+
+  it("throws on a non-string entry in crossoverExpenseCategoryIds", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { crossoverExpenseCategoryIds: ["cat-1", 2] } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("crossoverExpenseCategoryIds must be a non-empty array of category id strings, or null")
+  })
+
+  it("accepts a real crossoverProjectionType value", () => {
+    const goodConfig = { version: 1, accounts: [], dashboard: { crossoverProjectionType: "median" } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.crossoverProjectionType).toBe("median")
+  })
+
+  it("throws on an unrecognized crossoverProjectionType value", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { crossoverProjectionType: "bogus" } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("crossoverProjectionType")
+  })
+
+  it("throws on a non-positive crossoverSafeWithdrawalRate", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { crossoverSafeWithdrawalRate: 0 } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("crossoverSafeWithdrawalRate must be a positive number")
+  })
+
+  it("accepts a negative crossoverEstimatedReturn (a pessimistic assumption is still valid)", () => {
+    const goodConfig = { version: 1, accounts: [], dashboard: { crossoverEstimatedReturn: -0.01 } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.crossoverEstimatedReturn).toBe(-0.01)
+  })
+
+  it("throws on a non-positive crossoverExpenseAdjustmentFactor", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { crossoverExpenseAdjustmentFactor: -0.1 } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("crossoverExpenseAdjustmentFactor must be a positive number")
+  })
+
+  it("accepts a full guardrails monteCarloWithdrawalRule", () => {
+    const goodConfig = {
+      version: 1,
+      accounts: [],
+      dashboard: { monteCarloWithdrawalRule: { type: "guardrails", prosperityTriggerPct: 0.2, prosperityIncreasePct: 0.1, preservationTriggerPct: 0.15, preservationCutPct: 0.1 } },
+    }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.monteCarloWithdrawalRule).toEqual(goodConfig.dashboard.monteCarloWithdrawalRule)
+  })
+
+  it("accepts pinning { type: \"none\" } to force every widget back to no rule", () => {
+    const goodConfig = { version: 1, accounts: [], dashboard: { monteCarloWithdrawalRule: { type: "none" } } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.monteCarloWithdrawalRule).toEqual({ type: "none" })
+  })
+
+  it("throws on an unrecognized monteCarloWithdrawalRule.type", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { monteCarloWithdrawalRule: { type: "bogus" } } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("monteCarloWithdrawalRule.type")
+  })
+
+  it("throws on a non-numeric monteCarloWithdrawalRule parameter", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { monteCarloWithdrawalRule: { type: "guardrails", prosperityTriggerPct: "high" } } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("monteCarloWithdrawalRule.prosperityTriggerPct must be a number")
+  })
+
+  it("accepts an empty monteCarloTaxBands array as a real pinned value", () => {
+    const goodConfig = { version: 1, accounts: [], dashboard: { monteCarloTaxBands: [] } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.monteCarloTaxBands).toEqual([])
+  })
+
+  it("accepts a real monteCarloTaxBands list", () => {
+    const goodConfig = { version: 1, accounts: [], dashboard: { monteCarloTaxBands: [{ id: "b1", from: 0, rate: 0.1 }, { id: "b2", from: 5000000, rate: 0.22 }] } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.monteCarloTaxBands).toEqual(goodConfig.dashboard.monteCarloTaxBands)
+  })
+
+  it("throws on a monteCarloTaxBands entry missing an id", () => {
+    const badConfig = { version: 1, accounts: [], dashboard: { monteCarloTaxBands: [{ from: 0, rate: 0.1 }] } }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow("monteCarloTaxBands entry must have a string id")
+  })
 })
 
 describe("loadClassifiedAccounts", () => {

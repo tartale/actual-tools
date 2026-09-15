@@ -13,7 +13,6 @@ import {
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import {
-  DEFAULT_CROSSOVER_ASSUMPTIONS,
   buildFireDashboard,
   buildMonteCarloWidgets,
   effectiveAccessAge,
@@ -21,19 +20,20 @@ import {
   portfolioAccountIds,
   totalMonthlyContribution,
 } from "./fire-dashboard.ts"
-import type { CrossoverCardMeta, ExistingDashboard, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { CrossoverAssumptions, CrossoverCardMeta, ExistingDashboard, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 import {
   bridgeFinding,
   calculateMortgagePayoff,
-  detectCrossoverMismatch,
-  detectMonteCarloSettingsDrift,
   detectMonteCarloWidgetSetDrift,
   detectPotDrift,
   detectSpendingPhaseDrift,
+  monteCarloFinding,
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
 import type { BridgeResult, Finding } from "./fire-analysis.ts"
+import { runRetirementMonteCarlo } from "./fire-monte-carlo.ts"
+import type { MonteCarloResultEntry, MonteCarloSummary } from "./fire-monte-carlo.ts"
 
 // The non-CLI guts of what used to be reports-fire.ts's main(): fetching real data, building or
 // analyzing the dashboard, and returning a plain structured result rather than printing one --
@@ -62,6 +62,33 @@ async function trailingAnnualSpend(config: ActualConfig, categoryIds: readonly s
     monthlyTotal += averageSpent(history)
   }
   return monthlyTotal * 12
+}
+
+// Function to compute annual spend from the Plan section's own expense-category selection --
+// takes priority over a live crossover widget's checklist (spendFromCrossover) wherever it's set,
+// so narrowing categories never requires opening Actual.
+// Intersected against the real, currently non-income/non-hidden category ids so a category deleted
+// or hidden after being selected doesn't silently error the whole run; returns null (not a zero
+// spend) when that intersection is empty, so the caller falls back the same way it would if this
+// selection had never been set at all.
+async function spendFromLocalSelection(
+  config: ActualConfig,
+  allExpenseCategoryIds: readonly string[],
+  selection: readonly string[] | null,
+  adjustmentFactor: number,
+): Promise<{ annualSpend: number; basis: string } | null> {
+  if (selection == null) {
+    return null
+  }
+  const categoryIds = selection.filter((id) => allExpenseCategoryIds.includes(id))
+  if (categoryIds.length === 0) {
+    return null
+  }
+  const annualSpend = Math.round((await trailingAnnualSpend(config, categoryIds)) * adjustmentFactor)
+  const basis =
+    `${categoryIds.length} categories over ${HISTORY_MONTHS} months to ${currentMonth()} (Plan section selection)` +
+    (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
+  return { annualSpend, basis }
 }
 
 // Function to recompute annual spend from the crossover widget's own live selection: the
@@ -149,67 +176,6 @@ export async function fetchLiveExistingDashboard(actualConfig: ActualConfig): Pr
   }
 }
 
-// The crossover/Monte Carlo assumption fields this app never lets the user edit directly (safe
-// withdrawal rate, tax model, inflation, withdrawal strategy, ...) -- Actual's own dashboard UI is
-// the only place to change them, and mergeGeneratedDashboard exists specifically to leave them
-// alone on every regenerate. Surfaced read-only in the Plan section (see PATCH-free
-// GET /api/retirement/live-settings) so a person can see what's actually live without opening
-// Actual, and so it's obvious when a "Simulation settings" field they've pinned here (see
-// fire-dashboard.ts's monteCarloAssumptionsWithOverrides) hasn't propagated to Actual yet.
-export interface LiveDashboardSettings {
-  crossover: {
-    safeWithdrawalRate: number
-    estimatedReturn: number | null
-    projectionType: string
-    expenseAdjustmentFactor: number
-  } | null
-  monteCarlo: {
-    withdrawalStrategy: string | null
-    returnModel: string | null
-    withdrawalRuleType: string
-    minimumWithdrawal: number
-    inflationMean: number | null
-    inflationStdDev: number
-    taxModel: string
-    simulationCount: number
-  } | null
-}
-
-// Function to summarize whatever's actually live on the "FIRE" dashboard page -- reuses
-// fetchLiveExistingDashboard's own fetch (same page, same widgets) rather than a second ActualQL
-// round trip. Returns all-null (not an error) when there's no such page yet, matching this
-// function's own "advisory" convention.
-export async function fetchLiveDashboardSettings(actualConfig: ActualConfig): Promise<LiveDashboardSettings> {
-  const dashboard = await fetchLiveExistingDashboard(actualConfig)
-  if (!dashboard) {
-    return { crossover: null, monteCarlo: null }
-  }
-  const crossoverMeta = dashboard.widgets.find((widget) => widget.type === "crossover-card")?.meta as CrossoverCardMeta | undefined
-  const monteCarloMeta = dashboard.widgets.find((widget) => widget.type === "monte-carlo-card")?.meta as MonteCarloCardMeta | undefined
-  return {
-    crossover: crossoverMeta
-      ? {
-          safeWithdrawalRate: crossoverMeta.safeWithdrawalRate,
-          estimatedReturn: crossoverMeta.estimatedReturn,
-          projectionType: crossoverMeta.projectionType,
-          expenseAdjustmentFactor: crossoverMeta.expenseAdjustmentFactor,
-        }
-      : null,
-    monteCarlo: monteCarloMeta
-      ? {
-          withdrawalStrategy: monteCarloMeta.withdrawalStrategy ?? null,
-          returnModel: monteCarloMeta.returnModel ?? null,
-          withdrawalRuleType: monteCarloMeta.withdrawalRule?.type ?? "none",
-          minimumWithdrawal: monteCarloMeta.minimumWithdrawal ?? 0,
-          inflationMean: monteCarloMeta.inflationMean ?? null,
-          inflationStdDev: monteCarloMeta.inflationStdDev ?? 0,
-          taxModel: monteCarloMeta.taxModel ?? "flat",
-          simulationCount: monteCarloMeta.simulationCount ?? 0,
-        }
-      : null,
-  }
-}
-
 // Function to turn each debt account's own mortgage-payoff projection (see
 // calculateMortgagePayoff) into a guaranteed-income-shaped stream: once the loan is paid off, that
 // monthly payment stops going out, which is economically the same as new income arriving --
@@ -257,6 +223,14 @@ export interface GenerateOptions {
   incomeStreams: readonly RetirementIncomeStream[]
   monteCarloAssumptions: MonteCarloAssumptions
   pinnedMonteCarloFields: ReadonlySet<string>
+  // Set on the Plan section instead of Actual's own crossover-card checklist -- see
+  // DashboardConfig's own doc comment. Null keeps today's default (every non-income, non-hidden
+  // category).
+  crossoverExpenseCategoryIds: readonly string[] | null
+  // The crossover widget's own remaining assumptions, with the Plan section's overrides already
+  // layered in -- see fire-dashboard.ts's crossoverAssumptionsWithOverrides.
+  crossoverAssumptions: CrossoverAssumptions
+  pinnedCrossoverFields: ReadonlySet<string>
 }
 
 export interface RuleOf55Boost {
@@ -323,19 +297,25 @@ export async function generateDashboard(
   const existing = liveExisting ?? localExisting
   const mergeSource: GenerateResult["mergeSource"] = liveExisting ? "live" : localExisting ? "local" : "none"
 
-  // Prefer the live crossover widget's own selection and date range for annual spend, same as
-  // checkDashboard already does via spendFromCrossover -- this tool's own "every non-income,
-  // non-hidden category, trailing 12 months" default exists only for a page that doesn't exist
-  // yet. Once a person has narrowed the crossover's own checklist (excluding one-time trip
-  // categories, a dependent's separate expenses, ...), falling back to the broader default here
-  // would inflate the Monte Carlo widget's spend well past what the crossover itself targets --
-  // exactly the mismatch a person comparing the two widgets would notice.
+  // The Plan section's own expense-category selection (see spendFromLocalSelection) takes
+  // priority over everything below it. Only when it's unset does this fall back to the live
+  // crossover widget's own checklist/date range, and only when neither exists does it fall back
+  // further still to this tool's own "every non-income, non-hidden category, trailing 12 months"
+  // default -- a poor substitute for a real selection, since it would inflate the Monte Carlo
+  // widget's spend well past what a narrowed selection targets.
+  // Filtered against the real, currently non-income/non-hidden categories -- see
+  // spendFromLocalSelection's own doc comment for why a stale id (a deleted or hidden category)
+  // shouldn't reach the widget either.
+  const pinnedExpenseCategoryIds = options.crossoverExpenseCategoryIds?.filter((id) => expenseCategoryIds.includes(id)) ?? null
+  const localSpend = await spendFromLocalSelection(actualConfig, expenseCategoryIds, options.crossoverExpenseCategoryIds, options.crossoverAssumptions.expenseAdjustmentFactor)
   const liveCrossoverMeta = liveExisting?.widgets.find((widget) => widget.type === "crossover-card")?.meta as CrossoverCardMeta | undefined
   const hasLiveCrossoverSelection = liveCrossoverMeta != null && (liveCrossoverMeta.expenseCategoryIds ?? []).length > 0
   const [spendResult, portfolioBalances] = await Promise.all([
-    hasLiveCrossoverSelection
-      ? spendFromCrossover(actualConfig, liveCrossoverMeta)
-      : trailingAnnualSpend(actualConfig, expenseCategoryIds).then((total) => ({ annualSpend: total, basis: null })),
+    localSpend
+      ? Promise.resolve(localSpend)
+      : hasLiveCrossoverSelection
+        ? spendFromCrossover(actualConfig, liveCrossoverMeta)
+        : trailingAnnualSpend(actualConfig, expenseCategoryIds).then((total) => ({ annualSpend: total, basis: null })),
     Promise.all(portfolioIds.map((accountId) => fetchAccountBalance(actualConfig, accountId, BALANCE_SINCE_DATE))),
   ])
   const { annualSpend, basis: spendBasis } = spendResult
@@ -363,7 +343,7 @@ export async function generateDashboard(
   }))
   const incomeStreams = [...options.incomeStreams, ...debtStreams]
 
-  const generated = buildFireDashboard(expenseCategoryIds, portfolioIds, DEFAULT_CROSSOVER_ASSUMPTIONS, totalMonthlyContribution(accounts))
+  const generated = buildFireDashboard(expenseCategoryIds, portfolioIds, options.crossoverAssumptions, totalMonthlyContribution(accounts))
   generated.widgets.push(
     ...buildMonteCarloWidgets(
       0,
@@ -378,7 +358,7 @@ export async function generateDashboard(
     ),
   )
 
-  const dashboard = mergeGeneratedDashboard(generated, existing, options.pinnedMonteCarloFields)
+  const dashboard = mergeGeneratedDashboard(generated, existing, options.pinnedMonteCarloFields, pinnedExpenseCategoryIds, options.pinnedCrossoverFields)
   const dashboardJson = `${JSON.stringify(dashboard, null, 2)}\n`
   writeFileSync(options.outputPath, dashboardJson)
 
@@ -406,7 +386,13 @@ export interface CheckOptions {
   fallbackInflationMean: number
   incomeStreams: readonly RetirementIncomeStream[]
   monteCarloAssumptions: MonteCarloAssumptions
-  pinnedMonteCarloFields: ReadonlySet<string>
+  // Takes priority over a live crossover widget's own checklist when set -- see
+  // GenerateOptions.crossoverExpenseCategoryIds and spendFromLocalSelection below.
+  crossoverExpenseCategoryIds: readonly string[] | null
+  // Only expenseAdjustmentFactor is actually read here (spendFromLocalSelection) -- Check never
+  // builds a fresh crossover widget the way Generate does, so the rest of CrossoverAssumptions has
+  // nothing to feed here.
+  crossoverAssumptions: CrossoverAssumptions
 }
 
 export interface AccountContribution {
@@ -417,6 +403,10 @@ export interface AccountContribution {
 export interface CheckResult {
   monteCarloWidgetCount: number
   crossoverWidgetCount: number
+  // The plan's own current age -- self-contained rather than relying on the client's own copy
+  // (STATE.currentAge) staying in sync, since the Monte Carlo chart needs it to turn each
+  // percentile band's `year` back into an age.
+  currentAge: number
   contributions: AccountContribution[]
   annualSpend: number
   // Null when no crossover widget's selection could be used, i.e. fallbackAnnualSpend was used instead.
@@ -427,6 +417,15 @@ export interface CheckResult {
   // The full simulation behind bridgeFindings, one entry per retirement age in the same order --
   // bridgeFindings is prose derived from these; this is what the client charts the burndown from.
   bridgeResults: BridgeResult[]
+  // The in-app Monte Carlo simulation (src/vendor/monte-carlo/), one entry per retirement age in
+  // the same order as bridgeResults -- an alternative to reading the equivalent monte-carlo-card
+  // widget off Actual's own dashboard. Empty when an incomplete account (no allocationPreset set)
+  // makes buildMonteCarloWidget itself throw -- Generate is where that needs to be a hard stop,
+  // not Check.
+  monteCarloResults: MonteCarloResultEntry[]
+  // Prose derived from monteCarloResults, same order -- the fan chart's companion text, same
+  // pairing as bridgeFindings/bridgeResults above.
+  monteCarloFindings: Finding[]
   // The same at-a-glance numbers Generate's own result reports -- current portfolio total and the
   // access-age/spending adjustments already baked into every projection above. Previously only
   // shown as a side effect of clicking Download, which also writes a file and triggers a browser
@@ -464,11 +463,25 @@ export async function checkDashboard(
 
   let annualSpend = options.fallbackAnnualSpend
   let spendBasis: string | null = null
-  const crossover = crossoverMetas.find((meta) => (meta.expenseCategoryIds ?? []).length > 0)
-  if (crossover) {
-    const derived = await spendFromCrossover(actualConfig, crossover)
-    annualSpend = derived.annualSpend
-    spendBasis = derived.basis
+  // The Plan section's own selection takes priority over the live crossover widget's own
+  // checklist -- same ordering as generateDashboard's spendFromLocalSelection call, so Check and
+  // Generate never disagree about which one is authoritative.
+  let localSpend: { annualSpend: number; basis: string } | null = null
+  if (options.crossoverExpenseCategoryIds != null) {
+    const groups = await fetchCategoryGroups(actualConfig)
+    const allExpenseCategoryIds = groups.flatMap((group) => group.categories).filter((category) => !category.is_income && !category.hidden).map((category) => category.id)
+    localSpend = await spendFromLocalSelection(actualConfig, allExpenseCategoryIds, options.crossoverExpenseCategoryIds, options.crossoverAssumptions.expenseAdjustmentFactor)
+  }
+  if (localSpend) {
+    annualSpend = localSpend.annualSpend
+    spendBasis = localSpend.basis
+  } else {
+    const crossover = crossoverMetas.find((meta) => (meta.expenseCategoryIds ?? []).length > 0)
+    if (crossover) {
+      const derived = await spendFromCrossover(actualConfig, crossover)
+      annualSpend = derived.annualSpend
+      spendBasis = derived.basis
+    }
   }
 
   const debtStreams = debtPayoffIncomeStreams(accounts, options.currentAge)
@@ -501,15 +514,13 @@ export async function checkDashboard(
     monteCarloMetas.length === 0
       ? [
           {
-            level: "warn",
-            title: "No Monte Carlo widgets found in any dashboard page.",
-            detail: ["Generate and import first, then Reports -> new page -> \"...\" -> Import."],
+            level: "info",
+            title: "No dashboard exported to Actual yet.",
+            detail: ["Optional -- the numbers on this page already reflect your current config. Click Export to Dashboard above if you'd also like to view them inside Actual."],
           },
         ]
       : [
           ...detectPotDrift(monteCarloMetas, accounts, options.retirementAges),
-          ...detectCrossoverMismatch(crossoverMetas, accounts),
-          ...detectMonteCarloSettingsDrift(monteCarloMetas, options.pinnedMonteCarloFields, options.monteCarloAssumptions),
           ...widgetSetDriftFindings,
           ...spendingPhaseDriftFindings,
         ]
@@ -552,8 +563,31 @@ export async function checkDashboard(
   )
   const bridgeFindings = bridgeResults.map((result) => bridgeFinding(result, options.planToAge))
 
+  // Simulated once per retirement age, same order as bridgeResults; monteCarloFindings below is
+  // prose derived from these same results, not a second computation. Never lets an incomplete
+  // "custom" allocation (see returnAssumptionsFor's own throw, reached via buildMonteCarloWidget)
+  // fail this whole read-only analysis -- Generate is where that needs to be a hard stop, not Check.
+  // Skipped entirely with no portfolio accounts at all: the vendored engine's own
+  // runMonteCarloSimulation falls back to a single fake $500,000 pot (MONTE_CARLO_DEFAULTS.pots)
+  // for an empty pots array rather than simulating nothing, which would otherwise chart fabricated
+  // data for a plan with no real portfolio yet.
+  let monteCarloByAge: { retirementAge: number; result: MonteCarloSummary }[] = []
+  if (portfolioIds.length > 0) {
+    try {
+      monteCarloByAge = options.retirementAges.map((retirementAge) => ({
+        retirementAge,
+        result: runRetirementMonteCarlo(accounts, balances, options.currentAge, retirementAge, options.planToAge, annualSpend, options.monteCarloAssumptions, incomeStreams),
+      }))
+    } catch {
+      // Leave empty -- Generate will surface the same incomplete-config error clearly if attempted.
+    }
+  }
+  const monteCarloResults: MonteCarloResultEntry[] = monteCarloByAge.map((entry) => ({ ...entry.result, retirementAge: entry.retirementAge }))
+  const monteCarloFindings = monteCarloByAge.map((entry) => monteCarloFinding(entry.result, options.currentAge, entry.retirementAge, options.planToAge))
+
   return {
     monteCarloWidgetCount: monteCarloMetas.length,
+    currentAge: options.currentAge,
     crossoverWidgetCount: crossoverMetas.length,
     contributions: accounts
       .filter((account) => portfolioIds.includes(account.id))
@@ -564,6 +598,8 @@ export async function checkDashboard(
     staleFindings,
     bridgeFindings,
     bridgeResults,
+    monteCarloResults,
+    monteCarloFindings,
     portfolioAccountCount: portfolioIds.length,
     portfolioTotal,
     ruleOf55Boosts,

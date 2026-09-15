@@ -23,7 +23,8 @@ function usage() {
     "test" "Run the unit test suite." \
     "budget" "Set category budgets or flag unusual spending. See './actual budget --help'." \
     "transactions" "Work with individual transactions. See './actual transactions --help'." \
-    "service" "Run the companion app as a container. See './actual service --help'."
+    "service" "Run the companion app as a container. See './actual service --help'." \
+    "vendor" "Check vendored third-party files against upstream. See './actual vendor --help'."
   exit "${exitCode}"
 }
 
@@ -77,6 +78,16 @@ function serviceUsage() {
   cliSection "Options" \
     "--dev" "start: run the sources directly instead, in the foreground, restarting on every edit. The container is not involved." \
     "-p, --port N" "Port to check or serve on (default: ${SERVICE_PORT})."
+  exit "${exitCode}"
+}
+
+# Function to display usage for the vendor subcommand group and exit
+function vendorUsage() {
+  local exitCode="${1:-1}"
+  cliUsage "./actual vendor SUBCOMMAND [ARGS]"
+  echo >&2
+  cliSection "Subcommands" \
+    "check" "Check vendored third-party files against upstream (git blob hash, no content diff)."
   exit "${exitCode}"
 }
 
@@ -294,6 +305,28 @@ function commandService() {
   esac
 }
 
+# Function to dispatch the vendor subcommands
+function commandVendor() {
+  local subcommand="${1:-}"
+  if [[ -z "${subcommand}" ]]; then
+    vendorUsage 1
+  fi
+  if [[ "${subcommand}" == "-h" || "${subcommand}" == "--help" ]]; then
+    vendorUsage 0
+  fi
+  shift
+
+  case "${subcommand}" in
+    check)
+      exec ./src/vendor-check.ts "$@"
+      ;;
+    *)
+      echo "Unknown vendor subcommand: ${subcommand}" >&2
+      vendorUsage
+      ;;
+  esac
+}
+
 # Function to start the app: as a container by default, or straight from the sources with --dev.
 #
 # --dev is the working loop, not a lesser mode of the same thing: it runs in the foreground under
@@ -452,6 +485,7 @@ function main() {
     budget) commandBudget "$@" ;;
     transactions) commandTransactions "$@" ;;
     service) commandService "$@" ;;
+    vendor) commandVendor "$@" ;;
     -h|--help|help) usage 0 ;;
     *)
       echo "Unknown command: ${command}" >&2

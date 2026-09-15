@@ -77,20 +77,65 @@ export const MONTE_CARLO_ALLOCATION_PRESET_LABELS: Record<MonteCarloAllocationPr
 // MonteCarloAllocationPreset above, since DashboardConfig (this file) needs them for the
 // once-for-every-age-comparison simulation settings a person can pin in this app instead of
 // Actual's own per-widget UI (see retirementIncomeStreams's sibling, monteCarloSettingsOverride, in
-// fire-dashboard.ts). withdrawalRule and taxModel/taxBands are deliberately NOT exposed here yet --
-// each withdrawalRule type has its own multi-field parameter set (guardrails, ratcheting,
-// floor/ceiling, boundaries) and taxBands is an open-ended list -- both stay Actual-UI-only for now.
+// fire-dashboard.ts). withdrawalRule and taxBands are pinned as whole values rather than
+// field-by-field scalars like these (see DashboardConfig.monteCarloWithdrawalRule/
+// monteCarloTaxBands below) since each carries its own internal shape -- a withdrawal rule's
+// parameters vary by its own type (guardrails, ratcheting, floor/ceiling, boundaries), and tax
+// bands are an open-ended list -- rather than a single enum this file's other pinnable fields are.
 export type MonteCarloWithdrawalStrategy = "proportional" | "sequential" | "best-performer" | "target-mix"
 export const MONTE_CARLO_WITHDRAWAL_STRATEGIES: readonly MonteCarloWithdrawalStrategy[] = ["proportional", "sequential", "best-performer", "target-mix"]
 
 export type MonteCarloReturnModel = "normal" | "historical-bootstrap" | "historical-sequence"
 export const MONTE_CARLO_RETURN_MODELS: readonly MonteCarloReturnModel[] = ["normal", "historical-bootstrap", "historical-sequence"]
 
-// Same reasoning as above -- taxBands (the "bands" model's own open-ended list) stays
-// Actual-UI-only, but the flat/bands choice itself is a single enum, no different from
-// withdrawalStrategy/returnModel, so it's just as pinnable.
+// The flat/bands choice itself is a single enum, no different from withdrawalStrategy/returnModel,
+// so it's just as pinnable as a flat scalar -- taxBands (the "bands" model's own open-ended list of
+// thresholds) is the part pinned as a whole value instead (see DashboardConfig.monteCarloTaxBands).
 export type MonteCarloTaxModel = "flat" | "bands"
 export const MONTE_CARLO_TAX_MODELS: readonly MonteCarloTaxModel[] = ["flat", "bands"]
+
+// Mirrors Actual's own crossover-card projection type (see fire-dashboard.ts's CrossoverCardMeta)
+// -- moved here from fire-dashboard.ts, same reasoning as the Monte Carlo enums above: this file's
+// DashboardConfig needs it for the crossover assumptions a person can pin instead of opening
+// Actual's own crossover config UI (see fire-dashboard.ts's crossoverAssumptionsWithOverrides).
+export type CrossoverProjectionType = "hampel" | "median" | "mean"
+export const CROSSOVER_PROJECTION_TYPES: readonly CrossoverProjectionType[] = ["hampel", "median", "mean"]
+
+// Moved here from fire-dashboard.ts for the same reason as CrossoverProjectionType above --
+// DashboardConfig (this file) needs it to let a person pin a withdrawal rule (see
+// fire-dashboard.ts's monteCarloAssumptionsWithOverrides), and fire-accounts.ts cannot import from
+// fire-dashboard.ts (the dependency only runs the other direction).
+export type MonteCarloWithdrawalRuleType = "none" | "guardrails" | "ratcheting" | "floor-ceiling" | "boundaries"
+export const MONTE_CARLO_WITHDRAWAL_RULE_TYPES: readonly MonteCarloWithdrawalRuleType[] = ["none", "guardrails", "ratcheting", "floor-ceiling", "boundaries"]
+
+// Parameters for every rule type are kept side by side (all optional) so switching between rules
+// preserves each rule's own settings, matching Actual's own MonteCarloWithdrawalRuleMeta shape.
+export interface MonteCarloWithdrawalRuleMeta {
+  type: MonteCarloWithdrawalRuleType
+  // Guardrails (Guyton-Klinger)
+  prosperityTriggerPct?: number
+  prosperityIncreasePct?: number
+  preservationTriggerPct?: number
+  preservationCutPct?: number
+  // Ratcheting (Kitces)
+  balanceThresholdMultiple?: number
+  consecutiveYears?: number
+  ratchetIncreasePct?: number
+  // Floor & ceiling (Bengen)
+  floorPct?: number
+  ceilingPct?: number
+  // Boundaries
+  upperRateThreshold?: number
+  upperCutPct?: number
+  lowerRateThreshold?: number
+  lowerIncreasePct?: number
+}
+
+export interface MonteCarloTaxBandMeta {
+  id: string
+  from?: number
+  rate?: number
+}
 
 // The IRS contribution-limit pool an account type draws from, if any. Both employer-plan and IRA
 // limits are shared across every account of that kind (not per-account) -- see
@@ -412,8 +457,8 @@ export interface DashboardConfig {
   // them. Setting any of these here makes it the pinned, always-regenerated value for every
   // widget (see fire-dashboard.ts's mergeMonteCarloMeta pinnedFields), overriding whatever that
   // widget's own live/local settings say; leaving a field null keeps today's behavior (preserved
-  // per-widget from Actual). withdrawalRule and taxBands stay Actual-UI-only -- see
-  // MonteCarloWithdrawalStrategy's doc comment above for why.
+  // per-widget from Actual). withdrawalRule and taxBands are pinned as whole values below instead
+  // of flat scalars here -- see MonteCarloWithdrawalStrategy's doc comment above for why.
   monteCarloWithdrawalStrategy: MonteCarloWithdrawalStrategy | null
   monteCarloReturnModel: MonteCarloReturnModel | null
   monteCarloTaxModel: MonteCarloTaxModel | null
@@ -423,6 +468,42 @@ export interface DashboardConfig {
   // Cents/yr.
   monteCarloMinimumWithdrawal: number | null
   monteCarloSimulationCount: number | null
+  // The expense categories Generate/Check use for annual spend (and, for Generate, seed onto the
+  // crossover widget) instead of Actual's own crossover-card checklist -- set once here and every
+  // simulation (Bridge, Monte Carlo, the Current numbers box) uses it without anyone opening
+  // Actual. Null means "not set yet": every non-income, non-hidden category, today's implicit
+  // default -- see fire-generate.ts's expenseCategoryIds. Never an empty array (see
+  // CrossoverCardMeta's own expenseCategoryIds doc comment for why); the Plan PATCH route and the
+  // config loader below both reject one.
+  crossoverExpenseCategoryIds: string[] | null
+  // The crossover widget's own remaining assumptions a person can pin here instead of opening
+  // Actual's own crossover config UI, same "pin it here, it always wins on regenerate" mechanism
+  // as the monteCarlo* fields above (see fire-dashboard.ts's crossoverAssumptionsWithOverrides/
+  // pinnedCrossoverFields). Unlike the Monte Carlo fields, three of these four (everything but
+  // crossoverExpenseAdjustmentFactor) only affect how Actual's own crossover widget renders --
+  // this app's own Bridge/Monte Carlo math has no crossover-date concept to feed them into. Decimal
+  // fraction (0.04 = 4%), null "not entered" leaves it to Actual/the plain default, same convention
+  // as every other rate field here.
+  crossoverSafeWithdrawalRate: number | null
+  // Null means "auto" to Actual's own widget -- this app's own convention (a not-entered field
+  // leaves it alone) happens to coincide with that meaning, so there's no separate "pin auto"
+  // state; picking a fixed rate is the only thing pinning this field can add over the default.
+  crossoverEstimatedReturn: number | null
+  crossoverProjectionType: CrossoverProjectionType | null
+  // Actual calls this "Target Income (% of expenses)." The one field here that also feeds this
+  // app's own local-selection spend calculation (see fire-generate.ts's spendFromLocalSelection),
+  // not just the exported widget -- see CrossoverAssumptions.expenseAdjustmentFactor.
+  crossoverExpenseAdjustmentFactor: number | null
+  // The two Monte Carlo fields the doc comment on MonteCarloWithdrawalStrategy above calls out as
+  // deliberately NOT exposed as flat pinnable scalars -- each carries its own internal shape
+  // (a withdrawal rule's parameters vary by its own type; tax bands are an open-ended list), so
+  // each is pinned as one whole value rather than field-by-field like the monteCarlo* scalars
+  // above. Same "null means leave it to Actual/the widget's own live value" convention; pinning
+  // `{ type: "none" }` is how a person forces every widget back to no rule, distinct from not
+  // pinning at all. An empty taxBands array is a valid pinned value (mid-edit, or "no bands yet"),
+  // unlike crossoverExpenseCategoryIds -- Actual's own tax computation just falls back sensibly.
+  monteCarloWithdrawalRule: MonteCarloWithdrawalRuleMeta | null
+  monteCarloTaxBands: MonteCarloTaxBandMeta[] | null
 }
 
 export interface FireConfig {
@@ -452,6 +533,13 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   monteCarloInflationStdDev: null,
   monteCarloMinimumWithdrawal: null,
   monteCarloSimulationCount: null,
+  crossoverExpenseCategoryIds: null,
+  crossoverSafeWithdrawalRate: null,
+  crossoverEstimatedReturn: null,
+  crossoverProjectionType: null,
+  crossoverExpenseAdjustmentFactor: null,
+  monteCarloWithdrawalRule: null,
+  monteCarloTaxBands: null,
 }
 
 export const EMPTY_FIRE_CONFIG: FireConfig = {
@@ -1036,6 +1124,56 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.monteCarloSimulationCount != null && (typeof dashboardSource.monteCarloSimulationCount !== "number" || dashboardSource.monteCarloSimulationCount <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.monteCarloSimulationCount must be a positive number.`)
   }
+  if (
+    dashboardSource.crossoverExpenseCategoryIds != null &&
+    (!Array.isArray(dashboardSource.crossoverExpenseCategoryIds) ||
+      dashboardSource.crossoverExpenseCategoryIds.length === 0 ||
+      dashboardSource.crossoverExpenseCategoryIds.some((id) => typeof id !== "string"))
+  ) {
+    throw new Error(`Invalid config in ${path}: dashboard.crossoverExpenseCategoryIds must be a non-empty array of category id strings, or null.`)
+  }
+  if (dashboardSource.crossoverSafeWithdrawalRate != null && (typeof dashboardSource.crossoverSafeWithdrawalRate !== "number" || dashboardSource.crossoverSafeWithdrawalRate <= 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.crossoverSafeWithdrawalRate must be a positive number.`)
+  }
+  if (dashboardSource.crossoverEstimatedReturn != null && typeof dashboardSource.crossoverEstimatedReturn !== "number") {
+    throw new Error(`Invalid config in ${path}: dashboard.crossoverEstimatedReturn must be a number.`)
+  }
+  if (dashboardSource.crossoverProjectionType != null && !CROSSOVER_PROJECTION_TYPES.includes(dashboardSource.crossoverProjectionType)) {
+    throw new Error(`Invalid config in ${path}: dashboard.crossoverProjectionType must be one of ${CROSSOVER_PROJECTION_TYPES.join(", ")}, or null.`)
+  }
+  if (
+    dashboardSource.crossoverExpenseAdjustmentFactor != null &&
+    (typeof dashboardSource.crossoverExpenseAdjustmentFactor !== "number" || dashboardSource.crossoverExpenseAdjustmentFactor <= 0)
+  ) {
+    throw new Error(`Invalid config in ${path}: dashboard.crossoverExpenseAdjustmentFactor must be a positive number.`)
+  }
+  if (dashboardSource.monteCarloWithdrawalRule != null) {
+    const rule = dashboardSource.monteCarloWithdrawalRule
+    if (typeof rule !== "object" || Array.isArray(rule) || !MONTE_CARLO_WITHDRAWAL_RULE_TYPES.includes(rule.type)) {
+      throw new Error(`Invalid config in ${path}: dashboard.monteCarloWithdrawalRule.type must be one of ${MONTE_CARLO_WITHDRAWAL_RULE_TYPES.join(", ")}.`)
+    }
+    for (const [key, value] of Object.entries(rule)) {
+      if (key !== "type" && typeof value !== "number") {
+        throw new Error(`Invalid config in ${path}: dashboard.monteCarloWithdrawalRule.${key} must be a number.`)
+      }
+    }
+  }
+  if (dashboardSource.monteCarloTaxBands != null) {
+    if (!Array.isArray(dashboardSource.monteCarloTaxBands)) {
+      throw new Error(`Invalid config in ${path}: dashboard.monteCarloTaxBands must be an array, or null.`)
+    }
+    for (const band of dashboardSource.monteCarloTaxBands) {
+      if (
+        typeof band !== "object" ||
+        band === null ||
+        typeof band.id !== "string" ||
+        (band.from !== undefined && typeof band.from !== "number") ||
+        (band.rate !== undefined && typeof band.rate !== "number")
+      ) {
+        throw new Error(`Invalid config in ${path}: each dashboard.monteCarloTaxBands entry must have a string id and numeric from/rate.`)
+      }
+    }
+  }
 
   const config: FireConfig = {
     version: 1,
@@ -1057,6 +1195,13 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       monteCarloInflationStdDev: dashboardSource.monteCarloInflationStdDev ?? DEFAULT_DASHBOARD_CONFIG.monteCarloInflationStdDev,
       monteCarloMinimumWithdrawal: dashboardSource.monteCarloMinimumWithdrawal ?? DEFAULT_DASHBOARD_CONFIG.monteCarloMinimumWithdrawal,
       monteCarloSimulationCount: dashboardSource.monteCarloSimulationCount ?? DEFAULT_DASHBOARD_CONFIG.monteCarloSimulationCount,
+      crossoverExpenseCategoryIds: dashboardSource.crossoverExpenseCategoryIds ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseCategoryIds,
+      crossoverSafeWithdrawalRate: dashboardSource.crossoverSafeWithdrawalRate ?? DEFAULT_DASHBOARD_CONFIG.crossoverSafeWithdrawalRate,
+      crossoverEstimatedReturn: dashboardSource.crossoverEstimatedReturn ?? DEFAULT_DASHBOARD_CONFIG.crossoverEstimatedReturn,
+      crossoverProjectionType: dashboardSource.crossoverProjectionType ?? DEFAULT_DASHBOARD_CONFIG.crossoverProjectionType,
+      crossoverExpenseAdjustmentFactor: dashboardSource.crossoverExpenseAdjustmentFactor ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseAdjustmentFactor,
+      monteCarloWithdrawalRule: dashboardSource.monteCarloWithdrawalRule ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalRule,
+      monteCarloTaxBands: dashboardSource.monteCarloTaxBands ?? DEFAULT_DASHBOARD_CONFIG.monteCarloTaxBands,
     },
   }
 

@@ -139,6 +139,107 @@ describe("PATCH /api/retirement/plan", () => {
     const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ retirementAges: [55, -3] }) })
     expect(res.status).toBe(400)
   })
+
+  it("persists a crossoverExpenseCategoryIds selection and reflects it on the next read", async () => {
+    const url = await boot()
+    const patchRes = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverExpenseCategoryIds: ["cat-a", "cat-b"] }) })
+    expect(patchRes.status).toBe(200)
+    const body = await readJson<StateResponse>(patchRes)
+    expect(body.dashboard.crossoverExpenseCategoryIds).toEqual(["cat-a", "cat-b"])
+  })
+
+  it("rejects an empty crossoverExpenseCategoryIds array", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverExpenseCategoryIds: [] }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("accepts null to clear a crossoverExpenseCategoryIds selection", async () => {
+    const url = await boot()
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverExpenseCategoryIds: ["cat-a"] }) })
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverExpenseCategoryIds: null }) })
+    const body = await readJson<StateResponse>(res)
+    expect(body.dashboard.crossoverExpenseCategoryIds).toBeNull()
+  })
+
+  it("persists a full set of pinned crossover assumptions", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ crossoverSafeWithdrawalRate: 0.035, crossoverEstimatedReturn: 0.06, crossoverProjectionType: "median", crossoverExpenseAdjustmentFactor: 0.85 }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<StateResponse>(res)
+    expect(body.dashboard).toMatchObject({
+      crossoverSafeWithdrawalRate: 0.035,
+      crossoverEstimatedReturn: 0.06,
+      crossoverProjectionType: "median",
+      crossoverExpenseAdjustmentFactor: 0.85,
+    })
+  })
+
+  it("rejects a non-positive crossoverSafeWithdrawalRate", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverSafeWithdrawalRate: 0 }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("rejects an unrecognized crossoverProjectionType", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverProjectionType: "bogus" }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("rejects a non-positive crossoverExpenseAdjustmentFactor", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverExpenseAdjustmentFactor: 0 }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("persists a pinned monteCarloWithdrawalRule", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ monteCarloWithdrawalRule: { type: "guardrails", prosperityTriggerPct: 0.2, prosperityIncreasePct: 0.1 } }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<StateResponse>(res)
+    expect(body.dashboard.monteCarloWithdrawalRule).toEqual({ type: "guardrails", prosperityTriggerPct: 0.2, prosperityIncreasePct: 0.1 })
+  })
+
+  it("rejects a monteCarloWithdrawalRule with an unrecognized type", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ monteCarloWithdrawalRule: { type: "bogus" } }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("rejects a monteCarloWithdrawalRule with a non-numeric parameter", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ monteCarloWithdrawalRule: { type: "guardrails", prosperityTriggerPct: "high" } }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("persists an empty monteCarloTaxBands array as a real pinned value", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ monteCarloTaxBands: [] }) })
+    expect(res.status).toBe(200)
+    const body = await readJson<StateResponse>(res)
+    expect(body.dashboard.monteCarloTaxBands).toEqual([])
+  })
+
+  it("persists a real monteCarloTaxBands list", async () => {
+    const url = await boot()
+    const bands = [{ id: "b1", from: 0, rate: 0.1 }, { id: "b2", from: 5000000, rate: 0.22 }]
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ monteCarloTaxBands: bands }) })
+    const body = await readJson<StateResponse>(res)
+    expect(body.dashboard.monteCarloTaxBands).toEqual(bands)
+  })
+
+  it("rejects a monteCarloTaxBands entry missing an id", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ monteCarloTaxBands: [{ from: 0, rate: 0.1 }] }) })
+    expect(res.status).toBe(400)
+  })
 })
 
 describe("PATCH /api/retirement/accounts/:id", () => {
@@ -269,6 +370,83 @@ describe("POST /api/retirement/generate", () => {
     expect(body.spendBasis).toContain("1 categories")
   })
 
+  it("prefers the Plan section's own expense-category selection over the live crossover widget's, for both spend and the exported widget", async () => {
+    // The whole point of the Plan section's own picker: once set, it's authoritative, so narrowing
+    // categories never again requires opening Actual -- even when a crossover widget with its own
+    // (different) selection is already live.
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      categoryGroups: [
+        {
+          id: "g1",
+          name: "Group",
+          is_income: false,
+          hidden: false,
+          categories: [
+            { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" },
+            { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1" },
+          ],
+        },
+      ],
+      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
+      monthCategories: [
+        { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false },
+        { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -100000, balance: 0, carryover: false },
+      ],
+      dashboardRows: [
+        {
+          id: "page1",
+          name: "FIRE",
+          dashboard_page_id: "page1",
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-a"], incomeAccountIds: [] },
+        },
+      ],
+    })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90, crossoverExpenseCategoryIds: ["cat-b"] }),
+    })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
+    expect(res.status).toBe(200)
+    const body = await readJson<GenerateResult>(res)
+    expect(body.annualSpend).toBe(1200000) // 100000 x 12 -- cat-b, not the live widget's cat-a
+    expect(body.spendBasis).toContain("Plan section selection")
+    const dashboard = JSON.parse(body.dashboardJson) as { widgets: { type: string; meta: { expenseCategoryIds: string[] } | null }[] }
+    const crossover = dashboard.widgets.find((widget) => widget.type === "crossover-card")
+    expect(crossover?.meta?.expenseCategoryIds).toEqual(["cat-b"])
+  })
+
+  it("applies a pinned crossoverExpenseAdjustmentFactor to the Plan section's own local-selection spend, and pins it onto the exported widget", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
+      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90, crossoverExpenseCategoryIds: ["cat-a"], crossoverExpenseAdjustmentFactor: 0.85 }),
+    })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
+    expect(res.status).toBe(200)
+    const body = await readJson<GenerateResult>(res)
+    expect(body.annualSpend).toBe(102000) // 10000 x 12 x 0.85
+    expect(body.spendBasis).toContain("× 85% target income")
+    const dashboard = JSON.parse(body.dashboardJson) as { widgets: { type: string; meta: { expenseAdjustmentFactor: number } | null }[] }
+    const crossover = dashboard.widgets.find((widget) => widget.type === "crossover-card")
+    expect(crossover?.meta?.expenseAdjustmentFactor).toBe(0.85)
+  })
+
   it("applies the crossover widget's own Target Income % to spend, the same way Actual applies it to its own projection", async () => {
     // Actual calls this field "Target Income (% of expenses)" in its own crossover UI
     // (expenseAdjustmentFactor on the wire) and multiplies its own projected-expense figure by it --
@@ -316,7 +494,8 @@ describe("GET /api/retirement/check", () => {
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
     expect(body.monteCarloWidgetCount).toBe(0)
-    expect(body.staleFindings[0]?.title).toContain("No Monte Carlo widgets")
+    expect(body.staleFindings[0]?.title).toContain("No dashboard exported")
+    expect(body.staleFindings[0]?.level).toBe("info")
   })
 
   it("reports the same portfolio total, Rule of 55 boosts, and debt payoffs Generate's own result carries", async () => {
@@ -360,6 +539,78 @@ describe("GET /api/retirement/check", () => {
     expect(typeof body.debtPayoffs[0]?.payoffAge).toBe("number")
   })
 
+  it("runs the in-app Monte Carlo simulation once per retirement age, same order as bridgeResults", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1965-01-01", retirementAges: [61, 65], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage", allocationPreset: "equity-80" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.monteCarloResults).toHaveLength(2)
+    expect(body.monteCarloFindings).toHaveLength(2)
+    expect(body.monteCarloResults.map((r) => r.retirementAge)).toEqual([61, 65])
+    // No endingBalances/depletionYearBySimulation/totalWithdrawnBySimulation/runDetail on the wire
+    // -- see MonteCarloSummary's own doc comment for why (Float64Array/Int32Array serialize as a
+    // numeric-keyed object over JSON, not a real array, on top of being needlessly large).
+    expect(Object.keys(body.monteCarloResults[0] ?? {}).sort()).toEqual(
+      ["depletionHistogram", "depletionProbabilityByYear", "earliestDepletionYear", "horizonYears", "latestDepletionYear", "medianDepletionYear", "medianEndingBalance", "medianTotalWithdrawn", "percentileBands", "retirementAge", "simulationCount", "successRate", "worstRunPath"].sort(),
+    )
+    expect(body.monteCarloFindings[0]?.title).toContain("age 61")
+    expect(body.monteCarloFindings[1]?.title).toContain("age 65")
+  })
+
+  it("prefers the Plan section's own expense-category selection over the live crossover widget's, on Check too", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      categoryGroups: [
+        {
+          id: "g1",
+          name: "Group",
+          is_income: false,
+          hidden: false,
+          categories: [
+            { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" },
+            { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1" },
+          ],
+        },
+      ],
+      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
+      monthCategories: [
+        { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false },
+        { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -100000, balance: 0, carryover: false },
+      ],
+      dashboardRows: [
+        {
+          id: "page1",
+          name: "FIRE",
+          dashboard_page_id: "page1",
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-a"], incomeAccountIds: [] },
+        },
+      ],
+    })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90, crossoverExpenseCategoryIds: ["cat-b"] }),
+    })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.annualSpend).toBe(1200000) // 100000 x 12 -- cat-b, not the live widget's cat-a
+    expect(body.spendBasis).toContain("Plan section selection")
+  })
+
   it("flags a retirement age added since the dashboard was last generated, even though every account already has a live pot", async () => {
     // The real bug: buildMonteCarloWidgets names a widget bare "Monte Carlo" with exactly one
     // configured age, and "Monte Carlo -- Retire at N" once there's more than one -- so a live
@@ -389,18 +640,9 @@ describe("GET /api/retirement/check", () => {
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
     const titles = body.staleFindings.map((f) => f.title)
-    expect(titles).toContain('No live Monte Carlo widget named "Monte Carlo — Retire at 50" yet.')
-    expect(titles).toContain('No live Monte Carlo widget named "Monte Carlo — Retire at 51" yet.')
-    expect(titles).toContain('"Monte Carlo" is on the live dashboard but no longer matches a configured retirement age.')
-  })
-})
-
-describe("GET /api/retirement/live-settings", () => {
-  it("returns all-null when no FIRE dashboard page exists yet", async () => {
-    const url = await boot({ dashboardRows: [] })
-    const res = await fetch(`${url}api/retirement/live-settings`)
-    expect(res.status).toBe(200)
-    expect(await readJson<{ crossover: unknown; monteCarlo: unknown }>(res)).toEqual({ crossover: null, monteCarlo: null })
+    expect(titles).toContain('Actual has no Monte Carlo widget named "Monte Carlo — Retire at 50" yet.')
+    expect(titles).toContain('Actual has no Monte Carlo widget named "Monte Carlo — Retire at 51" yet.')
+    expect(titles).toContain('"Monte Carlo" is in Actual but no longer matches a configured retirement age.')
   })
 })
 

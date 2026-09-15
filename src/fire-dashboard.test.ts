@@ -9,9 +9,11 @@ import {
   buildNetWorthWidget,
   buildPot,
   buildSpendingPhases,
+  crossoverAssumptionsWithOverrides,
   effectiveAccessAge,
   mergeGeneratedDashboard,
   monteCarloAssumptionsWithOverrides,
+  pinnedCrossoverFields,
   pinnedMonteCarloFields,
   portfolioAccountIds,
   retirementIncomeStreams,
@@ -424,6 +426,60 @@ describe("pinnedMonteCarloFields", () => {
   it("pins taxModel the same way as every other Simulation setting", () => {
     expect(pinnedMonteCarloFields({ ...DEFAULT_DASHBOARD_CONFIG, monteCarloTaxModel: "bands" })).toEqual(new Set(["taxModel"]))
   })
+
+  it("pins withdrawalRule and taxBands as whole values, same mechanism as the flat scalars", () => {
+    const dashboard: DashboardConfig = {
+      ...DEFAULT_DASHBOARD_CONFIG,
+      monteCarloWithdrawalRule: { type: "guardrails", prosperityTriggerPct: 0.2 },
+      monteCarloTaxBands: [{ id: "b1", from: 0, rate: 0.1 }],
+    }
+    expect(pinnedMonteCarloFields(dashboard)).toEqual(new Set(["withdrawalRule", "taxBands"]))
+    expect(monteCarloAssumptionsWithOverrides(dashboard).withdrawalRule).toEqual({ type: "guardrails", prosperityTriggerPct: 0.2 })
+    expect(monteCarloAssumptionsWithOverrides(dashboard).taxBands).toEqual([{ id: "b1", from: 0, rate: 0.1 }])
+  })
+
+  it("pins an empty taxBands array (a real, non-null pinned value) the same as a populated one", () => {
+    const dashboard: DashboardConfig = { ...DEFAULT_DASHBOARD_CONFIG, monteCarloTaxBands: [] }
+    expect(pinnedMonteCarloFields(dashboard)).toEqual(new Set(["taxBands"]))
+    expect(monteCarloAssumptionsWithOverrides(dashboard).taxBands).toEqual([])
+  })
+})
+
+describe("crossoverAssumptionsWithOverrides", () => {
+  it("falls back to the plain defaults when nothing is pinned", () => {
+    expect(crossoverAssumptionsWithOverrides(DEFAULT_DASHBOARD_CONFIG)).toEqual(CROSSOVER_ASSUMPTIONS)
+  })
+
+  it("layers only the fields actually set, leaving the rest at their defaults", () => {
+    const overridden = crossoverAssumptionsWithOverrides({
+      ...DEFAULT_DASHBOARD_CONFIG,
+      crossoverSafeWithdrawalRate: 0.035,
+      crossoverExpenseAdjustmentFactor: 0.85,
+    })
+    expect(overridden.safeWithdrawalRate).toBe(0.035)
+    expect(overridden.expenseAdjustmentFactor).toBe(0.85)
+    expect(overridden.estimatedReturn).toBe(CROSSOVER_ASSUMPTIONS.estimatedReturn)
+    expect(overridden.projectionType).toBe(CROSSOVER_ASSUMPTIONS.projectionType)
+  })
+
+  it("layers a pinned projectionType over the default", () => {
+    expect(crossoverAssumptionsWithOverrides({ ...DEFAULT_DASHBOARD_CONFIG, crossoverProjectionType: "median" }).projectionType).toBe("median")
+  })
+})
+
+describe("pinnedCrossoverFields", () => {
+  it("returns an empty set when nothing is configured", () => {
+    expect(pinnedCrossoverFields(DEFAULT_DASHBOARD_CONFIG)).toEqual(new Set())
+  })
+
+  it("names the CrossoverCardMeta field for each dashboard field that's actually set", () => {
+    const pinned = pinnedCrossoverFields({
+      ...DEFAULT_DASHBOARD_CONFIG,
+      crossoverSafeWithdrawalRate: 0.035,
+      crossoverExpenseAdjustmentFactor: 0.85,
+    })
+    expect(pinned).toEqual(new Set(["safeWithdrawalRate", "expenseAdjustmentFactor"]))
+  })
 })
 
 describe("buildMonteCarloWidget", () => {
@@ -577,6 +633,78 @@ describe("mergeGeneratedDashboard", () => {
     })
   })
 
+  it("prefers the Plan section's own pinned expense-category selection over the existing widget's", () => {
+    // The Plan section's own selection (fire-accounts.ts's DashboardConfig.crossoverExpenseCategoryIds)
+    // is meant to be authoritative once set -- it should win even over a selection someone
+    // separately hand-narrowed inside Actual's own crossover widget UI.
+    const generated = buildFireDashboard(["new-cat", "another-cat"], ["new-acct"], CROSSOVER_ASSUMPTIONS, null)
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: {
+            name: "FIRE Crossover",
+            expenseCategoryIds: ["new-cat"], // hand-narrowed inside Actual
+            incomeAccountIds: ["new-acct"],
+            safeWithdrawalRate: 0.04,
+            estimatedReturn: null,
+            expectedContribution: null,
+            projectionType: "hampel",
+            expenseAdjustmentFactor: 1,
+          },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing, new Set(), ["another-cat"])
+    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
+    expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["another-cat"] })
+  })
+
+  it("prefers a pinned crossover assumption over the existing widget's own hand-tuned value", () => {
+    const generated = buildFireDashboard(["new-cat"], ["new-acct"], { ...CROSSOVER_ASSUMPTIONS, safeWithdrawalRate: 0.035 }, null)
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: { name: "FIRE Crossover", expenseCategoryIds: ["new-cat"], incomeAccountIds: ["new-acct"], safeWithdrawalRate: 0.045, estimatedReturn: 0.06 },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing, new Set(), null, new Set(["safeWithdrawalRate"]))
+    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
+    expect(crossover?.meta).toMatchObject({ safeWithdrawalRate: 0.035, estimatedReturn: 0.06 }) // unpinned field still preserved
+  })
+
+  it("falls back to the existing widget's own selection when nothing is pinned", () => {
+    const generated = buildFireDashboard(["new-cat", "another-cat"], ["new-acct"], CROSSOVER_ASSUMPTIONS, null)
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "crossover-card",
+          x: 0,
+          y: 2,
+          width: 12,
+          height: 4,
+          meta: { name: "FIRE Crossover", expenseCategoryIds: ["new-cat"], incomeAccountIds: ["new-acct"], safeWithdrawalRate: 0.04 },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing, new Set(), null)
+    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
+    expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["new-cat"] })
+  })
+
   it("falls back to the freshly generated category/account list when the existing selection is empty", () => {
     // Actual's crossover projection zeroes out historical expense data entirely when
     // expenseCategoryIds is empty (silently claiming "already FI"), so an empty existing
@@ -598,6 +726,56 @@ describe("mergeGeneratedDashboard", () => {
     const merged = mergeGeneratedDashboard(generated, existing)
     const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
     expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["new-cat"], incomeAccountIds: ["new-acct"] })
+  })
+
+  it("prefers a pinned withdrawalRule over the existing widget's own hand-tuned rule", () => {
+    const generated = {
+      version: 1 as const,
+      widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000, { ...MONTE_CARLO_ASSUMPTIONS, withdrawalRule: { type: "guardrails", prosperityTriggerPct: 0.2 } }),
+    }
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "monte-carlo-card",
+          x: 0,
+          y: 6,
+          width: 12,
+          height: 4,
+          meta: {
+            name: "Monte Carlo",
+            pots: [],
+            spendingPhases: [],
+            currentAge: 40,
+            targetAge: 90,
+            withdrawalRule: { type: "floor-ceiling", floorPct: 0.03, ceilingPct: 0.06 }, // hand-tuned inside Actual
+          },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing, new Set(["withdrawalRule"]))
+    const meta = merged.widgets[0]?.meta as Record<string, unknown>
+    expect(meta.withdrawalRule).toEqual({ type: "guardrails", prosperityTriggerPct: 0.2 })
+  })
+
+  it("preserves the existing widget's own withdrawalRule when nothing is pinned", () => {
+    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000, MONTE_CARLO_ASSUMPTIONS) }
+    const existing: ExistingDashboard = {
+      version: 1,
+      widgets: [
+        {
+          type: "monte-carlo-card",
+          x: 0,
+          y: 6,
+          width: 12,
+          height: 4,
+          meta: { name: "Monte Carlo", pots: [], spendingPhases: [], currentAge: 40, targetAge: 90, withdrawalRule: { type: "floor-ceiling", floorPct: 0.03, ceilingPct: 0.06 } },
+        },
+      ],
+    }
+    const merged = mergeGeneratedDashboard(generated, existing)
+    const meta = merged.widgets[0]?.meta as Record<string, unknown>
+    expect(meta.withdrawalRule).toEqual({ type: "floor-ceiling", floorPct: 0.03, ceilingPct: 0.06 })
   })
 
   it("refreshes a pot's account-derived fields but preserves an extra fee field", () => {
