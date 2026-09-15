@@ -3,29 +3,17 @@ import { describe, expect, it } from "vitest"
 import {
   bridgeFinding,
   calculateMortgagePayoff,
-  detectCrossoverMismatch,
-  detectMonteCarloSettingsDrift,
   detectMonteCarloWidgetSetDrift,
   detectPotDrift,
   detectSpendingPhaseDrift,
+  monteCarloFinding,
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
 import type { BridgeAccount, BridgeResult } from "./fire-analysis.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
-import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
-
-const MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
-  withdrawalStrategy: "proportional",
-  returnModel: "normal",
-  withdrawalRule: { type: "none" },
-  minimumWithdrawal: 0,
-  inflationMean: 0.03,
-  inflationStdDev: 0.02,
-  taxModel: "flat",
-  taxBands: [],
-  simulationCount: 5000,
-}
+import type { MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
 
 // Function to build a bridge account with inert defaults -- no growth, no contributions, no tax --
 // so each test only has to state the one dimension it is actually exercising.
@@ -234,6 +222,55 @@ describe("bridgeFinding", () => {
   })
 })
 
+function monteCarloSummary(overrides: Partial<MonteCarloSummary> = {}): MonteCarloSummary {
+  return {
+    successRate: 1,
+    percentileBands: [],
+    depletionHistogram: [],
+    depletionProbabilityByYear: [],
+    medianEndingBalance: 0,
+    medianTotalWithdrawn: 0,
+    medianDepletionYear: null,
+    earliestDepletionYear: null,
+    latestDepletionYear: null,
+    worstRunPath: [],
+    simulationCount: 5000,
+    horizonYears: 30,
+    ...overrides,
+  }
+}
+
+describe("monteCarloFinding", () => {
+  it("passes a scenario where every simulated run funds the plan", () => {
+    const finding = monteCarloFinding(monteCarloSummary({ successRate: 1 }), 60, 65, 90)
+    expect(finding.level).toBe("ok")
+    expect(finding.title).toContain("every simulated run funds the plan through 90")
+  })
+
+  it("still passes, but with the percentage stated, comfortably above the 90% line", () => {
+    const finding = monteCarloFinding(monteCarloSummary({ successRate: 0.95 }), 60, 65, 90)
+    expect(finding.level).toBe("ok")
+    expect(finding.title).toContain("95%")
+  })
+
+  it("warns between 50% and 90% success", () => {
+    const finding = monteCarloFinding(monteCarloSummary({ successRate: 0.7 }), 60, 65, 90)
+    expect(finding.level).toBe("warn")
+    expect(finding.title).toContain("70%")
+  })
+
+  it("fails below 50% success, and states the median depletion age", () => {
+    const finding = monteCarloFinding(monteCarloSummary({ successRate: 0.3, medianDepletionYear: 12 }), 60, 65, 90)
+    expect(finding.level).toBe("fail")
+    expect(finding.detail.join(" ")).toContain("around age 72")
+  })
+
+  it("always states the median ending balance", () => {
+    const finding = monteCarloFinding(monteCarloSummary({ successRate: 1, medianEndingBalance: 123456 }), 60, 65, 90)
+    expect(finding.detail.join(" ")).toContain("$1,234.56")
+  })
+})
+
 describe("toBridgeAccounts", () => {
   it("keeps portfolio accounts only and applies Rule of 55 to the access age", () => {
     const accounts = [
@@ -314,7 +351,7 @@ describe("detectPotDrift", () => {
     const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday], [60])
     expect(findings).toHaveLength(1)
     expect(findings[0]?.level).toBe("warn")
-    expect(findings[0]?.title).toContain("dashboard has access age 59, config would generate 55")
+    expect(findings[0]?.title).toContain("Actual has access age 59, your current config would produce 55")
   })
 
   it("stays quiet when the dashboard already matches the config", () => {
@@ -323,7 +360,7 @@ describe("detectPotDrift", () => {
 
   it("flags a portfolio account with no pot at all", () => {
     const findings = detectPotDrift([meta([])], [workday], [60])
-    expect(findings[0]?.title).toContain("has no pot in the dashboard")
+    expect(findings[0]?.title).toContain("has no pot in Actual's exported dashboard")
   })
 
   it("flags a pot whose account is no longer part of the portfolio", () => {
@@ -350,75 +387,7 @@ describe("detectPotDrift", () => {
     expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday], [52, 58])).toEqual([])
     expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 55 }])], [workday], [52, 58])).toEqual([])
     const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 50 }])], [workday], [52, 58])
-    expect(findings[0]?.title).toContain("dashboard has access age 50, config would generate 59/55")
-  })
-})
-
-describe("detectMonteCarloSettingsDrift", () => {
-  it("reports nothing when nothing is pinned, regardless of what's live", () => {
-    const live: MonteCarloCardMeta = { withdrawalStrategy: "sequential" }
-    expect(detectMonteCarloSettingsDrift([live], new Set(), MONTE_CARLO_ASSUMPTIONS)).toEqual([])
-  })
-
-  it("reports nothing when every pinned field already matches every widget", () => {
-    const live: MonteCarloCardMeta = { withdrawalStrategy: "proportional", simulationCount: 5000 }
-    expect(detectMonteCarloSettingsDrift([live], new Set(["withdrawalStrategy", "simulationCount"]), MONTE_CARLO_ASSUMPTIONS)).toEqual([])
-  })
-
-  it("flags a pinned field that hasn't been re-exported to a widget yet", () => {
-    const stale: MonteCarloCardMeta = { withdrawalStrategy: "sequential" }
-    const findings = detectMonteCarloSettingsDrift([stale], new Set(["withdrawalStrategy"]), MONTE_CARLO_ASSUMPTIONS)
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.level).toBe("warn")
-    expect(findings[0]?.title).toContain("withdrawalStrategy")
-  })
-
-  it("only flags a field when at least one widget disagrees, across multiple widgets", () => {
-    const matching: MonteCarloCardMeta = { withdrawalStrategy: "proportional" }
-    const stale: MonteCarloCardMeta = { withdrawalStrategy: "sequential" }
-    const findings = detectMonteCarloSettingsDrift([matching, stale], new Set(["withdrawalStrategy"]), MONTE_CARLO_ASSUMPTIONS)
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.title).toContain("1 of 2")
-  })
-
-  it("checks taxModel the same way as every other pinnable field", () => {
-    const stale: MonteCarloCardMeta = { taxModel: "flat" }
-    const findings = detectMonteCarloSettingsDrift([stale], new Set(["taxModel"]), { ...MONTE_CARLO_ASSUMPTIONS, taxModel: "bands" })
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.title).toContain("taxModel")
-  })
-
-  it("ignores an unpinned field even when it visibly differs from the default assumptions", () => {
-    const live: MonteCarloCardMeta = { withdrawalStrategy: "proportional", returnModel: "historical-bootstrap" }
-    expect(detectMonteCarloSettingsDrift([live], new Set(["withdrawalStrategy"]), MONTE_CARLO_ASSUMPTIONS)).toEqual([])
-  })
-})
-
-describe("detectCrossoverMismatch", () => {
-  const portfolio = account({ id: "a1", name: "Brokerage", category: "investment-taxable" })
-  const cash = account({ id: "a2", name: "Checking", category: "cash" })
-
-  function crossover(incomeAccountIds: string[]) {
-    return { expenseCategoryIds: [], incomeAccountIds, safeWithdrawalRate: 0.04, estimatedReturn: null, expectedContribution: null, projectionType: "hampel" as const, expenseAdjustmentFactor: 1 }
-  }
-
-  it("stays quiet when both sides hold the same accounts", () => {
-    expect(detectCrossoverMismatch([crossover(["a1"])], [portfolio, cash])).toEqual([])
-  })
-
-  it("flags an account the crossover counts but the simulation does not model", () => {
-    const findings = detectCrossoverMismatch([crossover(["a1", "a2"])], [portfolio, cash])
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.title).toContain("Checking is counted by the crossover but is not in the simulation")
-  })
-
-  it("flags a simulated account the crossover leaves out", () => {
-    const findings = detectCrossoverMismatch([crossover([])], [portfolio])
-    expect(findings[0]?.title).toContain("Brokerage is in the simulation but the crossover does not count it")
-  })
-
-  it("says nothing when there is no crossover widget to compare against", () => {
-    expect(detectCrossoverMismatch([], [portfolio])).toEqual([])
+    expect(findings[0]?.title).toContain("Actual has access age 50, your current config would produce 59/55")
   })
 })
 
@@ -501,12 +470,12 @@ describe("detectMonteCarloWidgetSetDrift", () => {
     expect(findings).toHaveLength(4) // 3 missing fresh names + the one orphaned live name
     expect(findings.filter((f) => f.level === "warn")).toHaveLength(3)
     expect(findings.filter((f) => f.level === "warn").map((f) => f.title)).toEqual([
-      'No live Monte Carlo widget named "Monte Carlo — Retire at 50" yet.',
-      'No live Monte Carlo widget named "Monte Carlo — Retire at 51" yet.',
-      'No live Monte Carlo widget named "Monte Carlo — Retire at 52" yet.',
+      'Actual has no Monte Carlo widget named "Monte Carlo — Retire at 50" yet.',
+      'Actual has no Monte Carlo widget named "Monte Carlo — Retire at 51" yet.',
+      'Actual has no Monte Carlo widget named "Monte Carlo — Retire at 52" yet.',
     ])
     const orphan = findings.find((f) => f.level === "info")
-    expect(orphan?.title).toBe('"Monte Carlo" is on the live dashboard but no longer matches a configured retirement age.')
+    expect(orphan?.title).toBe('"Monte Carlo" is in Actual but no longer matches a configured retirement age.')
   })
 
   it("flags only the ages that actually changed, not every scenario, when one age is swapped for another", () => {

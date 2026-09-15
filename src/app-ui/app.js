@@ -3,14 +3,11 @@
 // /api/retirement/state returns and PATCH/POST the endpoints when something changes.
 
 let STATE = null
-// The last-fetched GET /api/retirement/live-settings response, cached here so render() (called
-// after every STATE-changing action, including the initial page load) can always re-render the
-// "Configured in the Actual Dashboard" panel from it -- fixes a real load-order race where that
-// panel's pinned-field highlighting depends on STATE.dashboard, but loadState() and
-// loadLiveSettings() fire concurrently on startup with no guaranteed order (see the bottom of this
-// file), so the first render could land before STATE existed and show nothing as pinned until a
-// manual refresh re-ran loadLiveSettings after STATE was already populated.
-let LIVE_SETTINGS = null
+// The non-income category groups from GET /api/budget/context, cached here so the Spend
+// configuration section's expense-category picker (see renderExpenseCategoryPicker) can redraw on
+// every render() without refetching -- categories don't change from inside this app, so one fetch
+// per page load suffices.
+let EXPENSE_CATEGORY_GROUPS = null
 // The category/month-range a "Find anomalies" run just used, so "Tag flagged transactions" can
 // re-run the exact same query server-side (see runTagAnomalies) without the client having to
 // round-trip full Finding objects (each carrying a full CategoryMonth) back to the server.
@@ -170,13 +167,14 @@ function flashSaved(id) {
 function render() {
   if (!STATE) return
   renderSummary()
+  revealTopSectionIfReady()
   renderPlan()
   renderIncome()
   renderSimSettings()
+  renderWithdrawalRule()
+  renderTaxBands()
+  renderExpenseCategoryPicker()
   renderAccounts()
-  // Re-renders from the cached response rather than refetching -- also keeps pinned-field
-  // highlighting current after a Simulation setting is pinned/unpinned, not just at load.
-  if (LIVE_SETTINGS) renderLiveSettings(LIVE_SETTINGS)
 }
 
 function renderSummary() {
@@ -235,52 +233,119 @@ function renderSimSettings() {
   setIfIdle("mcInflationStdDev", d.monteCarloInflationStdDev == null ? "" : Math.round(d.monteCarloInflationStdDev * 1000) / 10)
   setIfIdle("mcMinimumWithdrawal", formatMoneyInputValue(d.monteCarloMinimumWithdrawal))
   setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
+  setIfIdle("crossoverSafeWithdrawalRate", d.crossoverSafeWithdrawalRate == null ? "" : Math.round(d.crossoverSafeWithdrawalRate * 1000) / 10)
+  setIfIdle("crossoverEstimatedReturn", d.crossoverEstimatedReturn == null ? "" : Math.round(d.crossoverEstimatedReturn * 1000) / 10)
+  setIfIdle("crossoverProjectionType", d.crossoverProjectionType ?? "")
+  setIfIdle("crossoverExpenseAdjustment", d.crossoverExpenseAdjustmentFactor == null ? "" : Math.round(d.crossoverExpenseAdjustmentFactor * 100))
 }
 
-// Plain-language labels matching Actual's own Monte Carlo/Crossover config UI copy verbatim
-// (MonteCarloConfiguration.tsx, MonteCarloWithdrawalRuleConfiguration.tsx,
-// MonteCarloTaxConfiguration.tsx, Crossover.tsx) -- used both for the Simulation settings
-// dropdown option text (see index.html) and for the read-only values shown in "Configured in the
-// Actual Dashboard" below, so the same setting always reads the same way in both places.
-const WITHDRAWAL_STRATEGY_LABELS = {
-  proportional: "Split proportionally across pots",
-  sequential: "Drain pots in order",
-  "best-performer": "Spend from the best performer first",
-  "target-mix": "Keep pots at their target mix",
+// Withdrawal rule (see MonteCarloWithdrawalRuleMeta in fire-accounts.ts): pinned as one whole
+// object rather than field-by-field like the other Simulation settings, since its own parameters
+// vary by type and only make sense together. WR_TYPE_TO_BLOCK_ID's keys are the DOM ids for each
+// type's own parameter block (index.html), shown/hidden based on the currently selected type --
+// same "reveal the fields that make sense once a variant is picked" pattern as the account-type
+// conditional fields (see .acct-fields .field.hidden in style.css).
+const WR_TYPE_TO_BLOCK_ID = {
+  guardrails: "wrParamsGuardrails",
+  ratcheting: "wrParamsRatcheting",
+  "floor-ceiling": "wrParamsFloorCeiling",
+  boundaries: "wrParamsBoundaries",
 }
-const RETURN_MODEL_LABELS = {
-  normal: "Random (normal distribution)",
-  "historical-bootstrap": "Historical returns, shuffled",
-  "historical-sequence": "Historical sequences (replay)",
-}
-const WITHDRAWAL_RULE_LABELS = {
-  none: "None (fixed withdrawals)",
-  guardrails: "Guardrails (Guyton-Klinger)",
-  ratcheting: "Ratcheting (Kitces)",
-  "floor-ceiling": "Floor & ceiling (Bengen)",
-  boundaries: "Boundaries",
-}
-const TAX_MODEL_LABELS = { flat: "Flat rate per pot", bands: "Tax bands (progressive)" }
-const PROJECTION_TYPE_LABELS = { hampel: "Hampel Filtered Median", median: "Median", mean: "Mean" }
+// pct: true fields are decimal fractions (0.2 = 20%) shown/entered as a plain percent number, same
+// convention as every other rate field in this app -- balanceThresholdMultiple (a multiple of the
+// initial balance) and consecutiveYears (a plain count) are the only two that aren't.
+const WR_FIELD_DEFS = [
+  { key: "prosperityTriggerPct", inputId: "wrProsperityTriggerPct", pct: true },
+  { key: "prosperityIncreasePct", inputId: "wrProsperityIncreasePct", pct: true },
+  { key: "preservationTriggerPct", inputId: "wrPreservationTriggerPct", pct: true },
+  { key: "preservationCutPct", inputId: "wrPreservationCutPct", pct: true },
+  { key: "balanceThresholdMultiple", inputId: "wrBalanceThresholdMultiple", pct: false },
+  { key: "consecutiveYears", inputId: "wrConsecutiveYears", pct: false },
+  { key: "ratchetIncreasePct", inputId: "wrRatchetIncreasePct", pct: true },
+  { key: "floorPct", inputId: "wrFloorPct", pct: true },
+  { key: "ceilingPct", inputId: "wrCeilingPct", pct: true },
+  { key: "upperRateThreshold", inputId: "wrUpperRateThreshold", pct: true },
+  { key: "upperCutPct", inputId: "wrUpperCutPct", pct: true },
+  { key: "lowerRateThreshold", inputId: "wrLowerRateThreshold", pct: true },
+  { key: "lowerIncreasePct", inputId: "wrLowerIncreasePct", pct: true },
+]
 
-// Maps a pinned DashboardConfig field to the Simulation settings input that actually sets it, so
-// hovering the pinned value below can highlight where to go change it -- see renderLiveSettings.
-const PINNED_FIELD_TO_INPUT_ID = {
-  monteCarloWithdrawalStrategy: "mcWithdrawalStrategy",
-  monteCarloReturnModel: "mcReturnModel",
-  monteCarloTaxModel: "mcTaxModel",
-  monteCarloInflationMean: "mcInflationMean",
-  monteCarloInflationStdDev: "mcInflationStdDev",
-  monteCarloMinimumWithdrawal: "mcMinimumWithdrawal",
-  monteCarloSimulationCount: "mcSimulationCount",
+function renderWithdrawalRule() {
+  const rule = STATE.dashboard.monteCarloWithdrawalRule
+  const typeSelect = document.getElementById("mcWithdrawalRuleType")
+  if (document.activeElement !== typeSelect) typeSelect.value = rule?.type ?? ""
+  Object.values(WR_TYPE_TO_BLOCK_ID).forEach((blockId) => {
+    document.getElementById(blockId).hidden = true
+  })
+  if (rule && WR_TYPE_TO_BLOCK_ID[rule.type]) {
+    document.getElementById(WR_TYPE_TO_BLOCK_ID[rule.type]).hidden = false
+  }
+  WR_FIELD_DEFS.forEach(({ key, inputId, pct }) => {
+    const el = document.getElementById(inputId)
+    if (document.activeElement === el) return
+    const value = rule ? rule[key] : undefined
+    el.value = value == null ? "" : pct ? Math.round(value * 1000) / 10 : value
+  })
 }
 
-// Shows the "Getting started" walkthrough while there's nothing imported into Actual yet to show
-// under "Configured in the Actual Dashboard" -- driven off the same live-settings fetch that panel
-// already uses, so it appears/disappears in step with reality rather than tracking its own separate
-// state. Suppressed once the user dismisses it (a cookie, see getCookie/setCookie's own doc
-// comment), even if they haven't imported anything -- someone who already knows the flow shouldn't
-// have to keep re-dismissing it on every load.
+// Renders the Tax bands list (see MonteCarloTaxBandMeta) -- pinned as a whole array, same
+// "authoritative once set" convention as withdrawalRule above. `from` is cents (matches
+// minimumWithdrawal's own convention -- both compare directly against withdrawal amounts in the
+// vendored engine); `rate` is a decimal fraction like every other rate field.
+function renderTaxBands() {
+  const bands = STATE.dashboard.monteCarloTaxBands
+  const container = document.getElementById("taxBandsList")
+  container.innerHTML = (bands ?? [])
+    .map(
+      (band) => `
+    <div class="tax-band-row" data-band-id="${escapeHtml(band.id)}">
+      <div class="field">
+        <label>From</label>
+        <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="tb-from" placeholder="0" value="${escapeHtml(formatMoneyInputValue(band.from ?? null))}"></div>
+      </div>
+      <div class="field">
+        <label>Rate</label>
+        <div class="input-affix suffix-percent"><input type="number" step="0.1" class="tb-rate" placeholder="not entered" value="${band.rate == null ? "" : Math.round(band.rate * 1000) / 10}"></div>
+      </div>
+      <button type="button" class="tax-band-remove" title="Remove band" aria-label="Remove band">×</button>
+    </div>`,
+    )
+    .join("")
+  container.querySelectorAll(".tax-band-row").forEach((row) => {
+    const bandId = row.dataset.bandId
+    const fromInput = row.querySelector(".tb-from")
+    attachMoneyFormatting(fromInput)
+    const commitRow = () => {
+      const next = (STATE.dashboard.monteCarloTaxBands ?? []).map((band) =>
+        band.id === bandId ? { id: bandId, from: parseMoneyInputCents(fromInput.value) ?? undefined, rate: rateInput.value === "" ? undefined : parseFloat(rateInput.value) / 100 } : band,
+      )
+      runExclusive(() => patchPlan({ monteCarloTaxBands: next }, "savedSimSettings"))
+    }
+    const rateInput = row.querySelector(".tb-rate")
+    fromInput.addEventListener("change", commitRow)
+    rateInput.addEventListener("change", commitRow)
+    row.querySelector(".tax-band-remove").addEventListener("click", () => {
+      const next = (STATE.dashboard.monteCarloTaxBands ?? []).filter((band) => band.id !== bandId)
+      runExclusive(() => patchPlan({ monteCarloTaxBands: next }, "savedSimSettings"))
+    })
+  })
+}
+
+let taxBandIdCounter = 0
+// Plain timestamp+counter id, not crypto.randomUUID() -- this app is also reached over plain HTTP
+// from other devices on the LAN (see the server's own startup banner), which isn't a secure
+// context, and randomUUID throws there.
+function nextTaxBandId() {
+  taxBandIdCounter += 1
+  return `band-${Date.now()}-${taxBandIdCounter}`
+}
+
+// Shows the "Getting started" walkthrough while no FIRE dashboard has ever been exported/imported
+// yet -- driven off runCheck's own result (monteCarloWidgetCount/crossoverWidgetCount), so it
+// appears/disappears in step with reality rather than tracking its own separate fetch. Suppressed
+// once the user dismisses it (a cookie, see getCookie/setCookie's own doc comment), even before
+// anything's been imported -- someone who already knows the flow shouldn't have to keep
+// re-dismissing it on every load.
 function updateWalkthrough(hasLiveDashboard) {
   const el = document.getElementById("walkthrough")
   let dismissed = false
@@ -292,84 +357,139 @@ function updateWalkthrough(hasLiveDashboard) {
   el.hidden = hasLiveDashboard || dismissed
 }
 
-// Renders the read-only "Configured in the Actual Dashboard" panel from GET /api/retirement/live-settings
-// -- fetched separately from the main state (see loadLiveSettings) since it's its own live ActualQL
-// read and isn't needed on every keystroke the way account balances are. Split into Crossover and
-// Simulation sections since several field names/values (minimum withdrawal, return-ish figures)
-// could otherwise read as belonging to either widget.
-function renderLiveSettings(settings) {
-  const container = document.getElementById("liveSettings")
-  const hasLiveDashboard = Boolean(settings && (settings.crossover || settings.monteCarlo))
-  updateWalkthrough(hasLiveDashboard)
-  if (!hasLiveDashboard) {
-    container.innerHTML = `<div class="empty-note">No live FIRE dashboard found yet — generate and import one first.</div>`
+// Function to render the Spend configuration section's own expense-category picker (see
+// fire-accounts.ts's DashboardConfig.crossoverExpenseCategoryIds) from the cached
+// /api/budget/context fetch (see loadExpenseCategoryOptions) -- income categories are excluded
+// server-side, same set the crossover widget itself would ever offer. The checklist is always
+// visible (no "use every category" master toggle) -- a null selection (nothing customized yet)
+// renders every non-hidden category checked, matching the actual server-side default.
+//
+// Each group is its own foldable section with a tri-state "select all in this group" checkbox
+// (setTriState, shared with the Budget table's own group checkboxes below) and a live N/total
+// count, so a folded group's selection is still legible without opening it. "Show hidden" reveals
+// categories Actual itself has hidden (excluded from allIds/the default selection either way,
+// but selectable once shown); "Hide unchecked" is a pure view filter, narrowing the list to what's
+// already checked without changing the underlying selection. Fold state lives in
+// EXPENSE_CATEGORY_FOLDS (a plain Set of collapsed group ids), and the two toggles live in
+// EXPENSE_CATEGORY_VIEW, both independent of STATE so they survive the full re-render every
+// checkbox change triggers -- redrawn on every render() (not just after its own fetch) the same way
+// renderSimSettings et al. are; checkboxes have no in-progress-typing state to protect the way a
+// text <input> does, so there's no idle guard needed here.
+let EXPENSE_CATEGORY_FOLDS = new Set()
+const EXPENSE_CATEGORY_VIEW = { showHidden: false, hideUnchecked: false }
+
+function renderExpenseCategoryPicker() {
+  const container = document.getElementById("expenseCategoryPicker")
+  if (!EXPENSE_CATEGORY_GROUPS || !STATE) return
+  const selected = STATE.dashboard.crossoverExpenseCategoryIds
+  const allIds = EXPENSE_CATEGORY_GROUPS.flatMap((group) => group.categories.filter((category) => !category.hidden).map((category) => category.id))
+  const checkedIds = new Set(selected === null ? allIds : selected)
+  // Two independent filters over the same group/category data: "selectable" (respects Show
+  // hidden, decides what the group's own N/total count is out of) and "displayed" (selectable,
+  // further narrowed by Hide unchecked -- a pure view filter that never changes the count).
+  const groupsToRender = EXPENSE_CATEGORY_GROUPS.map((group) => {
+    const selectable = group.categories.filter((category) => EXPENSE_CATEGORY_VIEW.showHidden || !category.hidden)
+    const displayed = selectable.filter((category) => !EXPENSE_CATEGORY_VIEW.hideUnchecked || checkedIds.has(category.id))
+    return { ...group, selectable, displayed }
+  }).filter((group) => group.displayed.length > 0)
+  if (groupsToRender.length === 0) {
+    container.innerHTML = `<div class="empty-note">Nothing matches the current filters.</div>`
     return
   }
-  const pinned = STATE ? STATE.dashboard : {}
-  const row = (label, value, pinnedField, isMoney) => {
-    const isPinned = pinnedField && pinned[pinnedField] != null
-    const valueHtml = isMoney ? moneySpan(value) : escapeHtml(String(value))
-    const target = isPinned ? PINNED_FIELD_TO_INPUT_ID[pinnedField] : null
-    return `<div class="kv"><span class="k">${escapeHtml(label)}</span><span class="v${isPinned ? " pinned" : ""}"${target ? ` data-highlight-target="${target}" title="Set in Simulation settings"` : ""}>${valueHtml}</span></div>`
-  }
-  const sections = []
-  if (settings.crossover) {
-    const c = settings.crossover
-    sections.push({
-      label: "Crossover",
-      rows: [
-        row("Safe withdrawal rate", `${Math.round(c.safeWithdrawalRate * 1000) / 10}%`),
-        row("Estimated return", c.estimatedReturn == null ? "auto" : `${Math.round(c.estimatedReturn * 1000) / 10}%`),
-        row("Projection type", PROJECTION_TYPE_LABELS[c.projectionType] ?? c.projectionType),
-        row("Expense adjustment", `${Math.round(c.expenseAdjustmentFactor * 100)}%`),
-      ],
+  container.innerHTML = groupsToRender
+    .map((group) => {
+      const checkedCount = group.selectable.filter((category) => checkedIds.has(category.id)).length
+      const folded = EXPENSE_CATEGORY_FOLDS.has(group.id)
+      return `
+      <div class="category-picker-group">
+        <div class="category-picker-group-head">
+          <button type="button" class="bt-fold-toggle" data-fold-group="${group.id}" aria-expanded="${!folded}">${folded ? "▶" : "▼"}</button>
+          <label class="checkbox-label bt-group-check-label"><input type="checkbox" class="expense-category-group-check" data-group="${group.id}">${escapeHtml(group.name)}</label>
+          <span class="category-picker-count">${checkedCount}/${group.selectable.length}</span>
+        </div>
+        <div class="category-picker-body" data-group-body="${group.id}" ${folded ? "hidden" : ""}>
+          ${group.displayed
+            .map(
+              (category) =>
+                `<label class="checkbox-label category-picker-item${category.hidden ? " hidden-category" : ""}"><input type="checkbox" class="expense-category-check" data-category-id="${category.id}" data-group="${group.id}" ${checkedIds.has(category.id) ? "checked" : ""}>${escapeHtml(category.name)}${category.hidden ? hiddenCategoryMark() : ""}</label>`,
+            )
+            .join("")}
+        </div>
+      </div>`
     })
-  }
-  if (settings.monteCarlo) {
-    const m = settings.monteCarlo
-    sections.push({
-      label: "Simulation",
-      rows: [
-        row("Withdrawal strategy", (m.withdrawalStrategy && WITHDRAWAL_STRATEGY_LABELS[m.withdrawalStrategy]) ?? m.withdrawalStrategy ?? "—", "monteCarloWithdrawalStrategy"),
-        row("Return model", (m.returnModel && RETURN_MODEL_LABELS[m.returnModel]) ?? m.returnModel ?? "—", "monteCarloReturnModel"),
-        row("Withdrawal rule", WITHDRAWAL_RULE_LABELS[m.withdrawalRuleType] ?? m.withdrawalRuleType),
-        row("Tax model", TAX_MODEL_LABELS[m.taxModel] ?? m.taxModel, "monteCarloTaxModel"),
-        row("Inflation (mean)", `${Math.round((m.inflationMean ?? 0) * 1000) / 10}%`, "monteCarloInflationMean"),
-        row("Inflation (std dev)", `${Math.round(m.inflationStdDev * 1000) / 10}%`, "monteCarloInflationStdDev"),
-        row("Minimum withdrawal", usd(m.minimumWithdrawal), "monteCarloMinimumWithdrawal"),
-        row("Simulation count", m.simulationCount.toLocaleString(), "monteCarloSimulationCount"),
-      ],
-    })
-  }
-  container.innerHTML = sections
-    .map((section) => `<div class="income-label">${escapeHtml(section.label)}</div><div class="kv-grid">${section.rows.join("")}</div>`)
     .join("")
-  container.querySelectorAll("[data-highlight-target]").forEach((el) => {
-    const target = document.getElementById(el.dataset.highlightTarget)
-    if (!target) return
-    el.addEventListener("mouseenter", () => target.classList.add("sim-field-highlight"))
-    el.addEventListener("mouseleave", () => target.classList.remove("sim-field-highlight"))
+  container.querySelectorAll("[data-fold-group]").forEach((toggle) => {
+    toggle.addEventListener("click", () => {
+      const groupId = toggle.dataset.foldGroup
+      const collapsing = toggle.getAttribute("aria-expanded") === "true"
+      if (collapsing) EXPENSE_CATEGORY_FOLDS.add(groupId)
+      else EXPENSE_CATEGORY_FOLDS.delete(groupId)
+      toggle.setAttribute("aria-expanded", String(!collapsing))
+      toggle.textContent = collapsing ? "▶" : "▼"
+      container.querySelector(`[data-group-body="${groupId}"]`).hidden = collapsing
+    })
+  })
+  // Tracked as a Set derived from checkedIds, not read back from the DOM on every change --
+  // Hide unchecked and Show hidden both mean the DOM only ever contains a subset of the real
+  // selection (an unchecked-and-hidden category, or one checked while Show hidden was on and
+  // since hidden from view again, simply isn't rendered), so reconstructing "what's checked" by
+  // querying visible checkboxes would silently drop whatever the current filters happen to hide.
+  const working = new Set(checkedIds)
+  const commitSelection = () => {
+    const ids = [...working]
+    if (ids.length === 0) {
+      showError("Select at least one expense category.")
+      renderExpenseCategoryPicker()
+      return
+    }
+    runExclusive(() => patchPlan({ crossoverExpenseCategoryIds: ids }, "savedExpenseCategories"))
+  }
+  container.querySelectorAll(".expense-category-check").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) working.add(checkbox.dataset.categoryId)
+      else working.delete(checkbox.dataset.categoryId)
+      commitSelection()
+    })
+  })
+  container.querySelectorAll(".expense-category-group-check").forEach((groupCheckbox) => {
+    const group = groupsToRender.find((g) => g.id === groupCheckbox.dataset.group)
+    groupCheckbox.addEventListener("change", () => {
+      group.selectable.forEach((category) => {
+        if (groupCheckbox.checked) working.add(category.id)
+        else working.delete(category.id)
+      })
+      commitSelection()
+    })
+    setTriState(
+      groupCheckbox,
+      group.selectable.map((category) => ({ checked: checkedIds.has(category.id) })),
+    )
   })
 }
 
-async function loadLiveSettings() {
+// The eye-off glyph Actual's own budget table already uses for a hidden category (see hiddenMark
+// in renderPickerTable) -- same shape, generic enough to reuse here without duplicating the SVG.
+function hiddenCategoryMark() {
+  return ` <span class="bt-hidden-mark" title="Hidden in Actual" aria-label="Hidden in Actual"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C4.5 7 8 4.5 12 4.5S19.5 7 22 12c-2.5 5-6 7.5-10 7.5S4.5 17 2 12Z"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18"/></svg></span>`
+}
+
+async function loadExpenseCategoryOptions() {
   try {
-    LIVE_SETTINGS = await api("/api/retirement/live-settings")
-    renderLiveSettings(LIVE_SETTINGS)
+    const { categoryGroups } = await api("/api/budget/context")
+    EXPENSE_CATEGORY_GROUPS = categoryGroups.filter((group) => !group.hidden || group.categories.some((category) => category.hidden))
+    renderExpenseCategoryPicker()
   } catch (error) {
-    document.getElementById("liveSettings").innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+    document.getElementById("expenseCategoryPicker").innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
   }
 }
 
 // The one Refresh button (top of page, beside Expand/Collapse all) pulls fresh data for the whole
-// page at once -- the summary tiles/Stale/Analysis (runCheck) and "Configured in the Actual
-// Dashboard" (loadLiveSettings) used to be two separate buttons each scoped to its own card; see
-// scheduleRecheck for why editing a field no longer needs this button pressed to see the effect.
+// page at once, from a single /api/retirement/check call.
 async function refreshAll() {
   const btn = document.getElementById("refreshBtn")
   btn.disabled = true
   try {
-    await Promise.all([runCheck(), loadLiveSettings()])
+    await runCheck()
   } finally {
     btn.disabled = false
   }
@@ -755,13 +875,25 @@ function usdCompact(cents) {
 // smallest multiple of that step that clears `maxCents` -- so EVERY tick is a round number.
 // Dividing a rounded ceiling into N equal parts (the more obvious approach) doesn't guarantee
 // that: a $5M ceiling split into 4 lands on $1.25M/$3.75M, neither of them clean.
+//
+// The last tick pushed is guaranteed >= maxCents -- a do-while, not a for loop with a `<=`
+// bound, deliberately: a plain `for (value <= maxCents; value += step)` stops as soon as value
+// exceeds maxCents WITHOUT pushing that value, so whenever maxCents doesn't land exactly on a
+// step multiple the top tick ends up a step short of the real max (e.g. step=$1M, a real max of
+// $3.6M topped out at a $3M tick) -- every series scaled off that tick then draws part of its own
+// line above the visible plot, clipped by the raw SVG canvas rather than the intended axis. Caught
+// by rendering real data and looking at it, not from the math alone.
 function niceAxisTicks(maxCents, targetCount) {
   if (maxCents <= 0) return [0, 100]
   const roughStep = maxCents / targetCount
   const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)))
   const step = [1, 2, 2.5, 5, 10].map((multiple) => multiple * magnitude).find((candidate) => candidate >= roughStep) ?? 10 * magnitude
   const ticks = []
-  for (let value = 0; value <= maxCents + step * 0.001; value += step) ticks.push(Math.round(value))
+  let value = 0
+  do {
+    ticks.push(Math.round(value))
+    value += step
+  } while (ticks[ticks.length - 1] < maxCents)
   return ticks
 }
 
@@ -866,7 +998,7 @@ function renderBridgeChart(bridgeResults) {
             : `<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="2" />`
       const endLabel =
         directLabels && result.depletionAge != null
-          ? `<text x="${endX.toFixed(1)}" y="${(endY - 9).toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">depletes ${result.depletionAge}</text>`
+          ? `<text x="${endX.toFixed(1)}" y="${(endY - 9).toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">depletes at ${result.depletionAge}</text>`
           : ""
       return `<g data-series="${index}">
           ${lockedPoints.length > 1 ? `<path d="${linePath(lockedPoints, "lockedBalance")}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4 3" opacity="0.55" />` : ""}
@@ -985,6 +1117,240 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
   })
 }
 
+// Area-fill opacity for the two nested percentile bands -- both a wash, never a saturated block
+// (see the dataviz skill's own mark spec: ~10% for a single area fill). The inner band is a
+// narrower, more-likely range (25th-75th percentile) than the outer one (10th-90th), so it reads
+// slightly more solid -- still well short of "saturated."
+const MC_BAND_OUTER_OPACITY = 0.1
+const MC_BAND_INNER_OPACITY = 0.22
+let mcChartInstanceCounter = 0
+
+// Function to draw the Monte Carlo fan chart: one percentile band per selected retirement age,
+// from today's age through the plan's target age (every scenario shares the same age range --
+// unlike Bridge, the horizon here is fixed by currentAge/targetAge alone, not by when each
+// scenario happens to deplete). Outer band = 10th-90th percentile (80% of simulated runs), inner
+// band = 25th-75th (the interquartile range), solid line = median (50th). Returns null when there
+// is nothing to plot.
+function renderMonteCarloChart(monteCarloResults, currentAge) {
+  const usable = monteCarloResults.filter((r) => r.percentileBands.length > 0)
+  if (usable.length === 0) return null
+
+  const series = usable.map((result) => ({
+    result,
+    points: result.percentileBands.map((band) => ({ age: currentAge + band.year, ...band })),
+  }))
+
+  const width = 640
+  const height = 240
+  const margin = { top: 12, right: 16, bottom: 24, left: 54 }
+  const plotWidth = width - margin.left - margin.right
+  const plotHeight = height - margin.top - margin.bottom
+
+  const minAge = Math.min(...series.map((s) => s.points[0].age))
+  const maxAge = Math.max(...series.map((s) => s.points[s.points.length - 1].age))
+  // Scaled off the MEDIAN's own peak (with headroom), not the 75th/90th percentile bands:
+  // compounding at the high end of a 30-40 year horizon can reach genuinely enormous nominal
+  // figures (the same reason Bridge windows a funded scenario's own line -- see
+  // BRIDGE_WINDOW_YEARS), and a scenario with a real chance of failure often has a median that
+  // itself trends toward zero -- if the upper bands set the axis instead, that median (the line
+  // that actually answers "does the typical run work") gets squashed into an unreadable sliver
+  // near zero even though it's the headline number. The 75th/90th-percentile bands are still real
+  // data and still drawn; they're simply clipped at the top of the plot area past this scale (see
+  // the clip-path below) rather than resized around -- the same "windowed, not discarded"
+  // treatment Bridge gives its own off-chart truth (the real numbers stay in the tooltip and the
+  // finding text either way).
+  const maxBalance = Math.max(1, ...series.flatMap((s) => s.points.map((point) => point.p50))) * 1.15
+  const yTicks = niceAxisTicks(maxBalance, 4)
+  const yMax = yTicks[yTicks.length - 1]
+
+  const scaleX = (age) => margin.left + (maxAge === minAge ? 0 : ((age - minAge) / (maxAge - minAge)) * plotWidth)
+  // Not clamped to the plot area -- values above yMax intentionally scale off the top edge, so the
+  // clip-path below cuts them off cleanly instead of the path folding back on itself.
+  const scaleY = (cents) => margin.top + plotHeight - (cents / yMax) * plotHeight
+  const linePath = (points, key) => points.map((point, index) => `${index === 0 ? "M" : "L"}${scaleX(point.age).toFixed(1)},${scaleY(point[key]).toFixed(1)}`).join(" ")
+  // Standard "area between two curves" construction: forward along the top edge, backward along
+  // the bottom edge, close the loop.
+  const bandPath = (points, topKey, bottomKey) => {
+    const forward = points.map((point, index) => `${index === 0 ? "M" : "L"}${scaleX(point.age).toFixed(1)},${scaleY(point[topKey]).toFixed(1)}`).join(" ")
+    const backward = [...points]
+      .reverse()
+      .map((point) => `L${scaleX(point.age).toFixed(1)},${scaleY(point[bottomKey]).toFixed(1)}`)
+      .join(" ")
+    return `${forward} ${backward} Z`
+  }
+
+  const gridlines = yTicks
+    .map(
+      (tickCents) =>
+        `<line x1="${margin.left}" y1="${scaleY(tickCents).toFixed(1)}" x2="${width - margin.right}" y2="${scaleY(tickCents).toFixed(1)}" class="bridge-grid" />` +
+        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${usdCompact(tickCents)}</text>`,
+    )
+    .join("")
+
+  const span = maxAge - minAge
+  const ageStep = span > 40 ? 10 : span > 12 ? 5 : 1
+  const ageTicks = []
+  for (let age = Math.ceil(minAge / ageStep) * ageStep; age <= maxAge; age += ageStep) ageTicks.push(age)
+  if (ageTicks[0] !== minAge) ageTicks.unshift(minAge)
+  if (ageTicks[ageTicks.length - 1] !== maxAge) ageTicks.push(maxAge)
+  const ageAxis = ageTicks
+    .map((age) => `<text x="${scaleX(age).toFixed(1)}" y="${height - margin.bottom + 16}" class="bridge-axis-label" text-anchor="middle">${age}</text>`)
+    .join("")
+
+  // Direct end-labels (the success rate) only up to 4 series, same series-count ladder Bridge
+  // follows -- past that they'd collide with each other rather than with the lines.
+  const directLabels = series.length <= 4
+  // The median's own end point is pinned to the top of the plot area, not left to disappear,
+  // when it's clipped away up there (a plan still climbing off the top of the chart at the target
+  // age) -- clip-path only hides the PATH; the marker/label stay a visible "still going" cue.
+  const endYRaw = series.map(({ points }) => scaleY(points[points.length - 1].p50))
+  const endYClamped = endYRaw.map((y) => Math.max(margin.top + 10, y))
+  // Stack collided end-labels vertically (forward pass: push each one down clear of the previous)
+  // rather than letting them overlap -- see marks-and-anatomy.md's own "when end-labels collide"
+  // guidance. Past ~4 converging series small multiples would be the right call instead;
+  // directLabels above already turns labels off before that point.
+  const MC_MIN_LABEL_GAP = 11
+  const labelOrder = series.map((_, index) => index).sort((a, b) => endYClamped[a] - endYClamped[b])
+  const labelY = [...endYClamped]
+  labelOrder.forEach((index, order) => {
+    if (order === 0) return
+    const prevIndex = labelOrder[order - 1]
+    if (labelY[index] - labelY[prevIndex] < MC_MIN_LABEL_GAP) labelY[index] = labelY[prevIndex] + MC_MIN_LABEL_GAP
+  })
+  // Backward pass: several scenarios failing around the same age (as here) all end at $0, so the
+  // forward pass above can push the lowest label past the bottom of the plot -- where it would be
+  // cut off by the clip-path below. Shift the whole stack back up by however far it overflowed,
+  // which preserves the gaps the forward pass just established.
+  const labelBottomBound = margin.top + plotHeight - 4
+  const lowestLabelIndex = labelOrder[labelOrder.length - 1]
+  if (labelY[lowestLabelIndex] > labelBottomBound) {
+    const overflow = labelY[lowestLabelIndex] - labelBottomBound
+    labelOrder.forEach((index) => {
+      labelY[index] -= overflow
+    })
+  }
+
+  const seriesSvg = series
+    .map(({ result, points }, index) => {
+      const color = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
+      const last = points[points.length - 1]
+      const endX = scaleX(last.age)
+      const endY = endYClamped[index]
+      const successPct = Math.round(result.successRate * 100)
+      const endLabel = directLabels
+        ? `<text x="${endX.toFixed(1)}" y="${(labelY[index] - 9).toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">${successPct}% success</text>`
+        : ""
+      return `<g data-series="${index}">
+          <path d="${bandPath(points, "p90", "p10")}" fill="${color}" opacity="${MC_BAND_OUTER_OPACITY}" stroke="none" />
+          <path d="${bandPath(points, "p75", "p25")}" fill="${color}" opacity="${MC_BAND_INNER_OPACITY}" stroke="none" />
+          <path d="${linePath(points, "p50")}" fill="none" stroke="${color}" stroke-width="2" />
+          <circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="2" />
+          ${endLabel}
+        </g>`
+    })
+    .join("")
+
+  // Unique per instance so two charts on the same page (there's normally at most one, but IDs
+  // must still not collide) don't fight over the same clip-path id.
+  const clipId = `mc-plot-${mcChartInstanceCounter++}`
+  const wrap = document.createElement("div")
+  // mc-chart is a marker class only (no CSS rule of its own) -- lets a test or future selector
+  // distinguish this chart from Bridge's, which shares every one of these class names for its
+  // identical grid/axis/tooltip/legend styling.
+  wrap.className = "bridge-chart mc-chart"
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" class="bridge-chart-svg" role="img" aria-label="Monte Carlo simulation: percentile range of the portfolio balance by age, for each selected retirement age">
+      <defs><clipPath id="${clipId}"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" /></clipPath></defs>
+      ${gridlines}
+      ${ageAxis}
+      <g clip-path="url(#${clipId})">${seriesSvg}</g>
+      <line class="bridge-crosshair" x1="0" y1="${margin.top}" x2="0" y2="${height - margin.bottom}" hidden />
+      <rect class="bridge-hit" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="transparent" />
+    </svg>
+    <div class="bridge-tooltip" hidden></div>
+    ${
+      series.length > 1
+        ? `<div class="bridge-legend">${series
+            .map(
+              ({ result }, index) =>
+                `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${result.retirementAge}</span>`,
+            )
+            .join("")}</div>`
+        : ""
+    }
+    <div class="bridge-style-key"><span class="mc-key-swatch mc-key-outer"></span>10th-90th<span class="mc-key-swatch mc-key-inner"></span>25th-75th<span class="bridge-key-line"></span>Median</div>
+  `
+
+  wireMonteCarloTooltip(wrap, series, { width, scaleX, minAge, maxAge, margin, plotWidth })
+  return wrap
+}
+
+// Function to wire the fan chart's hover layer -- same crosshair-snaps-to-the-nearest-whole-age
+// approach as Bridge's own tooltip (every series has an exact point at every age in its horizon,
+// so there is never a value to interpolate), showing the 10th/50th/90th percentile for whichever
+// series still has data at that age.
+function wireMonteCarloTooltip(wrap, series, scale) {
+  const svg = wrap.querySelector(".bridge-chart-svg")
+  const hit = wrap.querySelector(".bridge-hit")
+  const crosshair = wrap.querySelector(".bridge-crosshair")
+  const tooltip = wrap.querySelector(".bridge-tooltip")
+  const byAge = series.map(({ points }) => new Map(points.map((point) => [point.age, point])))
+
+  const move = (event) => {
+    const rect = svg.getBoundingClientRect()
+    const svgX = ((event.clientX - rect.left) / rect.width) * scale.width
+    const fraction = Math.min(1, Math.max(0, (svgX - scale.margin.left) / scale.plotWidth))
+    const age = Math.round(scale.minAge + fraction * (scale.maxAge - scale.minAge))
+
+    const rows = series.map(({ result }, index) => ({ result, index, point: byAge[index].get(age) })).filter((row) => row.point)
+    if (rows.length === 0) {
+      tooltip.hidden = true
+      crosshair.hidden = true
+      return
+    }
+
+    crosshair.hidden = false
+    crosshair.setAttribute("x1", scale.scaleX(age).toFixed(1))
+    crosshair.setAttribute("x2", scale.scaleX(age).toFixed(1))
+
+    tooltip.innerHTML = ""
+    const heading = document.createElement("div")
+    heading.className = "bridge-tooltip-age"
+    heading.textContent = `Age ${age}`
+    tooltip.appendChild(heading)
+    rows.forEach(({ result, index, point }) => {
+      const row = document.createElement("div")
+      row.className = "bridge-tooltip-row"
+      const key = document.createElement("span")
+      key.className = "bridge-tooltip-key"
+      key.style.background = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
+      const value = document.createElement("span")
+      value.className = "bridge-tooltip-value"
+      value.textContent = usd(point.p50)
+      const label = document.createElement("span")
+      label.className = "bridge-tooltip-label"
+      label.textContent = series.length > 1 ? `retire ${result.retirementAge} (median)` : "median"
+      row.append(key, value, label)
+      const range = document.createElement("span")
+      range.className = "bridge-tooltip-locked"
+      range.textContent = `· ${usd(point.p10)}-${usd(point.p90)} (80% of runs)`
+      row.appendChild(range)
+      tooltip.appendChild(row)
+    })
+    tooltip.hidden = false
+    const wrapRect = wrap.getBoundingClientRect()
+    const left = Math.min(event.clientX - wrapRect.left + 12, wrapRect.width - tooltip.offsetWidth - 4)
+    tooltip.style.left = `${Math.max(4, left)}px`
+    tooltip.style.top = `${Math.max(0, event.clientY - wrapRect.top - tooltip.offsetHeight - 12)}px`
+  }
+
+  hit.addEventListener("pointermove", move)
+  hit.addEventListener("pointerleave", () => {
+    tooltip.hidden = true
+    crosshair.hidden = true
+  })
+}
+
 function renderFinding(finding) {
   const div = document.createElement("div")
   div.className = "finding"
@@ -1053,6 +1419,23 @@ const LOADING_MARKUP = `<div class="panel-loading"><div class="spinner" aria-hid
 // briefly showing stale numbers over fresh ones.
 let checkRequestId = 0
 
+// The Portfolio/mortgage-and-other tiles and Stale both come from this same call, same as
+// Analysis below -- true only once the very first runCheck() has settled (succeeded or failed),
+// so revealTopSectionIfReady knows to stop showing #topLoading in their place. Never reset back to
+// false afterward: a field edit's own re-check (scheduleRecheck) updates the tiles/Stale in place,
+// it doesn't re-hide them behind the loading box the way Analysis re-shows its own spinner.
+let firstCheckDone = false
+
+// Function to swap #topLoading for the real Portfolio/mortgage tiles (and let Stale show or stay
+// hidden on its own real terms) the moment both halves of "what belongs up top" are actually
+// known: STATE (Portfolio's own data) and the first check (everything else up there). Called from
+// both render() and runCheck() since neither alone knows when the other one lands.
+function revealTopSectionIfReady() {
+  if (!STATE || !firstCheckDone) return
+  document.getElementById("topLoading").hidden = true
+  document.getElementById("summaryTiles").hidden = false
+}
+
 async function runCheck() {
   const requestId = ++checkRequestId
   const container = document.getElementById("checkResult")
@@ -1060,22 +1443,39 @@ async function runCheck() {
   try {
     const result = await api("/api/retirement/check")
     if (requestId !== checkRequestId) return
+    updateWalkthrough(result.monteCarloWidgetCount > 0 || result.crossoverWidgetCount > 0)
     renderSummaryStats(result)
     renderStaleResult(result.staleFindings)
+    firstCheckDone = true
+    revealTopSectionIfReady()
     container.innerHTML = ""
-    if (result.bridgeFindings.length === 0) {
+    if (result.bridgeFindings.length === 0 && result.monteCarloFindings.length === 0) {
       container.innerHTML = `<div class="empty-note">No findings.</div>`
       return
     }
-    const group = document.createElement("div")
-    group.className = "findings-group"
-    group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
-    const chart = renderBridgeChart(result.bridgeResults)
-    if (chart) group.appendChild(chart)
-    result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
-    container.appendChild(group)
+    if (result.bridgeFindings.length > 0) {
+      const group = document.createElement("div")
+      group.className = "findings-group"
+      group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
+      const chart = renderBridgeChart(result.bridgeResults)
+      if (chart) group.appendChild(chart)
+      result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
+      container.appendChild(group)
+    }
+    if (result.monteCarloFindings.length > 0) {
+      const group = document.createElement("div")
+      group.className = "findings-group"
+      const simCount = result.monteCarloResults[0]?.simulationCount
+      group.innerHTML = `<div class="group-label">Monte Carlo${simCount ? ` · ${simCount.toLocaleString()} simulated runs` : ""}</div>`
+      const chart = renderMonteCarloChart(result.monteCarloResults, result.currentAge)
+      if (chart) group.appendChild(chart)
+      result.monteCarloFindings.forEach((f) => group.appendChild(renderFinding(f)))
+      container.appendChild(group)
+    }
   } catch (error) {
     if (requestId !== checkRequestId) return
+    firstCheckDone = true
+    revealTopSectionIfReady()
     container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
     showError(error.message, () => runCheck())
   }
@@ -1118,16 +1518,9 @@ async function runGenerate() {
     downloadFile(filename, r.dashboardJson, "application/json")
     // Portfolio total, spend, Rule of 55 boosts and debt payoffs are the same figures the summary
     // tiles above already show -- see renderSummaryStats -- so this result only states what's
-    // actually new: the file this run produced and how to bring it in.
-    result.innerHTML = `
-      <div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span>.${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>
-      <div class="import-steps">
-        Import it into Actual:
-        <ol>
-          <li>Reports → new dashboard page (e.g. "FIRE")</li>
-          <li>On that page, "…" menu → Import → pick the file you just downloaded</li>
-        </ol>
-      </div>`
+    // actually new: the file this run produced. Import instructions live in the modal body above
+    // this button, not repeated here.
+    result.innerHTML = `<div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span>.${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>`
     result.hidden = false
   } catch (error) {
     result.innerHTML = `<div class="line">${escapeHtml(error.message)}</div>`
@@ -1212,18 +1605,137 @@ document.getElementById("mcSimulationCount").addEventListener("change", (e) => {
   const count = e.target.value === "" ? null : parseInt(e.target.value, 10)
   runExclusive(() => patchPlan({ monteCarloSimulationCount: count === null || count <= 0 ? null : count }, "savedSimSettings"))
 })
+document.getElementById("crossoverSafeWithdrawalRate").addEventListener("change", (e) => {
+  const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+  runExclusive(() => patchPlan({ crossoverSafeWithdrawalRate: pct === null ? null : pct / 100 }, "savedSpendConfig"))
+})
+document.getElementById("crossoverEstimatedReturn").addEventListener("change", (e) => {
+  const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+  runExclusive(() => patchPlan({ crossoverEstimatedReturn: pct === null ? null : pct / 100 }, "savedSpendConfig"))
+})
+document.getElementById("crossoverProjectionType").addEventListener("change", (e) => {
+  runExclusive(() => patchPlan({ crossoverProjectionType: e.target.value === "" ? null : e.target.value }, "savedSpendConfig"))
+})
+document.getElementById("crossoverExpenseAdjustment").addEventListener("change", (e) => {
+  const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+  runExclusive(() => patchPlan({ crossoverExpenseAdjustmentFactor: pct === null ? null : pct / 100 }, "savedSpendConfig"))
+})
+document.getElementById("expenseCategoriesExpandAll").addEventListener("click", () => {
+  if (!EXPENSE_CATEGORY_GROUPS) return
+  EXPENSE_CATEGORY_GROUPS.forEach((group) => EXPENSE_CATEGORY_FOLDS.delete(group.id))
+  renderExpenseCategoryPicker()
+})
+document.getElementById("expenseCategoriesCollapseAll").addEventListener("click", () => {
+  if (!EXPENSE_CATEGORY_GROUPS) return
+  EXPENSE_CATEGORY_GROUPS.forEach((group) => EXPENSE_CATEGORY_FOLDS.add(group.id))
+  renderExpenseCategoryPicker()
+})
+document.getElementById("expenseCategoriesShowHidden").addEventListener("change", (e) => {
+  EXPENSE_CATEGORY_VIEW.showHidden = e.target.checked
+  renderExpenseCategoryPicker()
+})
+document.getElementById("expenseCategoriesHideUnchecked").addEventListener("change", (e) => {
+  EXPENSE_CATEGORY_VIEW.hideUnchecked = e.target.checked
+  renderExpenseCategoryPicker()
+})
+document.getElementById("mcWithdrawalRuleType").addEventListener("change", (e) => {
+  const type = e.target.value
+  if (type === "") {
+    runExclusive(() => patchPlan({ monteCarloWithdrawalRule: null }, "savedSimSettings"))
+    return
+  }
+  const current = STATE.dashboard.monteCarloWithdrawalRule ?? {}
+  runExclusive(() => patchPlan({ monteCarloWithdrawalRule: { ...current, type } }, "savedSimSettings"))
+})
+WR_FIELD_DEFS.forEach(({ key, inputId, pct }) => {
+  document.getElementById(inputId).addEventListener("change", (e) => {
+    const current = STATE.dashboard.monteCarloWithdrawalRule
+    if (!current) return // the block is hidden until a rule type is chosen, so this shouldn't fire
+    const next = { ...current }
+    if (e.target.value === "") {
+      delete next[key]
+    } else {
+      const num = parseFloat(e.target.value)
+      next[key] = pct ? num / 100 : num
+    }
+    runExclusive(() => patchPlan({ monteCarloWithdrawalRule: next }, "savedSimSettings"))
+  })
+})
+document.getElementById("addTaxBandBtn").addEventListener("click", () => {
+  const next = [...(STATE.dashboard.monteCarloTaxBands ?? []), { id: nextTaxBandId() }]
+  runExclusive(() => patchPlan({ monteCarloTaxBands: next }, "savedSimSettings"))
+})
 document.getElementById("generateBtn").addEventListener("click", runGenerate)
 document.getElementById("refreshBtn").addEventListener("click", refreshAll)
 
+// --- Export to Dashboard modal ---
+
+function openExportModal() {
+  document.getElementById("exportModalBackdrop").hidden = false
+}
+function closeExportModal() {
+  document.getElementById("exportModalBackdrop").hidden = true
+}
+document.getElementById("exportDashboardBtn").addEventListener("click", openExportModal)
+document.getElementById("exportModalClose").addEventListener("click", closeExportModal)
+document.getElementById("exportModalBackdrop").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeExportModal()
+})
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !document.getElementById("exportModalBackdrop").hidden) closeExportModal()
+})
+
+// --- Help popovers (the "?" beside a field label) ---
+//
+// One shared element (like .bt-menu's own single-shared-dropdown pattern) repositioned against
+// whichever icon was last clicked, rather than one popover per icon. Click-triggered, not hover,
+// so the text stays up while you read it and works on touch devices where hover doesn't exist at
+// all -- see each field's own data-help attribute in index.html for the actual copy (adapted from
+// Actual's own crossover config UI tooltips).
+function closeHelpPopover() {
+  const popover = document.getElementById("helpPopover")
+  popover.hidden = true
+  const active = document.querySelector(".help-icon.active")
+  if (active) active.classList.remove("active")
+}
+function openHelpPopover(icon) {
+  const popover = document.getElementById("helpPopover")
+  popover.innerHTML = icon.dataset.help
+    .split("\n\n")
+    .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
+    .join("")
+  icon.classList.add("active")
+  popover.hidden = false
+  const iconRect = icon.getBoundingClientRect()
+  const popoverRect = popover.getBoundingClientRect()
+  const left = Math.max(8, Math.min(iconRect.left, window.innerWidth - popoverRect.width - 8))
+  const top = iconRect.bottom + 6 + popoverRect.height > window.innerHeight ? iconRect.top - popoverRect.height - 6 : iconRect.bottom + 6
+  popover.style.left = `${left}px`
+  popover.style.top = `${top}px`
+}
+document.addEventListener("click", (e) => {
+  const icon = e.target.closest(".help-icon")
+  if (!icon) {
+    if (!e.target.closest("#helpPopover")) closeHelpPopover()
+    return
+  }
+  const reopening = !icon.classList.contains("active")
+  closeHelpPopover()
+  if (reopening) openHelpPopover(icon)
+})
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !document.getElementById("helpPopover").hidden) closeHelpPopover()
+})
+
 // --- Retirement page: foldable sections (was a Configure/Analyze tab bar) ---
 
-// The 6 foldable cards, in document order, each identified by its own data-section value. The
+// The foldable cards, in document order, each identified by its own data-section value. The
 // summary tiles and Stale (see #summaryTiles/#staleResult in index.html) sit above these, always
 // visible, not foldable -- they're "what's true right now," not a setting someone would want to
 // tuck away. Simulation settings and Retirement income default collapsed (set once, rarely
 // revisited); the rest default open. DEFAULT_COLLAPSED_SECTIONS is what a first-ever visit (no
 // cookie yet) applies; after that, saveSectionFolds keeps the cookie authoritative for every reload.
-const RETIREMENT_SECTIONS = ["plan", "simulation-settings", "retirement-income", "accounts", "analysis", "generate-dashboard"]
+const RETIREMENT_SECTIONS = ["plan", "spend-configuration", "simulation-settings", "retirement-income", "accounts", "analysis"]
 const DEFAULT_COLLAPSED_SECTIONS = ["simulation-settings", "retirement-income"]
 
 // Function to fold or unfold one section -- shared by an individual card's own toggle and
@@ -2213,7 +2725,7 @@ try {
 }
 
 loadState()
-loadLiveSettings()
+loadExpenseCategoryOptions()
 
 // Restores whichever section was last chosen (per-browser cookie, same restart-survives-a-port-
 // change rationale as every other small preference here -- see getCookie/setCookie's own doc

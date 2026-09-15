@@ -1,5 +1,16 @@
 import { portfolioAccounts } from "./fire-accounts.ts"
-import type { ClassifiedAccount, DashboardConfig, MonteCarloAllocationPreset, MonteCarloReturnModel, MonteCarloTaxModel, MonteCarloWithdrawalStrategy, TaxTreatment } from "./fire-accounts.ts"
+import type {
+  ClassifiedAccount,
+  CrossoverProjectionType,
+  DashboardConfig,
+  MonteCarloAllocationPreset,
+  MonteCarloReturnModel,
+  MonteCarloTaxBandMeta,
+  MonteCarloTaxModel,
+  MonteCarloWithdrawalRuleMeta,
+  MonteCarloWithdrawalStrategy,
+  TaxTreatment,
+} from "./fire-accounts.ts"
 
 // Builds an Actual-native dashboard JSON (net worth, spending, and a FIRE crossover projection)
 // from classified accounts and expense categories. Pure -- no API calls, no file I/O.
@@ -41,8 +52,6 @@ export interface NetWorthCardMeta {
   interval?: "Daily" | "Weekly" | "Monthly" | "Yearly"
   mode?: "trend" | "stacked"
 }
-
-export type CrossoverProjectionType = "hampel" | "median" | "mean"
 
 export interface CrossoverCardMeta {
   name?: string
@@ -193,15 +202,34 @@ export interface MonteCarloPotMeta {
   // manually-entered number -- always set this, never a hardcoded startingBalance, so the pot
   // stays driven by real data.
   accountId?: string | null
+  // Only read when accountId is unset -- this app always sets accountId, so this stays optional
+  // and unused here; kept only because the vendored simulation engine's own MonteCarloPotMeta
+  // shape has it (see monte-carlo-engine.ts's header).
+  startingBalance?: number
   allocationPreset?: MonteCarloAllocationPreset
   // allocationPreset only auto-fills these in Actual's own UI -- the simulation itself reads these
   // numeric fields directly, so both must be set explicitly or the pot silently uses some other
   // default regardless of the preset label. See ALLOCATION_PRESET_RETURNS below.
   expectedReturnMean?: number
   returnStdDev?: number
+  // The 'custom-mix' allocation's own asset shares -- this app never generates that preset (see
+  // MonteCarloAllocationPreset's own doc comment), so these stay unused; kept for the same reason
+  // as startingBalance above.
+  allocationStocks?: number
+  allocationBonds?: number
+  allocationCash?: number
   accessAge?: number | null
   // Flat tax model: effective tax rate on withdrawals from this pot (0.15 = 15%).
   withdrawalTaxRate?: number
+  // Bands tax model: share of a withdrawal from this pot counted as taxable income (1 = fully
+  // taxable, 0 = a Roth/HSA). This app doesn't expose the bands model's per-pot taxable fraction
+  // yet -- kept for the same reason as startingBalance above.
+  taxableFraction?: number
+  // Management fees -- this app doesn't model these yet; kept for the same reason as
+  // startingBalance above.
+  annualFeeFixed?: number
+  feeAdjustsWithInflation?: boolean
+  annualFeeRate?: number
 }
 
 export interface MonteCarloSpendingPhaseMeta {
@@ -215,37 +243,6 @@ export interface MonteCarloSpendingPhaseMeta {
 // fire-accounts.ts (imported above) -- DashboardConfig there needs them for the
 // once-for-every-age-comparison settings a person can pin in this app (see
 // monteCarloSettingsOverride below), same reasoning as MonteCarloAllocationPreset.
-export type MonteCarloWithdrawalRuleType = "none" | "guardrails" | "ratcheting" | "floor-ceiling" | "boundaries"
-
-// Parameters for every rule type are kept side by side (all optional) so switching between rules
-// preserves each rule's own settings, matching Actual's own MonteCarloWithdrawalRuleMeta shape.
-export interface MonteCarloWithdrawalRuleMeta {
-  type: MonteCarloWithdrawalRuleType
-  // Guardrails (Guyton-Klinger)
-  prosperityTriggerPct?: number
-  prosperityIncreasePct?: number
-  preservationTriggerPct?: number
-  preservationCutPct?: number
-  // Ratcheting (Kitces)
-  balanceThresholdMultiple?: number
-  consecutiveYears?: number
-  ratchetIncreasePct?: number
-  // Floor & ceiling (Bengen)
-  floorPct?: number
-  ceilingPct?: number
-  // Boundaries
-  upperRateThreshold?: number
-  upperCutPct?: number
-  lowerRateThreshold?: number
-  lowerIncreasePct?: number
-}
-
-export interface MonteCarloTaxBandMeta {
-  id: string
-  from?: number
-  rate?: number
-}
-
 // One recurring yearly contribution into a pot over an age window.
 export interface MonteCarloContributionMeta {
   id: string
@@ -485,10 +482,11 @@ export const DEFAULT_MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
   simulationCount: 5000,
 }
 
-// The MonteCarloAssumptions fields (see above) that map to a "Simulation settings" field in this
-// app's own UI, keyed by the DashboardConfig field that pins it. Only a subset of
-// MonteCarloAssumptions -- withdrawalRule and taxModel/taxBands stay Actual-UI-only (see
-// MonteCarloWithdrawalStrategy's doc comment in fire-accounts.ts for why) and so are never pinned.
+// Every MonteCarloAssumptions field (see above) that maps to a "Simulation settings" field in this
+// app's own UI, keyed by the DashboardConfig field that pins it. withdrawalRule/taxBands are
+// pinned as whole values (an object, an array) rather than the flat scalars every other row here
+// is -- see MonteCarloWithdrawalStrategy's doc comment in fire-accounts.ts for why -- but the
+// generic pin-it-here-it-always-wins mechanism (mergeMonteCarloMeta below) applies identically.
 const PINNABLE_MONTE_CARLO_FIELDS: ReadonlyArray<{ dashboardField: keyof DashboardConfig; metaField: keyof MonteCarloCardMeta }> = [
   { dashboardField: "monteCarloWithdrawalStrategy", metaField: "withdrawalStrategy" },
   { dashboardField: "monteCarloReturnModel", metaField: "returnModel" },
@@ -497,6 +495,8 @@ const PINNABLE_MONTE_CARLO_FIELDS: ReadonlyArray<{ dashboardField: keyof Dashboa
   { dashboardField: "monteCarloInflationStdDev", metaField: "inflationStdDev" },
   { dashboardField: "monteCarloMinimumWithdrawal", metaField: "minimumWithdrawal" },
   { dashboardField: "monteCarloSimulationCount", metaField: "simulationCount" },
+  { dashboardField: "monteCarloWithdrawalRule", metaField: "withdrawalRule" },
+  { dashboardField: "monteCarloTaxBands", metaField: "taxBands" },
 ]
 
 // Function to layer a person's "Simulation settings" overrides over the plain defaults -- the
@@ -513,6 +513,8 @@ export function monteCarloAssumptionsWithOverrides(dashboard: DashboardConfig): 
     inflationStdDev: dashboard.monteCarloInflationStdDev ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.inflationStdDev,
     minimumWithdrawal: dashboard.monteCarloMinimumWithdrawal ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.minimumWithdrawal,
     simulationCount: dashboard.monteCarloSimulationCount ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.simulationCount,
+    withdrawalRule: dashboard.monteCarloWithdrawalRule ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.withdrawalRule,
+    taxBands: dashboard.monteCarloTaxBands ?? DEFAULT_MONTE_CARLO_ASSUMPTIONS.taxBands,
   }
 }
 
@@ -520,6 +522,38 @@ export function monteCarloAssumptionsWithOverrides(dashboard: DashboardConfig): 
 // mergeGeneratedDashboard's pinnedMonteCarloFields.
 export function pinnedMonteCarloFields(dashboard: DashboardConfig): Set<string> {
   return new Set(PINNABLE_MONTE_CARLO_FIELDS.filter(({ dashboardField }) => dashboard[dashboardField] != null).map(({ metaField }) => metaField))
+}
+
+// The CrossoverAssumptions fields (see above) that map to a "Crossover" field in this app's own
+// Simulation settings UI, keyed by the DashboardConfig field that pins it -- same mechanism as
+// PINNABLE_MONTE_CARLO_FIELDS, applied to the crossover-card's own assumptions instead. Every
+// CrossoverAssumptions field is pinnable here (unlike Monte Carlo's withdrawalRule/taxBands
+// exclusions) since none of them carry an open-ended sub-shape.
+const PINNABLE_CROSSOVER_FIELDS: ReadonlyArray<{ dashboardField: keyof DashboardConfig; metaField: keyof CrossoverCardMeta }> = [
+  { dashboardField: "crossoverSafeWithdrawalRate", metaField: "safeWithdrawalRate" },
+  { dashboardField: "crossoverEstimatedReturn", metaField: "estimatedReturn" },
+  { dashboardField: "crossoverProjectionType", metaField: "projectionType" },
+  { dashboardField: "crossoverExpenseAdjustmentFactor", metaField: "expenseAdjustmentFactor" },
+]
+
+// Function to layer a person's crossover-assumption overrides over the plain defaults -- the seed
+// used for a first-time generation and, for whichever fields are actually set, the value pinned on
+// every regenerate regardless of what merging would otherwise preserve from the existing widget
+// (see mergeWidget's crossover-card branch). Mirrors monteCarloAssumptionsWithOverrides exactly.
+export function crossoverAssumptionsWithOverrides(dashboard: DashboardConfig): CrossoverAssumptions {
+  return {
+    ...DEFAULT_CROSSOVER_ASSUMPTIONS,
+    safeWithdrawalRate: dashboard.crossoverSafeWithdrawalRate ?? DEFAULT_CROSSOVER_ASSUMPTIONS.safeWithdrawalRate,
+    estimatedReturn: dashboard.crossoverEstimatedReturn ?? DEFAULT_CROSSOVER_ASSUMPTIONS.estimatedReturn,
+    projectionType: dashboard.crossoverProjectionType ?? DEFAULT_CROSSOVER_ASSUMPTIONS.projectionType,
+    expenseAdjustmentFactor: dashboard.crossoverExpenseAdjustmentFactor ?? DEFAULT_CROSSOVER_ASSUMPTIONS.expenseAdjustmentFactor,
+  }
+}
+
+// Function to compute which CrossoverCardMeta fields a person has actually pinned -- see
+// mergeGeneratedDashboard's pinnedCrossoverFields.
+export function pinnedCrossoverFields(dashboard: DashboardConfig): Set<string> {
+  return new Set(PINNABLE_CROSSOVER_FIELDS.filter(({ dashboardField }) => dashboard[dashboardField] != null).map(({ metaField }) => metaField))
 }
 
 // Function to build one recurring-contribution entry per portfolio account with a nonzero monthly
@@ -760,6 +794,8 @@ function mergeWidget(
   generated: ExportImportDashboardWidget,
   existingWidget: ExistingDashboardWidget | undefined,
   pinnedMonteCarloFields: ReadonlySet<string>,
+  pinnedExpenseCategoryIds: readonly string[] | null,
+  pinnedCrossoverFields: ReadonlySet<string>,
 ): ExportImportDashboardWidget {
   if (existingWidget?.meta == null || generated.meta === null) {
     return generated
@@ -778,16 +814,27 @@ function mergeWidget(
     // category, every currently-classified portfolio account) when there's nothing to preserve
     // yet (first generation) or the existing selection is empty -- Actual's crossover projection
     // zeroes out historical expense data entirely when expenseCategoryIds is empty, silently
-    // claiming "already FI." A newly added category/account not yet reflected in an existing
-    // hand-tuned selection is exactly what detectCrossoverMismatch (fire-analysis.ts) exists to
-    // flag on Check, not something to auto-correct here.
+    // claiming "already FI."
+    //
+    // pinnedExpenseCategoryIds -- the Plan section's own selection -- wins over whatever's
+    // preserved from the existing widget, the same way pinnedMonteCarloFields wins above: once set
+    // here, it's the authoritative source, not a one-time seed a person could still narrow further
+    // by hand inside Actual and have that stick.
     const existingExpenseIds = existingMeta.expenseCategoryIds
     const existingIncomeIds = existingMeta.incomeAccountIds
     meta = {
       ...generatedMeta,
       ...existingMeta,
-      expenseCategoryIds: Array.isArray(existingExpenseIds) && existingExpenseIds.length > 0 ? existingExpenseIds : generatedMeta.expenseCategoryIds,
+      expenseCategoryIds:
+        pinnedExpenseCategoryIds && pinnedExpenseCategoryIds.length > 0
+          ? pinnedExpenseCategoryIds
+          : Array.isArray(existingExpenseIds) && existingExpenseIds.length > 0
+            ? existingExpenseIds
+            : generatedMeta.expenseCategoryIds,
       incomeAccountIds: Array.isArray(existingIncomeIds) && existingIncomeIds.length > 0 ? existingIncomeIds : generatedMeta.incomeAccountIds,
+    }
+    for (const field of pinnedCrossoverFields) {
+      meta[field] = generatedMeta[field]
     }
   } else {
     // net-worth-card has no real-data fields at all -- an existing customization wins outright.
@@ -808,12 +855,14 @@ export function mergeGeneratedDashboard(
   generated: ExportImportDashboard,
   existing: ExistingDashboard | null,
   pinnedMonteCarloFields: ReadonlySet<string> = new Set(),
+  pinnedExpenseCategoryIds: readonly string[] | null = null,
+  pinnedCrossoverFields: ReadonlySet<string> = new Set(),
 ): ExportImportDashboard {
   if (existing === null) {
     return generated
   }
   const existingByKey = new Map(existing.widgets.map((widget) => [widgetKey(widget), widget]))
-  const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget)), pinnedMonteCarloFields))
+  const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget)), pinnedMonteCarloFields, pinnedExpenseCategoryIds, pinnedCrossoverFields))
   const foreignWidgets = existing.widgets.filter((widget) => !OWNED_WIDGET_TYPES.includes(widget.type as FireWidgetType))
   return { version: generated.version, widgets: [...widgets, ...(foreignWidgets as ExportImportDashboardWidget[])] }
 }

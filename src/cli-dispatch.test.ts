@@ -31,7 +31,7 @@ describe("./actual dispatcher", () => {
     // Asking for help is not getting it wrong. This exited 1 once.
     const result = await actual(["--help"])
     expect(result.code).toBe(0)
-    for (const command of ["build", "lint", "test", "budget", "transactions", "service"]) {
+    for (const command of ["build", "lint", "test", "budget", "transactions", "service", "vendor"]) {
       expect(result.stderr + result.stdout).toContain(command)
     }
   }, 30000)
@@ -51,6 +51,9 @@ describe("./actual dispatcher", () => {
   describe.each([
     { group: "budget", subcommands: ["set-values", "anomalies"] },
     { group: "transactions", subcommands: ["match-uncleared"] },
+    // "check --help" exits before vendor-check.ts's own main() ever reaches its live GitHub
+    // request, same as every other case here -- no network involved.
+    { group: "vendor", subcommands: ["check"] },
   ])("$group", ({ group, subcommands }) => {
     it("lists its subcommands for --help and exits 0", async () => {
       const result = await actual([group, "--help"])

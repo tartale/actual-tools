@@ -2,7 +2,8 @@ import { addMonthsToDate, formatUsd } from "./actual-helpers.ts"
 import { isPortfolioCategory } from "./fire-accounts.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import { ALLOCATION_PRESET_RETURNS, effectiveAccessAge, withdrawalTaxRateFor } from "./fire-dashboard.ts"
-import type { CrossoverCardMeta, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
 
 export type FindingLevel = "fail" | "warn" | "info" | "ok"
 
@@ -256,13 +257,35 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
     return {
       level: "fail",
       title: `age ${result.retirementAge} -- reachable money runs out at ${result.depletionAge}, ${gap} yr${gap === 1 ? "" : "s"} before the next ${formatUsd(result.lockedAtDepletion)} unlocks at ${result.nextUnlockAfterDepletion}.`,
-      detail: [...split, "Even at mean returns with no volatility, so every simulated run fails here too."],
+      detail: [...split, "This is already the best case -- mean returns, no volatility -- so every simulated run fails here too."],
     }
   }
   return {
     level: "warn",
     title: `age ${result.retirementAge} -- runs out at ${result.depletionAge}, short of ${planToAge}.`,
     detail: [...split, "Everything has unlocked by then, so this is a shortfall, not a bridging problem."],
+  }
+}
+
+// Function to turn one age's Monte Carlo result into prose, the same way bridgeFinding does for
+// the bridge simulation -- read alongside the fan chart built from the same result, not a second
+// computation of anything. 90%/50% success-rate bands are a common, defensible planning
+// convention (comfortably funded / worth a second look), not a value this app derives from
+// anything upstream -- reasonable thresholds, not a precise cutoff.
+export function monteCarloFinding(result: MonteCarloSummary, currentAge: number, retirementAge: number, planToAge: number): Finding {
+  const successPct = Math.round(result.successRate * 100)
+  const detail = [`Median ending balance ${formatUsd(result.medianEndingBalance)}.`]
+  if (result.successRate >= 1) {
+    return { level: "ok", title: `age ${retirementAge} -- every simulated run funds the plan through ${planToAge}.`, detail }
+  }
+  if (result.medianDepletionYear != null) {
+    detail.push(`Depleted runs typically ran out around age ${currentAge + result.medianDepletionYear}.`)
+  }
+  const level: FindingLevel = result.successRate >= 0.9 ? "ok" : result.successRate >= 0.5 ? "warn" : "fail"
+  return {
+    level,
+    title: `age ${retirementAge} -- ${successPct}% of ${result.simulationCount.toLocaleString()} simulated runs fund the plan through ${planToAge}.`,
+    detail,
   }
 }
 
@@ -383,8 +406,8 @@ export function detectPotDrift(
     if (seen === undefined) {
       findings.push({
         level: "warn",
-        title: `${account.name} is classified ${account.category} but has no pot in the dashboard.`,
-        detail: ["Added or reclassified since the last import; regenerate and re-import to include it."],
+        title: `${account.name} is classified ${account.category} but has no pot in Actual's exported dashboard.`,
+        detail: ["Added or reclassified since you last exported. This doesn't affect the numbers on this page -- use Export to Dashboard to include it in Actual too."],
       })
       continue
     }
@@ -393,8 +416,8 @@ export function detectPotDrift(
     if (stale.length > 0) {
       findings.push({
         level: "warn",
-        title: `${account.name}: dashboard has access age ${stale.map((age) => age ?? "none").join("/")}, config would generate ${[...want].map((age) => age ?? "none").join("/")}.`,
-        detail: ["The dashboard predates this config change; regenerate and re-import to apply it."],
+        title: `${account.name}: Actual has access age ${stale.map((age) => age ?? "none").join("/")}, your current config would produce ${[...want].map((age) => age ?? "none").join("/")}.`,
+        detail: ["Your exported Actual dashboard predates this change. This doesn't affect the numbers on this page -- use Export to Dashboard to update it in Actual too."],
       })
     }
   }
@@ -404,26 +427,14 @@ export function detectPotDrift(
       const named = accounts.find((account) => account.id === accountId)
       findings.push({
         level: "info",
-        title: `${named?.name ?? accountId} has a pot in the dashboard but is no longer a portfolio account.`,
-        detail: ["Regenerate and re-import to drop it from the simulation."],
+        title: `${named?.name ?? accountId} has a pot in Actual's exported dashboard but is no longer a portfolio account here.`,
+        detail: ["Doesn't affect the numbers on this page -- use Export to Dashboard to drop it from Actual too."],
       })
     }
   }
 
   return findings
 }
-
-// The MonteCarloCardMeta field name for each pinnable setting, alongside its expected (configured)
-// value -- see fire-dashboard.ts's pinnedMonteCarloFields for how pinnedFields itself is computed.
-const PINNABLE_FIELD_VALUES: ReadonlyArray<keyof MonteCarloAssumptions> = [
-  "withdrawalStrategy",
-  "returnModel",
-  "taxModel",
-  "inflationMean",
-  "inflationStdDev",
-  "minimumWithdrawal",
-  "simulationCount",
-]
 
 // Function to catch a configured retirement-age scenario with no live widget at all yet -- not a
 // mismatch WITHIN an existing widget (detectPotDrift/detectSpendingPhaseDrift's job), the widget
@@ -446,8 +457,8 @@ export function detectMonteCarloWidgetSetDrift(
     if (!liveNames.has(name)) {
       findings.push({
         level: "warn",
-        title: `No live Monte Carlo widget named "${name}" yet.`,
-        detail: ["A retirement age was added, or the set of configured ages changed, since the last export. Regenerate and re-import to add it."],
+        title: `Actual has no Monte Carlo widget named "${name}" yet.`,
+        detail: ["A retirement age was added, or the set of configured ages changed, since you last exported. This doesn't affect the numbers on this page -- click Export to Dashboard above if you'd also like it reflected in Actual."],
       })
     }
   }
@@ -455,76 +466,8 @@ export function detectMonteCarloWidgetSetDrift(
     if (!freshNames.has(name)) {
       findings.push({
         level: "info",
-        title: `"${name}" is on the live dashboard but no longer matches a configured retirement age.`,
-        detail: ["Remove it by hand, or regenerate and re-import a fresh dashboard page to replace the whole set."],
-      })
-    }
-  }
-  return findings
-}
-
-// Function to compare each pinned "Simulation settings" field (see fire-dashboard.ts's
-// monteCarloAssumptionsWithOverrides) against what's actually live on every Monte Carlo widget --
-// a pinned field exists specifically so every retirement-age comparison widget uses the same
-// value, so any widget still showing something else means it hasn't been regenerated/re-imported
-// since the setting was pinned (or changed).
-export function detectMonteCarloSettingsDrift(
-  metas: readonly MonteCarloCardMeta[],
-  pinnedFields: ReadonlySet<string>,
-  assumptions: MonteCarloAssumptions,
-): Finding[] {
-  if (metas.length === 0 || pinnedFields.size === 0) {
-    return []
-  }
-  const findings: Finding[] = []
-  for (const field of PINNABLE_FIELD_VALUES) {
-    if (!pinnedFields.has(field)) {
-      continue
-    }
-    const expected = assumptions[field]
-    const stale = metas.filter((meta) => JSON.stringify((meta as unknown as Record<string, unknown>)[field] ?? null) !== JSON.stringify(expected ?? null))
-    if (stale.length > 0) {
-      findings.push({
-        level: "warn",
-        title: `Pinned simulation setting "${field}" isn't live on ${stale.length === metas.length ? "any" : `${stale.length} of ${metas.length}`} Monte Carlo widget${metas.length === 1 ? "" : "s"} yet.`,
-        detail: [`Configured value: ${JSON.stringify(expected)}. Regenerate and re-import to apply it everywhere.`],
-      })
-    }
-  }
-  return findings
-}
-
-// Function to compare the accounts the crossover widget counts as investable against the accounts
-// the simulation actually models. The two widgets answer the same question from different account
-// sets when these diverge, which is how the crossover ends up materially more optimistic than the
-// Monte Carlo without anything saying so. Silent when no crossover widget exists to compare.
-export function detectCrossoverMismatch(
-  metas: readonly CrossoverCardMeta[],
-  accounts: readonly ClassifiedAccount[],
-): Finding[] {
-  if (metas.length === 0) {
-    return []
-  }
-  const nameFor = (accountId: string): string => accounts.find((account) => account.id === accountId)?.name ?? accountId
-  const simulated = new Set(accounts.filter((account) => isPortfolioCategory(account.category)).map((account) => account.id))
-  const counted = new Set(metas.flatMap((meta) => meta.incomeAccountIds ?? []))
-
-  const findings: Finding[] = []
-  for (const accountId of counted) {
-    if (!simulated.has(accountId)) {
-      findings.push({
-        level: "warn",
-        title: `${nameFor(accountId)} is counted by the crossover but is not in the simulation.`,
-        detail: ["Classify it as a portfolio account so both widgets see it, or drop it from the widget -- as it stands they disagree."],
-      })
-    }
-  }
-  for (const accountId of simulated) {
-    if (!counted.has(accountId)) {
-      findings.push({
-        level: "warn",
-        title: `${nameFor(accountId)} is in the simulation but the crossover does not count it.`,
-        detail: ["Regenerate and re-import so the crossover's account list matches what is simulated."],
+        title: `"${name}" is in Actual but no longer matches a configured retirement age.`,
+        detail: ["Remove it by hand in Actual, or use Export to Dashboard to replace the whole set there."],
       })
     }
   }
@@ -537,8 +480,7 @@ export function detectCrossoverMismatch(
 // mergeGeneratedDashboard already uses for merging, so this needs no separate age-parsing logic).
 // This is what actually catches real data changing out from under an already-imported dashboard --
 // a narrowed crossover category selection, a new pension/Social Security figure, a debt nearing
-// payoff, or a changed account contribution -- none of which detectPotDrift (access ages) or
-// detectCrossoverMismatch (which accounts/categories are counted, not how much they add up to)
+// payoff, or a changed account contribution -- none of which detectPotDrift (access ages alone)
 // would ever flag. A scenario with nothing live yet is skipped here -- there's no spending phase to
 // compare it against -- but IS a real gap this function doesn't cover: detectPotDrift only flags an
 // account with NO live pot anywhere, and every account in an existing scenario already has one, so
@@ -564,15 +506,15 @@ export function detectSpendingPhaseDrift(
     if (JSON.stringify(widget.meta?.spendingPhases ?? null) !== JSON.stringify(live.spendingPhases ?? null)) {
       findings.push({
         level: "warn",
-        title: `"${name}" spending no longer matches what Generate would produce.`,
-        detail: ["A crossover category selection, pension/Social Security figure, or debt payoff has changed since the last export. Regenerate and re-import to apply it."],
+        title: `"${name}" spending in Actual no longer matches your current Runway config.`,
+        detail: ["An expense-category selection (Spend configuration), pension/Social Security figure, or debt payoff has changed since you last exported. This doesn't affect the numbers on this page -- use Export to Dashboard to update it in Actual too."],
       })
     }
     if (JSON.stringify(widget.meta?.contributions ?? null) !== JSON.stringify(live.contributions ?? null)) {
       findings.push({
         level: "warn",
-        title: `"${name}" contributions no longer match what Generate would produce.`,
-        detail: ["An account's monthly contribution has changed since the last export. Regenerate and re-import to apply it."],
+        title: `"${name}" contributions in Actual no longer match your current Runway config.`,
+        detail: ["An account's monthly contribution has changed since you last exported. This doesn't affect the numbers on this page -- use Export to Dashboard to update it in Actual too."],
       })
     }
   }

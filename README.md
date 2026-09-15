@@ -27,6 +27,7 @@ Every task in this repo runs through one dispatcher, from any directory:
 ./actual transactions match-uncleared ARGS # tag matching uncleared transactions
 ./actual service start                     # run the companion app as a container (see below)
 ./actual build image                       # build the image that service runs
+./actual vendor check                      # check vendored third-party files against upstream
 ```
 
 ## `./actual budget set-values`
@@ -206,7 +207,7 @@ was.
 - `-i`, `--irs-limits PATH` — path to the IRS contribution limits reference
   file (default: `irs-limits.json`). Missing is fine, just skips that
   context.
-- `-o`, `--output PATH` — filename the "Generate dashboard" action's
+- `-o`, `--output PATH` — filename the "Export to Dashboard" action's
   browser download suggests, and the server-side copy it also keeps
   (default: `fire-dashboard.json`).
 - `-p`, `--port N` — run on this port (default: `4247`, a fixed port
@@ -371,18 +372,18 @@ flagged it, and what will be tagged is already boxed in the grid.
 
 ### Retirement
 
-One flat page, not a set of tabs: **Plan**, **Simulation settings**,
-**Retirement income**, **Accounts**, **Analysis**, and **Generate
-dashboard** are foldable cards, opened or closed independently, with an
-**Expand all**/**Collapse all** control and a single **Refresh** button
-above them — Refresh re-runs everything on the page in one request (the
-same `/api/retirement/check` call every card below reads from, plus
-reloading "Configured in the Actual Dashboard"), rather than each card
-needing its own. Editing a field also re-runs that same check on its own,
-a beat after you stop typing — Current numbers, Stale, and Analysis stay
-live as you work, not just after an explicit Refresh. Each card's fold
-state is remembered per browser across a reload, via a cookie, the same
-way which of Budget/Retirement was open already was.
+One flat page, not a set of tabs: **Plan**, **Expense Projection**,
+**Simulation Settings**, **Retirement income**, **Accounts**, and
+**Analysis** are foldable cards, opened or closed independently, with an
+**Expand all**/**Collapse all** control, a **Refresh** button, and an
+**Export to Dashboard** button above them — Refresh re-runs everything on
+the page in one request (the same `/api/retirement/check` call every card
+below reads from), rather than each card needing its own. Editing a field
+also re-runs that same check on its own, a beat after you stop typing —
+Current numbers, Stale, and Analysis stay live as you work, not just after
+an explicit Refresh. Each card's fold state is remembered per browser
+across a reload, via a cookie, the same way which of Budget/Retirement was
+open already was.
 
 At the very top, above every card: a row of tiles — **Portfolio** (current
 total, with the number of accounts behind it) is always there; **Spend**
@@ -395,17 +396,11 @@ tiles) that no longer matches what regenerating right now would produce;
 see "Check" further below for exactly what it looks at.
 
 The first time you open the page with nothing imported into Actual yet, a
-**"Getting started"** banner walks through four steps end to end: fill in
-Plan/Accounts here → scroll to **Generate dashboard** → Download dashboard
-→ import it into Actual via Reports → new page → "…" menu → Import →
-**open the crossover widget on that page and narrow its account/category
-checklist down to what should actually count** (it starts out covering everything
-non-income, which is rarely right — and matters beyond just that one
-widget, since the Monte Carlo widget's own spend figure is read back from
-that same selection on every future regenerate, not recalculated
-separately; see "Regenerating preserves customizations" below). The
-banner appears automatically whenever no live FIRE dashboard is found (the
-same check "Configured in the Actual Dashboard" below already makes) and
+**"Getting started"** banner walks through two steps end to end: fill in
+Plan/Expense Projection/Simulation Settings/Accounts here → click
+**Export to Dashboard** and follow the steps in that modal. The banner
+appears automatically whenever no live FIRE dashboard is found (the same
+`monteCarloWidgetCount`/`crossoverWidgetCount` Check itself reports) and
 disappears on its own the moment one is — or dismiss it with the × any
 time before that; the dismissal is a per-browser cookie, so it stays
 dismissed across restarts without needing a live dashboard to hide it
@@ -414,6 +409,21 @@ permanently.
 **Plan**: birth date, one or more retirement ages to compare (space- or
 comma-separated), and the age to assume the plan needs to last to (a
 conservative default, not a lifespan estimate).
+
+**Expense Projection**: the crossover assumptions (safe withdrawal rate,
+estimated return, projection type, target income %) and **Expense
+categories**, all configured directly in this app now, not read back from
+Actual's own crossover widget. The category picker is always visible (no
+"use every category" toggle to unhide it) — a foldable, per-group
+checklist, every category checked by default, with an **Expand all**/
+**Collapse all** toolbar, a **Show hidden** toggle to bring categories
+Actual itself has hidden into the list (unchecked by default even then),
+and a **Hide unchecked** toggle that narrows the view to your current
+selection without changing it. Each group has its own select-all-in-group
+checkbox and a live N/total count, so a folded group's selection is still
+legible without opening it. This selection drives every simulation on the
+page directly (Bridge, Monte Carlo, the Spend tile) and is also what
+Export to Dashboard seeds/pins onto the exported crossover widget.
 
 **Retirement income** (optional): a pension (start age + monthly amount)
 and Social Security (the three SSA-statement reference figures — at 62, at
@@ -434,32 +444,22 @@ figure on the page (an Actual-style privacy toggle) — handy before
 sharing a screen; it's a per-browser display preference, not saved to
 `config.json`.
 
-**Configured in the Actual Dashboard** (below Plan): a read-only snapshot
-of whatever's actually live on your imported "FIRE" page right now, split
-into its own **Crossover** and **Simulation** sections (safe withdrawal
-rate/projection type/estimated return for the former; withdrawal
-strategy, tax model, withdrawal rule, inflation, and everything else this
-app deliberately doesn't let you edit directly for the latter — see
-"Regenerating preserves customizations" below). A field also set in
-**Simulation settings** shows its value in purple — hover it to highlight
-the matching input down in Simulation settings, so it's obvious where to
-go change it. If the live value here doesn't match what you configured,
-Check will flag it as Stale, needing a regenerate/re-import.
-
-**Simulation settings** (optional): withdrawal strategy, return model, tax
-model, inflation (mean/std dev), minimum withdrawal, and simulation
-count. Unlike every other Monte Carlo assumption, these can be set once
-here instead of inside Actual's own per-widget UI — worth doing
-specifically because comparing multiple retirement ages generates one
-independently-named widget per age, and tuning one inside Actual never
-reaches its siblings. A field left blank here keeps today's behavior (preserved
-per-widget from whatever's live/local); a field set here is pinned to
-that value on every regenerate, overriding whatever each widget
-independently drifted to. Withdrawal rule (guardrails, ratcheting, ...)
-and the tax bands list themselves stay Actual-UI-only for now — each has
-its own multi-field shape that didn't fit this pass; the flat/bands
-*choice* is pinnable like everything else here, it's just the band
-thresholds/rates you'd still set inside Actual.
+**Simulation Settings** (optional): withdrawal strategy, minimum
+withdrawal, withdrawal rule, return model, tax model, tax bands, inflation
+(mean/std dev), and simulation count — grouped into **Withdrawal**,
+**Returns & taxes**, **Tax bands**, and **Inflation & simulation**
+sub-sections. Every field here is set once and applies to every
+retirement-age comparison — worth doing specifically because comparing
+multiple retirement ages generates one independently-named Monte Carlo
+widget per age, and tuning one inside Actual never reaches its siblings.
+A field left blank keeps today's plain default; a field set here uses
+that value on every export, overriding whatever each widget independently
+drifted to. Withdrawal rule picks a type (guardrails, ratcheting, floor &
+ceiling, boundaries) and reveals that type's own parameters — switching
+types keeps each type's values around, so flipping back doesn't lose what
+you entered. Tax bands is an addable/removable list of threshold/rate
+rows, set as one whole list rather than field-by-field, same as
+withdrawal rule.
 
 **Accounts**: every open account, each with an **account type** — not just
 a coarse category, but a concrete kind (Traditional 401(k)/403(b)/457/TSP,
@@ -537,7 +537,7 @@ drives everything else about the account, and which fields even show up:
   limits; the contribution-limit lines and a **Max** contribution both use
   whichever is selected.
 
-Whenever **withdrawal strategy** (Simulation settings) is set to "Drain
+Whenever **withdrawal strategy** (Simulation Settings) is set to "Drain
 pots in order," each portfolio account also gets a drag handle (⠿) on the
 left of its row — Actual's own simulation engine drains pots in exactly
 the order its `pots` array lists them, so this is the one place that
@@ -595,8 +595,8 @@ inherited IRA (matched by "BDA"/"beneficiary"/"inherited" in the name).
 Editing any field on a migrated account writes the current shape, dropping
 the old category field for that account.
 
-**Generate dashboard** builds the same widgets `./actual reports fire`
-used to (a full-width net-worth widget, a safe-withdrawal-rate "crossover"
+**Export to Dashboard** builds Actual's own dashboard widgets (a
+full-width net-worth widget, a safe-withdrawal-rate "crossover"
 projection, and a Monte Carlo retirement simulation, using Actual's own
 built-in dashboard widgets rather than reimplementing FIRE math) from your
 real account and spending data, and **downloads it to your browser** —
@@ -607,24 +607,24 @@ you're running it locally. Refuses to run without a birth date, at least
 one retirement age, and at least one account classified into the
 portfolio.
 
-**The Monte Carlo widget's spend figure matches whatever the live crossover
-widget's own category selection says**, once one exists — not a separate
-"every non-income, non-hidden category, trailing 12 months" calculation of
-its own. If you've narrowed the crossover's checklist (excluding one-time
-trip categories, a dependent's separate expenses, ...), Generate uses that
-same narrower selection and date range, so the two widgets' spend figures
-stay consistent with each other. The broader "every category, trailing 12
-months" figure is only a first-generation fallback, before any crossover
-selection exists to read back. The crossover widget's own **Target Income
-(% of expenses)** slider is applied too, the same way Actual applies it to
-its own projection (multiplying the expense figure, never the raw historical
-data it's charted against) — so setting it to 90% lowers this app's own
-spend assumption by the same 10%, everywhere that figure is used (Monte
-Carlo, Bridge, the Spend tile above), rather than only affecting
-Actual's own crossover chart. A residual difference from the crossover
-widget's *own displayed number* can still remain — its projection type
-(Hampel/median/mean) applies its own statistical smoothing on top of the
-same trailing data, which this app doesn't reproduce.
+**Annual spend is resolved in priority order.** Expense Projection's own
+**Expense categories** selection wins first, if set — a trailing-12-month
+average over exactly that selection, scaled by **Expense Adjustment %** if
+set. Next, the live crossover widget's own category checklist and date
+range, once one exists — same narrower selection Export to Dashboard and
+Check both read, so the crossover widget and this app's own figures stay
+consistent, scaled by the crossover widget's own **Target Income (% of
+expenses)** slider the same way Actual applies it to its own projection
+(multiplying the expense figure, never the raw historical data it's
+charted against). Last, "every non-income, non-hidden category, trailing
+12 months," a first-generation fallback used only before either of the
+above exists. Whichever basis is active, it feeds every simulation on the
+page the same way — Monte Carlo, Bridge, the Spend tile above. A residual
+difference from the crossover widget's *own
+displayed number* can still remain when reading its live figure — its
+projection type (Hampel/median/mean) applies its own statistical
+smoothing on top of the same trailing data, which this app doesn't
+reproduce.
 
 **This does not talk to Actual's dashboard feature directly for writing**
 — there's no API for that (confirmed against both `@actual-app/api` and
@@ -684,23 +684,24 @@ editing in the app. Two things get checked:
 
 - **Stale** — shown at the very top of the page, right below the tiles
   (silent when there's nothing stale — no "nothing's stale" line to read
-  past), since regenerating is the fix for every finding here. Checks a widget's stored
-  access ages against what your current config would generate, accounts
-  the crossover counts that the simulation doesn't model (or vice versa),
-  any **Simulation settings** field you've pinned that isn't live on every
-  Monte Carlo widget yet, whether each widget's actual
-  **spending/contribution figures** still match what Generate would
-  produce right now for that same retirement age, and **whether a
-  configured retirement age has no Monte Carlo widget on the dashboard at
-  all yet** — not the same thing as an existing widget's figures being
-  stale: adding a second retirement age changes Generate's own naming for
-  every widget (a lone scenario is just "Monte Carlo"; two or more each
-  become "Monte Carlo — Retire at N"), so a dashboard generated back when
-  there was only one age matches none of the freshly expected names the
-  moment another is added, and every account already having a live pot
-  from that one original widget means the access-age check alone never
-  catches it either. Any of these usually means the dashboard predates a
-  config change and needs re-importing.
+  past). Every finding here is about your **exported copy in Actual**
+  falling behind your current Runway config, never about the numbers on
+  this page itself — those already reflect your current config directly,
+  with or without anything ever exported. Checks a widget's stored access
+  ages against what your current config would produce, whether each
+  widget's actual **spending/contribution figures** still match what
+  exporting right now would produce for that same retirement age, and
+  **whether a configured retirement age has no Monte Carlo widget in
+  Actual at all yet** — not the same thing as an existing widget's figures
+  being stale: adding a second retirement age changes the exported
+  widgets' own naming (a lone scenario is just "Monte Carlo"; two or more
+  each become "Monte Carlo — Retire at N"), so a dashboard exported back
+  when there was only one age matches none of the freshly expected names
+  the moment another is added, and every account already having a live
+  pot from that one original widget means the access-age check alone
+  never catches it either. Any of these means your exported dashboard
+  predates a config change — use **Export to Dashboard** to update it in
+  Actual, only if you want to view it there too.
 - **Bridge** — for each retirement age, whether the accounts you can
   actually reach at that age fund every year until the locked ones open
   up. This projects forward at each allocation's mean return with no
@@ -727,11 +728,25 @@ editing in the app. Two things get checked:
   scale for every other scenario on the same chart and squash the years
   that actually matter down to an unreadable sliver. The real number is
   still in the finding text below, unaffected by where the line is drawn.
+- **Monte Carlo** — a real stochastic simulation (5,000 runs by default,
+  randomized returns, the same withdrawal-strategy/tax/inflation rules the
+  generated `monte-carlo-card` widget uses), run in this app itself rather
+  than only read off Actual's own dashboard — see "Vendored third-party
+  code" below. Drawn as a fan chart per retirement age: an outer band
+  (10th-90th percentile), an inner band (25th-75th, the interquartile
+  range), and a solid median line, plus the plan's own success rate (the
+  share of runs that fund it through the target age) as a direct label.
+  The axis is scaled to the median's own peak, not the outer bands — a
+  plan with any real chance of failure typically has a median that itself
+  heads toward zero, which is the line that most needs to stay legible;
+  the 75th/90th bands are still real and still drawn, just clipped at the
+  top of the plot past that scale rather than resizing the whole chart
+  around a lucky tail that can compound to an enormous nominal figure over
+  a 30-40 year horizon. The real percentiles are still in the tooltip and
+  the finding text either way.
 
-Retirement spend for both actions comes from the live crossover widget's
-own category selection and date range once one exists (so narrowing either
-in Actual feeds this directly, rather than being overwritten by a fixed
-trailing-12-months-over-every-category default).
+Retirement spend for both actions follows the same priority order as
+Generate — see "Annual spend is resolved in priority order" above.
 
 ### `config.json`
 
@@ -746,10 +761,12 @@ trailing-12-months-over-every-category default).
 ```
 
 `match` is an account id or exact name. Every crossover/Monte Carlo
-assumption Actual itself exposes (safe withdrawal rate, tax model,
-inflation, withdrawal strategy, ...) lives only in the dashboard file
-you've imported — not here — since `Generate dashboard`'s own merge
-behavior already preserves whatever you tune there.
+assumption this app lets you set (see Expense Projection/Simulation
+Settings above) lives in `dashboard` as its own field, prefixed
+`crossover`/`monteCarlo`; a field left out (or `null`) falls back to
+whatever's live in Actual's own dashboard widgets, once one exists, via
+the same merge behavior "Regenerating preserves customizations" below
+describes.
 
 ### IRS contribution limits
 
@@ -774,6 +791,31 @@ via a real web search, not assumed), but the base figure is its own. There's
 no IRS API for any of this (only annual news releases and Revenue Procedure
 PDFs) — ask a future session to re-verify it via a real web search once a
 new tax year's limits are announced, usually in the preceding fall.
+
+### Vendored third-party code
+
+`src/vendor/monte-carlo/` carries actualbudget/actual's own Monte Carlo
+simulation engine (MIT licensed — `LICENSE-ACTUAL.txt` alongside it), run
+in-process instead of only configuring Actual's own `monte-carlo-card`
+widget and reading the result off Actual's dashboard. Kept close to a
+verbatim copy of upstream (each file's own header names the exact commit
+and blob hash it was copied from, and what — if anything — was changed);
+this app's own `buildMonteCarloWidget` supplies its input, so the widget
+this app would export and the simulation it runs itself can never
+disagree about anything Actual would also resolve.
+
+```
+./actual vendor check
+```
+
+Compares each vendored file's pinned commit against the file's current
+state on GitHub (a git blob hash, not a content fetch or diff) and reports
+whether it's drifted. Drift itself isn't a problem — this app doesn't
+intend to track upstream forever — the command just makes it visible
+rather than silent, so a future session can decide whether to re-vendor.
+Needs network access, so it's a manual, on-demand command rather than
+part of `./actual test`.
+
 ## Layout
 
 ```
@@ -787,6 +829,8 @@ src/                     TypeScript sources and their tests
   fire-dashboard.ts      builds Actual-native dashboard widget JSON (vendored widget types) + generated/existing-file merge
   fire-analysis.ts       pure bridge-projection and stale/mismatch-finding logic behind Retirement's own Check
   fire-generate.ts       generateDashboard/checkDashboard -- the non-CLI logic behind the Retirement page
+  fire-monte-carlo.ts    adapts this app's own account data into the vendored Monte Carlo engine's input shape
+  vendor/monte-carlo/    vendored actualbudget/actual Monte Carlo engine (MIT) -- see "Vendored third-party code" above
   irs-limits.ts          loads irs-limits.json, the IRS contribution limits reference file
   app-server.ts          the companion app's node:http server, routes namespaced under /api/retirement/
   app-ui/                the companion app's static page (plain HTML/CSS/vanilla JS, no build step)
@@ -794,6 +838,7 @@ src/                     TypeScript sources and their tests
   set-budget.ts          executable CLI
   anomalies.ts           executable CLI
   match-uncleared.ts     executable CLI
+  vendor-check.ts        executable CLI: ./actual vendor check
   *.test.ts              vitest unit tests
 eslint.config.js         flat config, type-aware rules via typescript-eslint (app-ui/*.js excluded -- plain browser JS, not part of the Node project)
 ```
