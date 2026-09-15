@@ -133,8 +133,6 @@ nav.sections { display: flex; flex-direction: column; gap: 1px; }
 .section-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 9px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); cursor: pointer; }
 .section-item:hover:not(.active) { background: var(--sidebar-hover); }
 .section-item.active { background: var(--accent-selected-bg); color: var(--accent-selected); }
-.rail-foot { margin-top: auto; font-size: 11px; color: var(--ink-faint); border-top: 1px solid var(--sidebar-hover); padding-top: 12px; }
-.rail-foot code { font-family: 'Inter', sans-serif; background: var(--sidebar-hover); padding: 1px 4px; border-radius: 3px; font-size: 10.5px; color: var(--ink); }
 
 /* --- Main --- */
 main { padding: 0 40px 56px; max-width: 1360px; }
@@ -378,11 +376,20 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .chip.ok { color: var(--ok); background: var(--ok-soft); }
 .finding .title { font-size: 12.5px; font-weight: 500; color: var(--ink); }
 .finding .detail { font-size: 11.5px; color: var(--ink-soft); margin-top: 3px; }
+/* Placeholder finding row (see renderLoadingSkeleton's findingSkeletons) -- same .finding/.chip/
+   .title/.detail classes as a real one, so it reserves the exact same height/padding, just with
+   muted bars standing in for the chip/text that hasn't loaded yet. */
+.chip.skeleton-chip { background: var(--line-soft); width: 32px; }
+.skeleton-bar { display: inline-block; height: 0.8em; width: 100%; max-width: 220px; border-radius: 3px; background: var(--line-soft); vertical-align: middle; }
 /* --- Bridge burndown chart (Analyze tab). See BRIDGE_SERIES_COLORS in app.js for the categorical
    palette itself and why it lives there rather than as CSS custom properties: this app is dark-only
    with no theme toggle, so there is no second mode for a --series-N variable to swap under. */
 .bridge-chart { position: relative; margin: 4px 16px 2px; }
 .bridge-chart-svg { width: 100%; height: auto; display: block; }
+/* Wraps just the svg (not the legend below it) in renderChartSkeleton, so the loading overlay's
+   inset:0 lines up with the plot area itself regardless of whether a legend renders under it. */
+.chart-svg-wrap { position: relative; }
+.chart-loading-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
 .bridge-grid { stroke: var(--line-soft); stroke-width: 1; }
 .bridge-axis-label { font-size: 9.5px; fill: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .bridge-end-label { font-size: 10px; fill: var(--ink-soft); font-weight: 500; }
@@ -391,11 +398,21 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    own categorical color throughout), carried only by this small end mark. */
 .bridge-end-critical { fill: var(--surface); stroke: var(--fail); stroke-width: 2; }
 .bridge-crosshair { stroke: var(--line); stroke-width: 1; pointer-events: none; }
+.bridge-crosshair[hidden] { display: none; }
 /* A locked tranche's own unlock age, after a depleting scenario has already run out -- neutral
    because it names an account fact, not a series, and dedup'd (see app.js) so two scenarios sharing
    the same locked account's access age don't draw the line twice. */
-.bridge-unlock-line { stroke: var(--ink-faint); stroke-width: 1; stroke-dasharray: 3 3; }
-.bridge-unlock-label { font-size: 9.5px; fill: var(--ink-faint); }
+.bridge-unlock-line { stroke: var(--ink-faint); stroke-width: 1; stroke-dasharray: 2 2; }
+/* An active 401(k)'s Rule-of-55 separation age -- its own accent color and dash pattern so it never
+   reads as the same fact as the neutral unlock lines above (a depletion-triggered "would have
+   helped" marker vs. this account's own "opens here" fact, true whether or not anything depletes). */
+.bridge-ruleof55-line { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
+.bridge-ruleof55-label { font-size: 9.5px; fill: var(--accent); }
+.bridge-ruleof55-arrow { stroke: var(--accent); stroke-width: 1.5; }
+/* Stands in for a windowed funded line running off the chart's own right edge -- see the doc
+   comment on this marker in renderBridgeChart for why that convention needed a visible replacement
+   once the axis started running out to planToAge instead of stopping at the scenario's own window. */
+.bridge-end-continues { opacity: 0.7; }
 .bridge-hit { cursor: crosshair; }
 /* Always present for 2+ scenarios (renderBridgeChart omits this box entirely for a single one --
    its own color needs no legend when there is nothing to tell it apart from). Line swatches, not
@@ -425,11 +442,9 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 
 .empty-note { padding: 14px 16px; font-size: 12.5px; color: var(--ink-faint); font-style: italic; }
 
-/* Analysis gets a fixed minimum height up front so the loading spinner isn't a tiny sliver that
-   then jumps taller the moment real content (the fixed-height Bridge chart plus its findings)
-   replaces it, and so a Refresh doesn't shrink-then-grow either. .panel-loading pulls the same
-   value via min-height:inherit rather than repeating it. */
-#checkResult { min-height: 380px; }
+/* Analysis's own loading state (.chart-loading below) sizes itself off two 640:240 chart-shaped
+   slots rather than a guessed constant here, so #checkResult needs no fixed min-height of its own
+   any more -- see LOADING_MARKUP's doc comment in app.js. */
 /* Portfolio/mortgage-and-other tiles and Stale both come from the same first /api/retirement/check
    as Analysis, so they share its "nothing to show yet" gap too -- shown in .top-loading's place
    until STATE has loaded AND that first check has resolved (see the shared reveal gate in app.js),
@@ -450,6 +465,15 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
   font-style: italic;
   text-align: center;
 }
+/* Analysis's own loading state: two placeholder slots, each the same 640:240 aspect ratio as a real
+   bridge-chart-svg/monte-carlo-chart-svg, standing in for the Bridge and Monte Carlo chart groups
+   about to replace them -- see LOADING_MARKUP's doc comment in app.js and
+   [[no-layout-shift-ux-rule]]. Overrides .panel-loading's own centering/padding, since the slots
+   provide their own layout instead of a single centered spinner. */
+.chart-loading { display: block; padding: 0; min-height: 0; }
+.chart-loading-slot { width: 100%; aspect-ratio: 640 / 240; display: flex; align-items: center; justify-content: center; }
+.chart-loading-slot + .chart-loading-slot { margin-top: 8px; }
+.chart-loading-spinner { display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--ink-faint); font-size: 12.5px; font-style: italic; text-align: center; }
 .spinner { width: 20px; height: 20px; border: 2px solid var(--line-soft); border-top-color: var(--accent-selected); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin {
   to { transform: rotate(360deg); }

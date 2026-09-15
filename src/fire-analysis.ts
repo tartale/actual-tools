@@ -95,12 +95,45 @@ export interface BridgeResult {
   // scenario depletes, or at planToAge when it doesn't; never continues past either. accessible +
   // locked at the first point always equals accessibleAtRetirement + lockedAtRetirement above.
   timeline: BridgeYear[]
+  // Real (not simulated) accessible/locked balances for up to a few years before currentAge --
+  // see historicalBridgeYear below. A separate array, not a prefix spliced onto timeline, because
+  // it's real history, unlike accumulation right below. Empty when the accounts don't have that
+  // much transaction history to look back on. Its own last point and accumulation's own first
+  // point always agree (both are just "today"), so a chart can join them into one line.
+  history: BridgeYear[]
+  // One point per year from currentAge through retirementAge (inclusive of both ends), tracking
+  // the same accessible/locked split as history/timeline but PROJECTED forward -- contributions
+  // and mean growth, no withdrawals yet -- rather than read off real transactions. This is what
+  // connects history's real "now" to timeline's own first point (retirementAge) instead of a gap:
+  // the same reasoning as the rest of this file, that mean returns with no volatility is a
+  // deliberately optimistic story worth showing, not a real forecast. Its last point always equals
+  // timeline's own first one exactly (both are accessibleAtRetirement/lockedAtRetirement), so a
+  // chart can join the two into one line the same way. A single point (nothing to connect) when
+  // retirementAge equals currentAge.
+  accumulation: BridgeYear[]
 }
 
 export interface BridgeYear {
   age: number
   accessibleBalance: number
   lockedBalance: number
+}
+
+// Function to split a one-shot snapshot of accounts (a historical balance as of some past age, or
+// any other static balance figure) into accessible/locked totals -- the same accessAge rule
+// simulateBridge's own internal splitAt applies to its year-by-year MUTATED balances, but usable
+// here against toBridgeAccounts' plain, unchanging balance snapshot instead.
+export function historicalBridgeYear(accounts: readonly BridgeAccount[], age: number): BridgeYear {
+  let accessibleBalance = 0
+  let lockedBalance = 0
+  for (const account of accounts) {
+    if (account.accessAge == null || age >= account.accessAge) {
+      accessibleBalance += account.balance
+    } else {
+      lockedBalance += account.balance
+    }
+  }
+  return { age, accessibleBalance, lockedBalance }
 }
 
 // Function to project a single retirement-age scenario forward at mean returns with no
@@ -134,6 +167,10 @@ export function simulateBridge(
     return { accessible, locked }
   }
   const timeline: BridgeYear[] = []
+  // See BridgeResult's own doc comment on this field -- one point per year of the accumulation
+  // phase, ending on retirementAge itself so it shares that exact point with timeline's own first
+  // one (both come from the same splitAt(retirementAge)).
+  const accumulation: BridgeYear[] = []
 
   let accessibleAtRetirement = 0
   let lockedAtRetirement = 0
@@ -154,13 +191,10 @@ export function simulateBridge(
 
   for (let age = currentAge; age < planToAge; age++) {
     if (!capturedSplit && age >= retirementAge) {
-      accounts.forEach((account, index) => {
-        if (isAccessible(account, age)) {
-          accessibleAtRetirement += balances[index] as number
-        } else {
-          lockedAtRetirement += balances[index] as number
-        }
-      })
+      const split = splitAt(age)
+      accessibleAtRetirement = split.accessible
+      lockedAtRetirement = split.locked
+      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked })
       capturedSplit = true
     }
 
@@ -169,6 +203,9 @@ export function simulateBridge(
     if (age >= retirementAge) {
       const split = splitAt(age)
       timeline.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked })
+    } else {
+      const split = splitAt(age)
+      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked })
     }
 
     if (age < retirementAge) {
@@ -232,6 +269,11 @@ export function simulateBridge(
     lockedAtDepletion,
     nextUnlockAfterDepletion,
     timeline,
+    accumulation,
+    // Real transaction history isn't available in here (simulateBridge only ever sees a single
+    // snapshot balance per account) -- the caller (checkDashboard) fills this in itself, the same
+    // way it already attaches retirementAge-independent data like ruleOf55Boosts.
+    history: [],
   }
 }
 
@@ -250,7 +292,7 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
   ]
 
   if (result.depletionAge === null) {
-    return { level: "ok", title: `age ${result.retirementAge} -- funds every year through ${planToAge}.`, detail: split }
+    return { level: "ok", title: `age ${result.retirementAge} -- funds every year until age ${planToAge}.`, detail: split }
   }
   if (result.nextUnlockAfterDepletion != null) {
     const gap = result.nextUnlockAfterDepletion - result.depletionAge

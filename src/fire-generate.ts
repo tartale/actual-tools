@@ -1,16 +1,20 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 
 import {
+  addMonthsToDate,
+  ageFromBirthDate,
   averageSpent,
   fetchAccountBalance,
+  fetchAccountTransactions,
   fetchCategoryGroups,
   fetchDashboardPages,
   fetchDashboardWidgets,
   fetchHistoricalSpent,
   formatError,
   monthRange,
+  sumTransactionAmounts,
 } from "./actual-helpers.ts"
-import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
+import type { ActualConfig, CategoryMonth, Transaction } from "./actual-helpers.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import {
   buildFireDashboard,
@@ -27,6 +31,7 @@ import {
   detectMonteCarloWidgetSetDrift,
   detectPotDrift,
   detectSpendingPhaseDrift,
+  historicalBridgeYear,
   monteCarloFinding,
   simulateBridge,
   toBridgeAccounts,
@@ -237,6 +242,7 @@ export interface RuleOf55Boost {
   accountName: string
   from: number | null
   to: number
+  amount: number
 }
 
 export interface DebtPayoff {
@@ -320,6 +326,7 @@ export async function generateDashboard(
   ])
   const { annualSpend, basis: spendBasis } = spendResult
   const portfolioTotal = portfolioBalances.reduce((total, balance) => total + balance, 0)
+  const balanceByAccountId = new Map(portfolioIds.map((id, index) => [id, portfolioBalances[index] as number]))
 
   // Reported against the latest configured retirement age -- effectiveAccessAge's own gate
   // (separationAge <= retirementAge) only gets easier to satisfy as retirementAge grows, so if the
@@ -331,7 +338,7 @@ export async function generateDashboard(
   for (const account of accounts) {
     const boosted = effectiveAccessAge(account, latestRetirementAge)
     if (boosted !== account.accessAge) {
-      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number })
+      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number, amount: balanceByAccountId.get(account.id) ?? 0 })
     }
   }
 
@@ -403,10 +410,11 @@ export interface AccountContribution {
 export interface CheckResult {
   monteCarloWidgetCount: number
   crossoverWidgetCount: number
-  // The plan's own current age -- self-contained rather than relying on the client's own copy
-  // (STATE.currentAge) staying in sync, since the Monte Carlo chart needs it to turn each
-  // percentile band's `year` back into an age.
+  // The plan's own current age and target age -- self-contained rather than relying on the
+  // client's own copy (STATE.currentAge/STATE.dashboard.planToAge) staying in sync, since the
+  // Monte Carlo and Bridge charts both need these to size a shared x-axis.
   currentAge: number
+  planToAge: number
   contributions: AccountContribution[]
   annualSpend: number
   // Null when no crossover widget's selection could be used, i.e. fallbackAnnualSpend was used instead.
@@ -426,6 +434,12 @@ export interface CheckResult {
   // Prose derived from monteCarloResults, same order -- the fan chart's companion text, same
   // pairing as bridgeFindings/bridgeResults above.
   monteCarloFindings: Finding[]
+  // Real (not simulated) total portfolio balance for up to a few years before currentAge -- see
+  // the doc comment on BridgeResult's own `history` for why this is real transaction history
+  // rather than a continuation of the simulation. Shared across every entry in monteCarloResults
+  // (unlike bridgeResults' own per-scenario history): total balance doesn't depend on which
+  // retirement age a scenario is comparing, only Bridge's accessible/locked split does.
+  monteCarloHistory: { age: number; totalBalance: number }[]
   // The same at-a-glance numbers Generate's own result reports -- current portfolio total and the
   // access-age/spending adjustments already baked into every projection above. Previously only
   // shown as a side effect of clicking Download, which also writes a file and triggers a browser
@@ -512,13 +526,7 @@ export async function checkDashboard(
 
   const staleFindings: Finding[] =
     monteCarloMetas.length === 0
-      ? [
-          {
-            level: "info",
-            title: "No dashboard exported to Actual yet.",
-            detail: ["Optional -- the numbers on this page already reflect your current config. Click Export to Dashboard above if you'd also like to view them inside Actual."],
-          },
-        ]
+      ? []
       : [
           ...detectPotDrift(monteCarloMetas, accounts, options.retirementAges),
           ...widgetSetDriftFindings,
@@ -529,11 +537,39 @@ export async function checkDashboard(
   // nothing has been imported yet.
   const inflationMean = monteCarloMetas[0]?.inflationMean ?? options.fallbackInflationMean
 
-  const balanceEntries = await Promise.all(
-    portfolioIds.map(async (accountId): Promise<[string, number]> => [accountId, await fetchAccountBalance(actualConfig, accountId, BALANCE_SINCE_DATE)]),
+  const transactionEntries = await Promise.all(
+    portfolioIds.map(async (accountId): Promise<[string, Transaction[]]> => [accountId, await fetchAccountTransactions(actualConfig, accountId, BALANCE_SINCE_DATE)]),
   )
-  const balances = new Map(balanceEntries)
+  const transactionsByAccount = new Map(transactionEntries)
+  const balances = new Map(portfolioIds.map((accountId) => [accountId, sumTransactionAmounts(transactionsByAccount.get(accountId) ?? [])]))
   const portfolioTotal = portfolioIds.reduce((total, accountId) => total + (balances.get(accountId) ?? 0), 0)
+
+  // How far back to extend the Bridge/Monte Carlo charts' x-axis before currentAge: real
+  // transaction history, capped at a few years so a decades-old account doesn't turn the chart
+  // into a full net-worth history. Bounded by the earliest transaction across ALL portfolio
+  // accounts (the one with the longest history), not the shortest -- an account opened more
+  // recently than that just correctly contributes $0 for the years before it existed, same as it
+  // would if it just hadn't been opened yet.
+  const HISTORY_LOOKBACK_YEARS_MAX = 5
+  const today = new Date().toISOString().slice(0, 10)
+  const allTransactionDates = [...transactionsByAccount.values()].flat().map((transaction) => transaction.date).filter((date) => date <= today)
+  const earliestTransactionDate = allTransactionDates.length > 0 ? allTransactionDates.reduce((min, date) => (date < min ? date : min)) : today
+  const historyYearsBack = Math.min(HISTORY_LOOKBACK_YEARS_MAX, ageFromBirthDate(earliestTransactionDate))
+  // Oldest first, so a chart can just concat this in front of its own forward-looking data.
+  const historicalAges = Array.from({ length: historyYearsBack }, (_, index) => options.currentAge - historyYearsBack + index)
+  const historicalBalancesByAge = new Map(
+    historicalAges.map((age) => {
+      const cutoff = addMonthsToDate(today, -12 * (options.currentAge - age))
+      return [
+        age,
+        new Map(portfolioIds.map((accountId) => [accountId, sumTransactionAmounts((transactionsByAccount.get(accountId) ?? []).filter((transaction) => transaction.date <= cutoff))])),
+      ] as const
+    }),
+  )
+  const monteCarloHistory = historicalAges.map((age) => ({
+    age,
+    totalBalance: portfolioIds.reduce((total, accountId) => total + (historicalBalancesByAge.get(age)?.get(accountId) ?? 0), 0),
+  }))
 
   // Reported against the latest configured retirement age, same as Generate's own identical loop:
   // effectiveAccessAge's own gate (separationAge <= retirementAge) only gets easier to satisfy as
@@ -544,23 +580,29 @@ export async function checkDashboard(
   for (const account of accounts) {
     const boosted = effectiveAccessAge(account, latestRetirementAge)
     if (boosted !== account.accessAge) {
-      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number })
+      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number, amount: balances.get(account.id) ?? 0 })
     }
   }
 
   // Simulated once per retirement age and kept in full -- bridgeFindings below is prose derived
-  // from these results, not a second computation, so the two can never disagree.
-  const bridgeResults = options.retirementAges.map((retirementAge) =>
-    simulateBridge(
-      toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge),
-      options.currentAge,
-      retirementAge,
-      options.planToAge,
-      annualSpend,
-      inflationMean,
-      incomeStreams,
-    ),
-  )
+  // from these results, not a second computation, so the two can never disagree. history is real,
+  // not simulated, so it's computed here rather than inside simulateBridge itself (which only ever
+  // sees a single snapshot balance per account, not a series of them) -- effectiveAccessAge (via
+  // toBridgeAccounts) still depends on retirementAge, so it's resolved per scenario like everything
+  // else here, not shared across them the way monteCarloHistory above is.
+  const bridgeResults = options.retirementAges.map((retirementAge) => {
+    const currentBridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge)
+    const result = simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams)
+    // Ends on a real point at currentAge itself (today's live balance, not a historical one) --
+    // ties the last real-history year to "now" so the chart has something to draw a line between
+    // even with only one year of lookback, and (for a retirementAge equal to currentAge) meets
+    // timeline's own first point exactly rather than leaving a one-year gap right before it.
+    const history = [
+      ...historicalAges.map((age) => historicalBridgeYear(toBridgeAccounts(accounts, historicalBalancesByAge.get(age) as Map<string, number>, contributionsAnnualByAccount, retirementAge), age)),
+      ...(historicalAges.length > 0 ? [historicalBridgeYear(currentBridgeAccounts, options.currentAge)] : []),
+    ]
+    return { ...result, history }
+  })
   const bridgeFindings = bridgeResults.map((result) => bridgeFinding(result, options.planToAge))
 
   // Simulated once per retirement age, same order as bridgeResults; monteCarloFindings below is
@@ -588,6 +630,7 @@ export async function checkDashboard(
   return {
     monteCarloWidgetCount: monteCarloMetas.length,
     currentAge: options.currentAge,
+    planToAge: options.planToAge,
     crossoverWidgetCount: crossoverMetas.length,
     contributions: accounts
       .filter((account) => portfolioIds.includes(account.id))
@@ -600,6 +643,7 @@ export async function checkDashboard(
     bridgeResults,
     monteCarloResults,
     monteCarloFindings,
+    monteCarloHistory,
     portfolioAccountCount: portfolioIds.length,
     portfolioTotal,
     ruleOf55Boosts,
