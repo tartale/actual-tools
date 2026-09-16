@@ -158,6 +158,17 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 /* Refresh/Expand all/Collapse all/Export to Dashboard sit in .page-head itself, beside the
    privacy toggle, rather than their own row above the cards. */
 .page-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* Wide viewports only (see the media query below) -- .retirement-inputs (Plan through Accounts)
+   scrolls normally in the left column; .retirement-live (tiles/Stale/Analysis, everything the
+   live recalculation touches) is the right column, stretched to the same row height as the left
+   by grid's own default align-items:stretch (deliberately not overridden to `start`) so
+   .retirement-live-sticky has real room to stick within as the page scrolls -- without that extra
+   height, "sticky" would have nothing to stick against and behave like static positioning. */
+@media (min-width: 1150px) {
+  .retirement-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(420px, 560px); gap: 24px; }
+  .retirement-live-sticky { position: sticky; top: 16px; }
+}
 /* The caret + <h2> group, so .card-head's own space-between still has exactly two children -- this
    group on the left, whatever hint/button a card already had on the right, untouched. */
 .card-head-title { display: flex; align-items: center; gap: 8px; }
