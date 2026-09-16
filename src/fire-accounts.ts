@@ -12,10 +12,10 @@ import type { IrsLimits } from "./irs-limits.ts"
 // name with an explicit config file the guess can be overridden by.
 //
 // This module also owns the FireConfig schema -- the single config.json file the app reads
-// defaults from and writes. It covers account classification only: the crossover/Monte Carlo
-// widget assumptions Actual itself exposes once a dashboard is imported are no longer stored here
-// at all (see fire-dashboard.ts's DEFAULT_CROSSOVER_ASSUMPTIONS/DEFAULT_MONTE_CARLO_ASSUMPTIONS,
-// used only the first time a dashboard is generated).
+// defaults from and writes. It covers account classification only: the Monte Carlo widget
+// assumptions Actual itself exposes once a dashboard is imported are no longer stored here at all
+// (see fire-dashboard.ts's DEFAULT_MONTE_CARLO_ASSUMPTIONS, used only the first time a dashboard is
+// generated).
 
 export type FireAccountCategory =
   | "retirement-tax-deferred"
@@ -94,14 +94,7 @@ export const MONTE_CARLO_RETURN_MODELS: readonly MonteCarloReturnModel[] = ["nor
 export type MonteCarloTaxModel = "flat" | "bands"
 export const MONTE_CARLO_TAX_MODELS: readonly MonteCarloTaxModel[] = ["flat", "bands"]
 
-// Mirrors Actual's own crossover-card projection type (see fire-dashboard.ts's CrossoverCardMeta)
-// -- moved here from fire-dashboard.ts, same reasoning as the Monte Carlo enums above: this file's
-// DashboardConfig needs it for the crossover assumptions a person can pin instead of opening
-// Actual's own crossover config UI (see fire-dashboard.ts's crossoverAssumptionsWithOverrides).
-export type CrossoverProjectionType = "hampel" | "median" | "mean"
-export const CROSSOVER_PROJECTION_TYPES: readonly CrossoverProjectionType[] = ["hampel", "median", "mean"]
-
-// Moved here from fire-dashboard.ts for the same reason as CrossoverProjectionType above --
+// Moved here from fire-dashboard.ts for the same reason as the Monte Carlo enums above --
 // DashboardConfig (this file) needs it to let a person pin a withdrawal rule (see
 // fire-dashboard.ts's monteCarloAssumptionsWithOverrides), and fire-accounts.ts cannot import from
 // fire-dashboard.ts (the dependency only runs the other direction).
@@ -480,28 +473,18 @@ export interface DashboardConfig {
   // crossover widget) instead of Actual's own crossover-card checklist -- set once here and every
   // simulation (Bridge, Monte Carlo, the Current numbers box) uses it without anyone opening
   // Actual. Null means "not set yet": every non-income, non-hidden category, today's implicit
-  // default -- see fire-generate.ts's expenseCategoryIds. Never an empty array (see
-  // CrossoverCardMeta's own expenseCategoryIds doc comment for why); the Plan PATCH route and the
-  // config loader below both reject one.
+  // default -- see fire-generate.ts's expenseCategoryIds. Never an empty array; the Plan PATCH
+  // route and the config loader below both reject one.
   crossoverExpenseCategoryIds: string[] | null
-  // The crossover widget's own remaining assumptions a person can pin here instead of opening
-  // Actual's own crossover config UI, same "pin it here, it always wins on regenerate" mechanism
-  // as the monteCarlo* fields above (see fire-dashboard.ts's crossoverAssumptionsWithOverrides/
-  // pinnedCrossoverFields). Unlike the Monte Carlo fields, three of these four (everything but
-  // crossoverExpenseAdjustmentFactor) only affect how Actual's own crossover widget renders --
-  // this app's own Bridge/Monte Carlo math has no crossover-date concept to feed them into. Decimal
-  // fraction (0.04 = 4%), null "not entered" leaves it to Actual/the plain default, same convention
-  // as every other rate field here.
-  crossoverSafeWithdrawalRate: number | null
-  // Null means "auto" to Actual's own widget -- this app's own convention (a not-entered field
-  // leaves it alone) happens to coincide with that meaning, so there's no separate "pin auto"
-  // state; picking a fixed rate is the only thing pinning this field can add over the default.
-  crossoverEstimatedReturn: number | null
-  crossoverProjectionType: CrossoverProjectionType | null
-  // Actual calls this "Target Income (% of expenses)." The one field here that also feeds this
-  // app's own local-selection spend calculation (see fire-generate.ts's spendFromLocalSelection),
-  // not just the exported widget -- see CrossoverAssumptions.expenseAdjustmentFactor.
+  // "crossover" is a legacy naming holdover -- these two used to feed a crossover-card widget this
+  // app no longer exports at all (Actual's own crossover projection ignores locked/inaccessible
+  // balances entirely, which this app's own Bridge chart already handles correctly), and now only
+  // ever feed this app's own local-selection spend calculation (fire-generate.ts's
+  // spendFromLocalSelection). Actual calls the first one "Target Income (% of expenses)."
   crossoverExpenseAdjustmentFactor: number | null
+  // How many trailing months of category history the same local-selection spend calculation
+  // averages over. Null keeps the default (see DEFAULT_SPEND_HISTORY_MONTHS).
+  crossoverSpendHistoryMonths: number | null
   // The two Monte Carlo fields the doc comment on MonteCarloWithdrawalStrategy above calls out as
   // deliberately NOT exposed as flat pinnable scalars -- each carries its own internal shape
   // (a withdrawal rule's parameters vary by its own type; tax bands are an open-ended list), so
@@ -542,10 +525,8 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   monteCarloMinimumWithdrawal: null,
   monteCarloSimulationCount: null,
   crossoverExpenseCategoryIds: null,
-  crossoverSafeWithdrawalRate: null,
-  crossoverEstimatedReturn: null,
-  crossoverProjectionType: null,
   crossoverExpenseAdjustmentFactor: null,
+  crossoverSpendHistoryMonths: null,
   monteCarloWithdrawalRule: null,
   monteCarloTaxBands: null,
 }
@@ -1143,20 +1124,17 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   ) {
     throw new Error(`Invalid config in ${path}: dashboard.crossoverExpenseCategoryIds must be a non-empty array of category id strings, or null.`)
   }
-  if (dashboardSource.crossoverSafeWithdrawalRate != null && (typeof dashboardSource.crossoverSafeWithdrawalRate !== "number" || dashboardSource.crossoverSafeWithdrawalRate <= 0)) {
-    throw new Error(`Invalid config in ${path}: dashboard.crossoverSafeWithdrawalRate must be a positive number.`)
-  }
-  if (dashboardSource.crossoverEstimatedReturn != null && typeof dashboardSource.crossoverEstimatedReturn !== "number") {
-    throw new Error(`Invalid config in ${path}: dashboard.crossoverEstimatedReturn must be a number.`)
-  }
-  if (dashboardSource.crossoverProjectionType != null && !CROSSOVER_PROJECTION_TYPES.includes(dashboardSource.crossoverProjectionType)) {
-    throw new Error(`Invalid config in ${path}: dashboard.crossoverProjectionType must be one of ${CROSSOVER_PROJECTION_TYPES.join(", ")}, or null.`)
-  }
   if (
     dashboardSource.crossoverExpenseAdjustmentFactor != null &&
     (typeof dashboardSource.crossoverExpenseAdjustmentFactor !== "number" || dashboardSource.crossoverExpenseAdjustmentFactor <= 0)
   ) {
     throw new Error(`Invalid config in ${path}: dashboard.crossoverExpenseAdjustmentFactor must be a positive number.`)
+  }
+  if (
+    dashboardSource.crossoverSpendHistoryMonths != null &&
+    (typeof dashboardSource.crossoverSpendHistoryMonths !== "number" || !Number.isInteger(dashboardSource.crossoverSpendHistoryMonths) || dashboardSource.crossoverSpendHistoryMonths <= 0)
+  ) {
+    throw new Error(`Invalid config in ${path}: dashboard.crossoverSpendHistoryMonths must be a positive integer.`)
   }
   if (dashboardSource.monteCarloWithdrawalRule != null) {
     const rule = dashboardSource.monteCarloWithdrawalRule
@@ -1207,10 +1185,8 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       monteCarloMinimumWithdrawal: dashboardSource.monteCarloMinimumWithdrawal ?? DEFAULT_DASHBOARD_CONFIG.monteCarloMinimumWithdrawal,
       monteCarloSimulationCount: dashboardSource.monteCarloSimulationCount ?? DEFAULT_DASHBOARD_CONFIG.monteCarloSimulationCount,
       crossoverExpenseCategoryIds: dashboardSource.crossoverExpenseCategoryIds ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseCategoryIds,
-      crossoverSafeWithdrawalRate: dashboardSource.crossoverSafeWithdrawalRate ?? DEFAULT_DASHBOARD_CONFIG.crossoverSafeWithdrawalRate,
-      crossoverEstimatedReturn: dashboardSource.crossoverEstimatedReturn ?? DEFAULT_DASHBOARD_CONFIG.crossoverEstimatedReturn,
-      crossoverProjectionType: dashboardSource.crossoverProjectionType ?? DEFAULT_DASHBOARD_CONFIG.crossoverProjectionType,
       crossoverExpenseAdjustmentFactor: dashboardSource.crossoverExpenseAdjustmentFactor ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseAdjustmentFactor,
+      crossoverSpendHistoryMonths: dashboardSource.crossoverSpendHistoryMonths ?? DEFAULT_DASHBOARD_CONFIG.crossoverSpendHistoryMonths,
       monteCarloWithdrawalRule: dashboardSource.monteCarloWithdrawalRule ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalRule,
       monteCarloTaxBands: dashboardSource.monteCarloTaxBands ?? DEFAULT_DASHBOARD_CONFIG.monteCarloTaxBands,
     },

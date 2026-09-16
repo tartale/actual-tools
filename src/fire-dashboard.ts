@@ -1,7 +1,6 @@
 import { portfolioAccounts } from "./fire-accounts.ts"
 import type {
   ClassifiedAccount,
-  CrossoverProjectionType,
   DashboardConfig,
   MonteCarloAllocationPreset,
   MonteCarloReturnModel,
@@ -12,8 +11,8 @@ import type {
   TaxTreatment,
 } from "./fire-accounts.ts"
 
-// Builds an Actual-native dashboard JSON (net worth, spending, and a FIRE crossover projection)
-// from classified accounts and expense categories. Pure -- no API calls, no file I/O.
+// Builds an Actual-native dashboard JSON (net worth and a Monte Carlo simulation) from classified
+// accounts and expense categories. Pure -- no API calls, no file I/O.
 //
 // The types below are a minimal, hand-vendored local copy of the upstream ExportImportDashboard
 // shape from actualbudget/actual's packages/loot-core/src/types/models/dashboard.ts, read at the
@@ -53,28 +52,11 @@ export interface NetWorthCardMeta {
   mode?: "trend" | "stacked"
 }
 
-export interface CrossoverCardMeta {
-  name?: string
-  // Never leave this empty -- Actual's crossover projection zeroes out historical expense data
-  // entirely when this array is empty, which makes the widget silently claim "already FI" with
-  // $0/month of expenses. Always populate with every real (non-income, non-hidden) category id.
-  expenseCategoryIds: string[]
-  // Despite the name, this is NOT "accounts that receive income" -- it's the set of accounts
-  // whose combined balance is treated as the investable portfolio a safe withdrawal rate is
-  // computed against. Must be exactly the portfolio accounts (retirement/HSA/investment-taxable),
-  // never debt or everyday cash accounts -- see portfolioAccountIds below.
-  incomeAccountIds: string[]
-  safeWithdrawalRate: number
-  estimatedReturn: number | null
-  expectedContribution: number | null
-  projectionType: CrossoverProjectionType
-  expenseAdjustmentFactor: number
-  showHiddenCategories?: boolean
-  // Written by Actual once a date range is chosen in the widget's own UI; absent on a dashboard
-  // this tool generated and nobody has narrowed yet. Read, never generated -- see reports-fire.ts.
-  timeFrame?: TimeFrame
-}
-
+// "crossover-card" is no longer generated (see [[bridge-burndown-chart]] project memory -- Actual's
+// own crossover projection ignores locked/inaccessible balances entirely, which this app's own
+// Bridge chart already does correctly) but stays a recognized FireWidgetType/OWNED_WIDGET_TYPES
+// member below so a widget from a dashboard exported before this change is cleanly dropped on the
+// next regenerate, rather than either erroring or being preserved forever as "foreign" content.
 export type FireWidgetType = "net-worth-card" | "crossover-card" | "monte-carlo-card"
 
 export interface ExportImportDashboardWidget<Meta = unknown> {
@@ -99,93 +81,19 @@ export function buildNetWorthWidget(x: number, y: number): ExportImportDashboard
   return { type: "net-worth-card", x, y, width: 12, height: 2, meta: { name: "Net Worth", mode: "trend" } }
 }
 
-// The crossover assumptions a person can configure (./actual configure) instead of this module
-// hardcoding them. Shape matches CrossoverCardMeta's own configurable fields exactly.
-export interface CrossoverAssumptions {
-  safeWithdrawalRate: number
-  estimatedReturn: number | null
-  projectionType: CrossoverProjectionType
-  expenseAdjustmentFactor: number
-  showHiddenCategories: boolean
-}
-
-// Used only the first time a dashboard is generated for a page with no existing file to merge
-// against -- config.json no longer stores these at all, since mergeGeneratedDashboard already
-// preserves whatever the person tunes afterward (in Actual's own crossover/Monte Carlo config UI,
-// or by hand) by reading the previously generated dashboard file, not config.json. These are
-// Actual's own real UI defaults (matched against Crossover.tsx/MonteCarloConfiguration.tsx), not
-// invented.
-export const DEFAULT_CROSSOVER_ASSUMPTIONS: CrossoverAssumptions = {
-  safeWithdrawalRate: 0.04,
-  estimatedReturn: null,
-  projectionType: "hampel",
-  expenseAdjustmentFactor: 1.0,
-  showHiddenCategories: false,
-}
-
-// Function to build the crossover-card widget -- the FIRE date/nest-egg projection.
-// expectedContributionCents is a MONTHLY figure in cents (confirmed against Actual's own
-// Crossover.tsx, which divides this same field by 100 to show it as dollars) -- see
-// totalMonthlyContribution below for how it's summed from real per-account answers.
-export function buildCrossoverWidget(
-  x: number,
-  y: number,
-  expenseCategoryIds: string[],
-  portfolioAccountIds: string[],
-  assumptions: CrossoverAssumptions,
-  expectedContributionCents: number | null,
-): ExportImportDashboardWidget<CrossoverCardMeta> {
-  return {
-    type: "crossover-card",
-    x,
-    y,
-    width: 12,
-    height: 4,
-    meta: {
-      name: "FIRE Crossover",
-      expenseCategoryIds,
-      incomeAccountIds: portfolioAccountIds,
-      safeWithdrawalRate: assumptions.safeWithdrawalRate,
-      estimatedReturn: assumptions.estimatedReturn,
-      expectedContribution: expectedContributionCents,
-      projectionType: assumptions.projectionType,
-      expenseAdjustmentFactor: assumptions.expenseAdjustmentFactor,
-      showHiddenCategories: assumptions.showHiddenCategories,
-    },
-  }
-}
-
-// Function to pick which classified accounts count as "the portfolio" for the crossover-card's
-// incomeAccountIds -- see fire-accounts.ts's portfolioAccounts/isPortfolioCategory for which
-// categories qualify (debt, cash, and other never do).
+// Function to pick which classified accounts count as "the portfolio" -- see fire-accounts.ts's
+// portfolioAccounts/isPortfolioCategory for which categories qualify (debt, cash, and other never
+// do). Used broadly (portfolio totals, contributions, debt-payoff streams), not tied to any one
+// widget.
 export function portfolioAccountIds(accounts: readonly ClassifiedAccount[]): string[] {
   return portfolioAccounts(accounts).map((account) => account.id)
 }
 
-// Function to sum monthly contributions across portfolio accounts -- the same population
-// buildMonteCarloWidget draws pots/contributions from -- into crossover's single flat
-// expectedContribution figure. Returns null (not 0) when nothing is configured, matching Actual's
-// own "unset" convention for this field.
-export function totalMonthlyContribution(accounts: readonly ClassifiedAccount[]): number | null {
-  const total = portfolioAccounts(accounts).reduce((sum, account) => sum + (account.monthlyContribution ?? 0), 0)
-  return total > 0 ? total : null
-}
-
-// Function to assemble the base FIRE dashboard on Actual's 12-column grid: net worth full-width on
-// the first row, crossover full-width on the row below.
-export function buildFireDashboard(
-  nonIncomeCategoryIds: string[],
-  accountIds: string[],
-  crossoverAssumptions: CrossoverAssumptions,
-  expectedContributionCents: number | null,
-): ExportImportDashboard {
-  return {
-    version: 1,
-    widgets: [
-      buildNetWorthWidget(0, 0),
-      buildCrossoverWidget(0, 2, nonIncomeCategoryIds, accountIds, crossoverAssumptions, expectedContributionCents),
-    ],
-  }
+// Function to assemble the base FIRE dashboard on Actual's 12-column grid: just net worth,
+// full-width. (Used to also include a crossover-card widget -- see FireWidgetType's own doc
+// comment for why that stopped.)
+export function buildFireDashboard(): ExportImportDashboard {
+  return { version: 1, widgets: [buildNetWorthWidget(0, 0)] }
 }
 
 // --- Monte Carlo (experimental in Actual as of 2026-09-05 -- gated behind Settings > Advanced >
@@ -469,7 +377,11 @@ export interface MonteCarloAssumptions {
   simulationCount: number
 }
 
-// See DEFAULT_CROSSOVER_ASSUMPTIONS above -- same "first generation only" role.
+// Used only the first time a dashboard is generated for a page with no existing file to merge
+// against -- config.json no longer stores these at all, since mergeGeneratedDashboard already
+// preserves whatever the person tunes afterward (in Actual's own Monte Carlo config UI, or by
+// hand) by reading the previously generated dashboard file. Actual's own real UI defaults
+// (matched against MonteCarloConfiguration.tsx), not invented.
 export const DEFAULT_MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
   withdrawalStrategy: "proportional",
   returnModel: "normal",
@@ -524,42 +436,23 @@ export function pinnedMonteCarloFields(dashboard: DashboardConfig): Set<string> 
   return new Set(PINNABLE_MONTE_CARLO_FIELDS.filter(({ dashboardField }) => dashboard[dashboardField] != null).map(({ metaField }) => metaField))
 }
 
-// The CrossoverAssumptions fields (see above) that map to a "Crossover" field in this app's own
-// Simulation settings UI, keyed by the DashboardConfig field that pins it -- same mechanism as
-// PINNABLE_MONTE_CARLO_FIELDS, applied to the crossover-card's own assumptions instead. Every
-// CrossoverAssumptions field is pinnable here (unlike Monte Carlo's withdrawalRule/taxBands
-// exclusions) since none of them carry an open-ended sub-shape.
-const PINNABLE_CROSSOVER_FIELDS: ReadonlyArray<{ dashboardField: keyof DashboardConfig; metaField: keyof CrossoverCardMeta }> = [
-  { dashboardField: "crossoverSafeWithdrawalRate", metaField: "safeWithdrawalRate" },
-  { dashboardField: "crossoverEstimatedReturn", metaField: "estimatedReturn" },
-  { dashboardField: "crossoverProjectionType", metaField: "projectionType" },
-  { dashboardField: "crossoverExpenseAdjustmentFactor", metaField: "expenseAdjustmentFactor" },
-]
+// Neither of these two has a counterpart in any exported widget (there's no crossover-card widget
+// to feed them into any more -- see FireWidgetType's own doc comment) -- they only ever feed this
+// app's own trailing-average spend calculation (fire-generate.ts's spendFromLocalSelection).
+export const DEFAULT_EXPENSE_ADJUSTMENT_FACTOR = 1.0
+export const DEFAULT_SPEND_HISTORY_MONTHS = 12
 
-// Function to layer a person's crossover-assumption overrides over the plain defaults -- the seed
-// used for a first-time generation and, for whichever fields are actually set, the value pinned on
-// every regenerate regardless of what merging would otherwise preserve from the existing widget
-// (see mergeWidget's crossover-card branch). Mirrors monteCarloAssumptionsWithOverrides exactly.
-export function crossoverAssumptionsWithOverrides(dashboard: DashboardConfig): CrossoverAssumptions {
-  return {
-    ...DEFAULT_CROSSOVER_ASSUMPTIONS,
-    safeWithdrawalRate: dashboard.crossoverSafeWithdrawalRate ?? DEFAULT_CROSSOVER_ASSUMPTIONS.safeWithdrawalRate,
-    estimatedReturn: dashboard.crossoverEstimatedReturn ?? DEFAULT_CROSSOVER_ASSUMPTIONS.estimatedReturn,
-    projectionType: dashboard.crossoverProjectionType ?? DEFAULT_CROSSOVER_ASSUMPTIONS.projectionType,
-    expenseAdjustmentFactor: dashboard.crossoverExpenseAdjustmentFactor ?? DEFAULT_CROSSOVER_ASSUMPTIONS.expenseAdjustmentFactor,
-  }
+export function expenseAdjustmentFactorWithOverride(dashboard: Pick<DashboardConfig, "crossoverExpenseAdjustmentFactor">): number {
+  return dashboard.crossoverExpenseAdjustmentFactor ?? DEFAULT_EXPENSE_ADJUSTMENT_FACTOR
 }
 
-// Function to compute which CrossoverCardMeta fields a person has actually pinned -- see
-// mergeGeneratedDashboard's pinnedCrossoverFields.
-export function pinnedCrossoverFields(dashboard: DashboardConfig): Set<string> {
-  return new Set(PINNABLE_CROSSOVER_FIELDS.filter(({ dashboardField }) => dashboard[dashboardField] != null).map(({ metaField }) => metaField))
+export function spendHistoryMonthsWithOverride(dashboard: Pick<DashboardConfig, "crossoverSpendHistoryMonths">): number {
+  return dashboard.crossoverSpendHistoryMonths ?? DEFAULT_SPEND_HISTORY_MONTHS
 }
 
 // Function to build one recurring-contribution entry per portfolio account with a nonzero monthly
-// contribution. annualAmount is the monthly figure (cents) x12 -- see totalMonthlyContribution's
-// doc comment for why the monthly figure itself needs no further conversion for the crossover
-// widget's sibling field. Contributions stop at retirement (toAge: retirementAge, mirroring
+// contribution. annualAmount is the monthly figure (cents) x12 -- Actual's own Monte Carlo
+// simulation reads it the same way. Contributions stop at retirement (toAge: retirementAge, mirroring
 // buildSpendingPhases' retirement-spending phase starting at that same age) -- nobody is still
 // funding an account from a paycheck once they've retired. Already retired at generation time
 // (retirementAge <= currentAge) means there's no ongoing contribution to model at all.
@@ -790,79 +683,35 @@ function mergeMonteCarloMeta(generatedMeta: Record<string, unknown>, existingMet
 // Function to merge one freshly generated widget with its match (if any) from an existing file.
 // Layout (x/y/width/height) always comes from the fresh generation, since it's a function of how
 // many widgets this run produces, not something meaningful to hand-tune in the file.
-function mergeWidget(
-  generated: ExportImportDashboardWidget,
-  existingWidget: ExistingDashboardWidget | undefined,
-  pinnedMonteCarloFields: ReadonlySet<string>,
-  pinnedExpenseCategoryIds: readonly string[] | null,
-  pinnedCrossoverFields: ReadonlySet<string>,
-): ExportImportDashboardWidget {
+function mergeWidget(generated: ExportImportDashboardWidget, existingWidget: ExistingDashboardWidget | undefined, pinnedMonteCarloFields: ReadonlySet<string>): ExportImportDashboardWidget {
   if (existingWidget?.meta == null || generated.meta === null) {
     return generated
   }
   const generatedMeta = generated.meta as Record<string, unknown>
   const existingMeta = existingWidget.meta
-  let meta: Record<string, unknown>
-  if (generated.type === "monte-carlo-card") {
-    meta = mergeMonteCarloMeta(generatedMeta, existingMeta, pinnedMonteCarloFields)
-  } else if (generated.type === "crossover-card") {
-    // Every crossover field is a preservable assumption, including which categories/accounts are
-    // selected -- expenseCategoryIds/incomeAccountIds are Actual's own hand-picked checklists
-    // (its crossover widget UI lets you uncheck individual categories/accounts, plus a "show
-    // hidden categories" toggle), not something this tool should silently reset on every
-    // regenerate. Only falls back to the freshly generated list (every non-income/non-hidden
-    // category, every currently-classified portfolio account) when there's nothing to preserve
-    // yet (first generation) or the existing selection is empty -- Actual's crossover projection
-    // zeroes out historical expense data entirely when expenseCategoryIds is empty, silently
-    // claiming "already FI."
-    //
-    // pinnedExpenseCategoryIds -- the Plan section's own selection -- wins over whatever's
-    // preserved from the existing widget, the same way pinnedMonteCarloFields wins above: once set
-    // here, it's the authoritative source, not a one-time seed a person could still narrow further
-    // by hand inside Actual and have that stick.
-    const existingExpenseIds = existingMeta.expenseCategoryIds
-    const existingIncomeIds = existingMeta.incomeAccountIds
-    meta = {
-      ...generatedMeta,
-      ...existingMeta,
-      expenseCategoryIds:
-        pinnedExpenseCategoryIds && pinnedExpenseCategoryIds.length > 0
-          ? pinnedExpenseCategoryIds
-          : Array.isArray(existingExpenseIds) && existingExpenseIds.length > 0
-            ? existingExpenseIds
-            : generatedMeta.expenseCategoryIds,
-      incomeAccountIds: Array.isArray(existingIncomeIds) && existingIncomeIds.length > 0 ? existingIncomeIds : generatedMeta.incomeAccountIds,
-    }
-    for (const field of pinnedCrossoverFields) {
-      meta[field] = generatedMeta[field]
-    }
-  } else {
-    // net-worth-card has no real-data fields at all -- an existing customization wins outright.
-    meta = { ...generatedMeta, ...existingMeta }
-  }
+  const meta: Record<string, unknown> =
+    generated.type === "monte-carlo-card"
+      ? mergeMonteCarloMeta(generatedMeta, existingMeta, pinnedMonteCarloFields)
+      : // net-worth-card has no real-data fields at all -- an existing customization wins outright.
+        { ...generatedMeta, ...existingMeta }
   return { ...generated, meta }
 }
 
 // Function to merge a freshly generated dashboard with the one already on disk, if any: preserves
 // any customization to a still-generated widget (see mergeWidget), drops a generated-type widget
-// that's no longer produced this run (e.g. a removed retirement age), and carries through untouched
-// any widget whose type this tool has never generated (hand-added content, never this tool's to
-// manage). Pass `existing: null` for a first run / no file yet -- returns `generated` unchanged.
-// pinnedMonteCarloFields names the MonteCarloCardMeta fields (see monteCarloSettingsOverride) the
-// person has explicitly set in this app's own settings -- always refreshed across every
-// monte-carlo-card widget rather than independently preserved per widget.
-export function mergeGeneratedDashboard(
-  generated: ExportImportDashboard,
-  existing: ExistingDashboard | null,
-  pinnedMonteCarloFields: ReadonlySet<string> = new Set(),
-  pinnedExpenseCategoryIds: readonly string[] | null = null,
-  pinnedCrossoverFields: ReadonlySet<string> = new Set(),
-): ExportImportDashboard {
+// that's no longer produced this run (e.g. a removed retirement age, or crossover-card -- see
+// FireWidgetType's own doc comment), and carries through untouched any widget whose type this tool
+// has never generated (hand-added content, never this tool's to manage). Pass `existing: null` for
+// a first run / no file yet -- returns `generated` unchanged. pinnedMonteCarloFields names the
+// MonteCarloCardMeta fields (see monteCarloSettingsOverride) the person has explicitly set in this
+// app's own settings -- always refreshed across every monte-carlo-card widget rather than
+// independently preserved per widget.
+export function mergeGeneratedDashboard(generated: ExportImportDashboard, existing: ExistingDashboard | null, pinnedMonteCarloFields: ReadonlySet<string> = new Set()): ExportImportDashboard {
   if (existing === null) {
     return generated
   }
   const existingByKey = new Map(existing.widgets.map((widget) => [widgetKey(widget), widget]))
-  const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget)), pinnedMonteCarloFields, pinnedExpenseCategoryIds, pinnedCrossoverFields))
+  const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget)), pinnedMonteCarloFields))
   const foreignWidgets = existing.widgets.filter((widget) => !OWNED_WIDGET_TYPES.includes(widget.type as FireWidgetType))
   return { version: generated.version, widgets: [...widgets, ...(foreignWidgets as ExportImportDashboardWidget[])] }
 }

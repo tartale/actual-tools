@@ -399,20 +399,19 @@ see "Check" further below for exactly what it looks at.
 comma-separated), and the age to assume the plan needs to last to (a
 conservative default, not a lifespan estimate).
 
-**Expense Projection**: the crossover assumptions (safe withdrawal rate,
-estimated return, projection type, target income %) and **Expense
-categories**, all configured directly in this app now, not read back from
-Actual's own crossover widget. The category picker is always visible (no
-"use every category" toggle to unhide it) — a foldable, per-group
-checklist, every category checked by default, with an **Expand all**/
-**Collapse all** toolbar, a **Show hidden** toggle to bring categories
-Actual itself has hidden into the list (unchecked by default even then),
-and a **Hide unchecked** toggle that narrows the view to your current
-selection without changing it. Each group has its own select-all-in-group
-checkbox and a live N/total count, so a folded group's selection is still
-legible without opening it. This selection drives every simulation on the
-page directly (Bridge, Monte Carlo, the Spend tile) and is also what
-Export to Dashboard seeds/pins onto the exported crossover widget.
+**Expense Projection**: target income % and spend history (in months),
+plus **Expense categories** — every input to this app's own annual-spend
+calculation, entirely local (see "Annual spend is entirely local" below).
+The category picker is always visible (no "use every category" toggle to
+unhide it) — a foldable, per-group checklist, every category checked by
+default, with an **Expand all**/**Collapse all** toolbar, a **Show
+hidden** toggle to bring categories Actual itself has hidden into the
+list (unchecked by default even then), and a **Hide unchecked** toggle
+that narrows the view to your current selection without changing it.
+Each group has its own select-all-in-group checkbox and a live N/total
+count, so a folded group's selection is still legible without opening
+it. This selection drives every simulation on the page directly (Bridge,
+Monte Carlo, the Spend tile).
 
 **Retirement income** (optional): a pension (start age + monthly amount)
 and Social Security (the three SSA-statement reference figures — at 62, at
@@ -585,35 +584,33 @@ Editing any field on a migrated account writes the current shape, dropping
 the old category field for that account.
 
 **Export to Dashboard** builds Actual's own dashboard widgets (a
-full-width net-worth widget, a safe-withdrawal-rate "crossover"
-projection, and a Monte Carlo retirement simulation, using Actual's own
-built-in dashboard widgets rather than reimplementing FIRE math) from your
-real account and spending data, and **downloads it to your browser** —
+full-width net-worth widget and a Monte Carlo retirement simulation,
+using Actual's own built-in dashboard widgets rather than reimplementing
+FIRE math) from your real account and spending data, and **downloads it
+to your browser** —
 useful since the server and the browser viewing it aren't always the same
 machine (e.g. running this on a home server, viewed from a laptop). It
 also keeps its own server-side copy at the output path, for continuity if
 you're running it locally. Refuses to run without a birth date, at least
 one retirement age, and at least one account classified into the
-portfolio.
+portfolio. No longer builds a crossover-card widget: Actual's own
+crossover projection ignores locked/inaccessible balances entirely
+(everything just counts as available the moment its own safe withdrawal
+rate says so), which this app's own Bridge chart already handles
+correctly — once Bridge existed there was nothing the crossover widget
+told you that wasn't already wrong. A crossover-card widget from a
+dashboard exported before this change is cleanly removed the next time
+you regenerate and re-import.
 
-**Annual spend is resolved in priority order.** Expense Projection's own
-**Expense categories** selection wins first, if set — a trailing-12-month
-average over exactly that selection, scaled by **Expense Adjustment %** if
-set. Next, the live crossover widget's own category checklist and date
-range, once one exists — same narrower selection Export to Dashboard and
-Check both read, so the crossover widget and this app's own figures stay
-consistent, scaled by the crossover widget's own **Target Income (% of
-expenses)** slider the same way Actual applies it to its own projection
-(multiplying the expense figure, never the raw historical data it's
-charted against). Last, "every non-income, non-hidden category, trailing
-12 months," a first-generation fallback used only before either of the
-above exists. Whichever basis is active, it feeds every simulation on the
-page the same way — Monte Carlo, Bridge, the Spend tile above. A residual
-difference from the crossover widget's *own
-displayed number* can still remain when reading its live figure — its
-projection type (Hampel/median/mean) applies its own statistical
-smoothing on top of the same trailing data, which this app doesn't
-reproduce.
+**Annual spend is entirely local — this app never reads a live Actual
+widget of any kind to derive it.** Expense Projection's own **Expense
+categories** selection, if set, is a trailing-average over exactly that
+selection (**Spend history** months, 12 by default — tunable in the same
+card), scaled by **Expense Adjustment %** if set. Left unset, it falls
+back to every non-income, non-hidden category over that same window — a
+plain default, not a reason to go check what's live in Actual. Whichever
+one is active, it feeds every simulation on the page the same way — Monte
+Carlo, Bridge, the Spend tile above.
 
 **This does not talk to Actual's dashboard feature directly for writing**
 — there's no API for that (confirmed against both `@actual-app/api` and
@@ -631,12 +628,8 @@ refresh it. **Regenerating preserves customizations you've already made**:
 real-data fields always refresh (pot values and contributions, your
 current age, retirement-age-driven spending), but anything else you
 tweaked afterward survives — an assumption, an extra pot field, a
-hand-added contribution or spending phase, the crossover widget's own
-category/account checklist (unchecking a category or account in Actual's
-crossover config is preserved, not reset back to "everything" on the next
-regenerate — falls back to the fresh full list only the first time, or if
-the existing selection was left empty), or a widget of a type this tool
-never generated. The merge basis is, in order: whatever is
+hand-added contribution or spending phase, or a widget of a type this
+tool never generated. The merge basis is, in order: whatever is
 **live in Actual right now** on a dashboard page literally named "FIRE"
 (read the same way `Check` does, via ActualQL), so settings you tuned
 inside Actual itself are never silently reverted; if no such page exists
@@ -765,13 +758,17 @@ Generate — see "Annual spend is resolved in priority order" above.
 }
 ```
 
-`match` is an account id or exact name. Every crossover/Monte Carlo
-assumption this app lets you set (see Expense Projection/Simulation
-Settings above) lives in `dashboard` as its own field, prefixed
-`crossover`/`monteCarlo`; a field left out (or `null`) falls back to
-whatever's live in Actual's own dashboard widgets, once one exists, via
-the same merge behavior "Regenerating preserves customizations" below
-describes.
+`match` is an account id or exact name. Every assumption this app lets
+you set (see Expense Projection/Simulation Settings above) lives in
+`dashboard` as its own field, prefixed `crossover`/`monteCarlo` (a naming
+holdover from when the `crossover` ones fed an exported crossover-card
+widget that no longer exists — see "Export to Dashboard" above). A Monte
+Carlo field left out (or `null`) falls back to whatever's live in
+Actual's own dashboard widgets, once one exists, via the same merge
+behavior "Regenerating preserves customizations" below describes; a
+`crossover` field left out just falls back to its own plain default (see
+"Annual spend is entirely local" above) — there's no live widget left to
+fall back to.
 
 ### IRS contribution limits
 

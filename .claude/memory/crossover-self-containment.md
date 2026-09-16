@@ -6,6 +6,18 @@ metadata:
   type: project
 ---
 
+**Superseded, 2026-09-16 (see [[bridge-burndown-chart]]'s "Sixth follow-up"):** the crossover-card
+widget this whole memory is about was removed entirely -- the user judged Actual's own crossover
+projection unreliable (ignores locked/inaccessible balances, unlike this app's own Bridge chart)
+and separately hit dead fields live. Everything below describing the crossover widget's own pinning
+mechanism, its exported meta, and `mergeWidget`'s crossover-card branch no longer exists in the
+code. What DOES still exist and still matters: `crossoverExpenseCategoryIds` (the category
+selection, now the ONLY input alongside `crossoverExpenseAdjustmentFactor`/
+`crossoverSpendHistoryMonths` to this app's own local spend calculation, with no live-widget
+fallback of any kind any more) and the general "Plan section owns it locally" precedent this round
+established, which the Monte Carlo pinned-fields mechanism (still fully live) continues to follow.
+Kept below for the historical reasoning, not as a description of current code.
+
 The user asked how feasible it'd be to make the app more self-contained, since needing to open
 Actual's own crossover/Monte Carlo widget config UI to tune assumptions (then come back to Runway
 to see the effect) was exactly the back-and-forth they wanted to move away from. Investigated

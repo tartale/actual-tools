@@ -62,24 +62,6 @@ const TRANSACTIONS: Record<string, { amount: number; transfer_id: string | null 
   "401k": [{ amount: 200000000, transfer_id: null }],
 }
 const SPEND_CATEGORY = { id: "spend-cat", name: "Spend", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -250000, balance: 0, carryover: false }
-const CROSSOVER_WIDGET = {
-  id: "w1",
-  dashboard_page_id: "p1",
-  type: "crossover-card",
-  x: 0,
-  y: 0,
-  width: 4,
-  height: 2,
-  meta: {
-    expenseCategoryIds: ["spend-cat"],
-    incomeAccountIds: ["brokerage", "401k"],
-    safeWithdrawalRate: 0.04,
-    estimatedReturn: null,
-    expectedContribution: null,
-    projectionType: "median",
-    expenseAdjustmentFactor: 1,
-  },
-}
 
 function mockActualFetch() {
   return vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -91,10 +73,10 @@ function mockActualFetch() {
     if (/\/categorygroups$/.test(u.pathname)) return jsonResponse({ data: [{ id: "g1", name: "Spending", is_income: false, hidden: false, categories: [SPEND_CATEGORY] }] })
     const txMatch = /\/accounts\/([^/]+)\/transactions/.exec(u.pathname)
     if (txMatch) return jsonResponse({ data: TRANSACTIONS[txMatch[1] as string] ?? [] })
-    // Every month answers with the same spend figure -- spendFromCrossover averages twelve of
-    // these, so which specific months get asked for doesn't matter.
+    // Every month answers with the same spend figure -- spendFromLocalSelection's own trailing
+    // average is over twelve of these, so which specific months get asked for doesn't matter.
     if (/\/months\/[^/]+\/categories$/.test(u.pathname)) return jsonResponse({ data: [SPEND_CATEGORY] })
-    if (/\/run-query$/.test(u.pathname)) return jsonResponse({ data: [CROSSOVER_WIDGET] })
+    if (/\/run-query$/.test(u.pathname)) return jsonResponse({ data: [] })
     if (init?.method === "PATCH") return jsonResponse({})
     return jsonResponse({})
   })

@@ -341,3 +341,48 @@ guaranteed income.**
    amount, was genuine test debt from the *previous* session's "boost reflects PROJECTED balance,
    not current balance" fix never being propagated to this one route-level test -- updated to the
    correct projected figure.
+
+**Sixth follow-up, same session: the crossover-card widget removed entirely, and its three
+write-only fields with it.** The user judged Actual's own crossover projection unreliable ("it
+basically 'lies'") since it ignores locked/inaccessible balances entirely, unlike this app's own
+Bridge chart -- and separately hit live that `crossoverSafeWithdrawalRate` did nothing when changed
+("I changed it to 100 and nothing was changed"), which a grep confirmed: it, `crossoverEstimatedReturn`,
+and `crossoverProjectionType` were read by NOTHING in fire-analysis.ts/fire-monte-carlo.ts, only ever
+written into the exported widget's own `meta`. Decided together: cut the crossover-card widget, keep
+Monte Carlo/net-worth export (Monte Carlo's export is the SAME vendored engine driving the in-app fan
+chart, not subject to the "lies" problem, and cutting the whole export feature would take a genuinely
+good widget down with a bad one).
+- Removed outright: `CrossoverCardMeta`, `CrossoverAssumptions`/`DEFAULT_CROSSOVER_ASSUMPTIONS`/
+  `crossoverAssumptionsWithOverrides`, `buildCrossoverWidget`, `PINNABLE_CROSSOVER_FIELDS`/
+  `pinnedCrossoverFields`, `totalMonthlyContribution` (its only consumer), `CrossoverProjectionType`/
+  `CROSSOVER_PROJECTION_TYPES`, the three dead `DashboardConfig` fields
+  (`crossoverSafeWithdrawalRate`/`crossoverEstimatedReturn`/`crossoverProjectionType` -- interface,
+  default, PATCH validation, config-load normalization, all four touch points each), the three UI
+  fields, and `mergeWidget`'s whole crossover-card branch (`pinnedExpenseCategoryIds`/
+  `pinnedCrossoverFields` params dropped from `mergeWidget`/`mergeGeneratedDashboard` too, now fully
+  unused).
+- **`"crossover-card"` deliberately KEPT in `FireWidgetType`/`OWNED_WIDGET_TYPES`** even though
+  nothing generates one any more -- removing it there would reclassify a widget from a dashboard
+  exported before this change as "foreign" content and preserve it forever; keeping it means
+  `mergeGeneratedDashboard`'s existing "drops a generated-type widget no longer produced this run"
+  behavior cleanly removes it the next regenerate+re-import, no special-case code needed. Added a
+  test for exactly this (`mergeGeneratedDashboard` > "drops a stale crossover-card widget...").
+- `crossoverExpenseAdjustmentFactor`/`crossoverSpendHistoryMonths` (the two fields that ONLY ever fed
+  this app's own spend calc, never the widget) were kept, `crossover`-prefixed name and all -- a
+  documented naming holdover now, not a live tie to anything. New resolver
+  `expenseAdjustmentFactorWithOverride` (mirrors `spendHistoryMonthsWithOverride` from the same
+  session's earlier round) replaces `crossoverAssumptionsWithOverrides` for this narrower job.
+  `GenerateOptions`/`CheckOptions` gained a flat `expenseAdjustmentFactor: number` field in place of
+  the whole `crossoverAssumptions: CrossoverAssumptions` bundle.
+- **Also removed as genuinely dead, found opportunistically while here**: `CheckResult.
+  monteCarloWidgetCount`/`crossoverWidgetCount` -- both had exactly one real consumer,
+  `updateWalkthrough`'s `runCheck` call site, removed earlier this same session when the "Getting
+  started" banner was deleted, and nobody caught that these two fields (and their `.length`
+  computations) had gone fully unread. A reminder that removing a UI feature needs a check for what
+  *fed* it, not just the feature's own code.
+- Verified live end-to-end: the three fields gone from the Expense Projection card;
+  `/api/retirement/generate` now returns `widgetTypes: ["net-worth-card", "monte-carlo-card"]`, no
+  `crossover-card`; `/api/retirement/check` still resolves spend correctly. Full suite (495 tests,
+  including the 5 real-browser ones in `src/browser-tests/`, gated behind
+  `PLAYWRIGHT_BROWSERS_PATH` -- see [[sandbox-toolchain-policy]]) green, typecheck/lint/vendor-check
+  all clean.

@@ -257,10 +257,8 @@ function renderSimSettings() {
   setIfIdle("mcInflationStdDev", d.monteCarloInflationStdDev == null ? "" : Math.round(d.monteCarloInflationStdDev * 1000) / 10)
   setIfIdle("mcMinimumWithdrawal", formatMoneyInputValue(d.monteCarloMinimumWithdrawal))
   setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
-  setIfIdle("crossoverSafeWithdrawalRate", d.crossoverSafeWithdrawalRate == null ? "" : Math.round(d.crossoverSafeWithdrawalRate * 1000) / 10)
-  setIfIdle("crossoverEstimatedReturn", d.crossoverEstimatedReturn == null ? "" : Math.round(d.crossoverEstimatedReturn * 1000) / 10)
-  setIfIdle("crossoverProjectionType", d.crossoverProjectionType ?? "")
   setIfIdle("crossoverExpenseAdjustment", d.crossoverExpenseAdjustmentFactor == null ? "" : Math.round(d.crossoverExpenseAdjustmentFactor * 100))
+  setIfIdle("crossoverSpendHistoryMonths", d.crossoverSpendHistoryMonths ?? "")
 }
 
 // Withdrawal rule (see MonteCarloWithdrawalRuleMeta in fire-accounts.ts): pinned as one whole
@@ -367,9 +365,9 @@ function nextTaxBandId() {
 // Function to render the Spend configuration section's own expense-category picker (see
 // fire-accounts.ts's DashboardConfig.crossoverExpenseCategoryIds) from the cached
 // /api/budget/context fetch (see loadExpenseCategoryOptions) -- income categories are excluded
-// server-side, same set the crossover widget itself would ever offer. The checklist is always
-// visible (no "use every category" master toggle) -- a null selection (nothing customized yet)
-// renders every non-hidden category checked, matching the actual server-side default.
+// server-side, same set spendFromLocalSelection falls back to. The checklist is always visible (no
+// "use every category" master toggle) -- a null selection (nothing customized yet) renders every
+// non-hidden category checked, matching the actual server-side default.
 //
 // Each group is its own foldable section with a tri-state "select all in this group" checkbox
 // (setTriState, shared with the Budget table's own group checkboxes below) and a live N/total
@@ -2040,20 +2038,13 @@ document.getElementById("mcSimulationCount").addEventListener("change", (e) => {
   const count = e.target.value === "" ? null : parseInt(e.target.value, 10)
   runExclusive(() => patchPlan({ monteCarloSimulationCount: count === null || count <= 0 ? null : count }, "savedSimSettings"))
 })
-document.getElementById("crossoverSafeWithdrawalRate").addEventListener("change", (e) => {
-  const pct = e.target.value === "" ? null : parseFloat(e.target.value)
-  runExclusive(() => patchPlan({ crossoverSafeWithdrawalRate: pct === null ? null : pct / 100 }, "savedSpendConfig"))
-})
-document.getElementById("crossoverEstimatedReturn").addEventListener("change", (e) => {
-  const pct = e.target.value === "" ? null : parseFloat(e.target.value)
-  runExclusive(() => patchPlan({ crossoverEstimatedReturn: pct === null ? null : pct / 100 }, "savedSpendConfig"))
-})
-document.getElementById("crossoverProjectionType").addEventListener("change", (e) => {
-  runExclusive(() => patchPlan({ crossoverProjectionType: e.target.value === "" ? null : e.target.value }, "savedSpendConfig"))
-})
 document.getElementById("crossoverExpenseAdjustment").addEventListener("change", (e) => {
   const pct = e.target.value === "" ? null : parseFloat(e.target.value)
   runExclusive(() => patchPlan({ crossoverExpenseAdjustmentFactor: pct === null ? null : pct / 100 }, "savedSpendConfig"))
+})
+document.getElementById("crossoverSpendHistoryMonths").addEventListener("change", (e) => {
+  const months = e.target.value === "" ? null : parseInt(e.target.value, 10)
+  runExclusive(() => patchPlan({ crossoverSpendHistoryMonths: months === null || months <= 0 ? null : months }, "savedSpendConfig"))
 })
 document.getElementById("expenseCategoriesExpandAll").addEventListener("click", () => {
   if (!EXPENSE_CATEGORY_GROUPS) return

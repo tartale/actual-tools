@@ -11,20 +11,12 @@ import {
   fetchDashboardWidgets,
   fetchHistoricalSpent,
   formatError,
-  monthRange,
   sumTransactionAmounts,
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth, Transaction } from "./actual-helpers.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
-import {
-  buildFireDashboard,
-  buildMonteCarloWidgets,
-  effectiveAccessAge,
-  mergeGeneratedDashboard,
-  portfolioAccountIds,
-  totalMonthlyContribution,
-} from "./fire-dashboard.ts"
-import type { CrossoverAssumptions, CrossoverCardMeta, ExistingDashboard, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import { buildFireDashboard, buildMonteCarloWidgets, effectiveAccessAge, mergeGeneratedDashboard, portfolioAccountIds } from "./fire-dashboard.ts"
+import type { ExistingDashboard, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 import {
   bridgeFinding,
   calculateMortgagePayoff,
@@ -50,79 +42,50 @@ import type { MonteCarloResultEntry, MonteCarloSummary } from "./fire-monte-carl
 // accounting identity used instead (see fetchAccountBalance), so this must reach back further than
 // any real account could have existed.
 const BALANCE_SINCE_DATE = "1970-01-01"
-const HISTORY_MONTHS = 12
 
 // Function to get the current month as a yyyy-mm string
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7)
 }
 
-// Function to sum the trailing-12-month average spend across every given category -- the fallback
-// used when no crossover widget exists yet to derive spend from instead (see spendFromCrossover).
-async function trailingAnnualSpend(config: ActualConfig, categoryIds: readonly string[]): Promise<number> {
+// Function to sum the trailing-N-month average spend across every given category -- N is
+// historyMonths, a Plan-section-tunable setting (see fire-dashboard.ts's
+// spendHistoryMonthsWithOverride), not a fixed constant.
+async function trailingAnnualSpend(config: ActualConfig, categoryIds: readonly string[], historyMonths: number): Promise<number> {
   const month = currentMonth()
   const monthCache = new Map<string, CategoryMonth[]>()
   let monthlyTotal = 0
   for (const categoryId of categoryIds) {
-    const history = await fetchHistoricalSpent(config, categoryId, month, HISTORY_MONTHS, monthCache)
+    const history = await fetchHistoricalSpent(config, categoryId, month, historyMonths, monthCache)
     monthlyTotal += averageSpent(history)
   }
   return monthlyTotal * 12
 }
 
 // Function to compute annual spend from the Plan section's own expense-category selection --
-// takes priority over a live crossover widget's checklist (spendFromCrossover) wherever it's set,
-// so narrowing categories never requires opening Actual.
-// Intersected against the real, currently non-income/non-hidden category ids so a category deleted
-// or hidden after being selected doesn't silently error the whole run; returns null (not a zero
-// spend) when that intersection is empty, so the caller falls back the same way it would if this
-// selection had never been set at all.
+// entirely local: this app never reads a live Actual crossover widget's own checklist or date
+// range to derive spend (it used to, as a fallback for someone who'd configured that widget by
+// hand before ever touching the Plan section here; removed once every real workflow this app cares
+// about starts and stays in the Plan section, so an unset selection is just "every category," not
+// "go check what's live in Actual"). A null selection (never customized) or one that intersects to
+// nothing (every previously-selected id has since been deleted or hidden) both fall back to
+// allExpenseCategoryIds the same way -- basis stays null for either, since neither one reflects an
+// actual choice worth describing in text, even though the number itself is still real and used.
 async function spendFromLocalSelection(
   config: ActualConfig,
   allExpenseCategoryIds: readonly string[],
   selection: readonly string[] | null,
   adjustmentFactor: number,
-): Promise<{ annualSpend: number; basis: string } | null> {
-  if (selection == null) {
-    return null
-  }
-  const categoryIds = selection.filter((id) => allExpenseCategoryIds.includes(id))
+  historyMonths: number,
+): Promise<{ annualSpend: number; basis: string | null }> {
+  const categoryIds = selection?.filter((id) => allExpenseCategoryIds.includes(id)) ?? []
   if (categoryIds.length === 0) {
-    return null
+    const annualSpend = Math.round(await trailingAnnualSpend(config, allExpenseCategoryIds, historyMonths))
+    return { annualSpend, basis: null }
   }
-  const annualSpend = Math.round((await trailingAnnualSpend(config, categoryIds)) * adjustmentFactor)
+  const annualSpend = Math.round((await trailingAnnualSpend(config, categoryIds, historyMonths)) * adjustmentFactor)
   const basis =
-    `${categoryIds.length} categories over ${HISTORY_MONTHS} months to ${currentMonth()} (Plan section selection)` +
-    (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
-  return { annualSpend, basis }
-}
-
-// Function to recompute annual spend from the crossover widget's own live selection: the
-// categories picked and the date range set in Actual, rather than every category over a fixed
-// twelve months. Narrowing either of those in Actual is exactly the edit that used to be lost on
-// every regeneration -- reading it back here is what stops it being lost.
-async function spendFromCrossover(config: ActualConfig, meta: CrossoverCardMeta): Promise<{ annualSpend: number; basis: string }> {
-  const endMonth = meta.timeFrame?.end ?? currentMonth()
-  const months = meta.timeFrame ? monthRange(meta.timeFrame.start, meta.timeFrame.end).length : HISTORY_MONTHS
-  const monthCache = new Map<string, CategoryMonth[]>()
-  let monthlyTotal = 0
-  for (const categoryId of meta.expenseCategoryIds) {
-    monthlyTotal += averageSpent(await fetchHistoricalSpent(config, categoryId, endMonth, months, monthCache))
-  }
-  // Actual's own crossover widget calls this "Target Income (% of expenses)" and applies it only to
-  // the PROJECTED expense figure that decides its own crossover point (upstream
-  // crossover-spreadsheet.ts: adjustedProjectedExpenses = projectedExpenses * expenseAdjustmentFactor),
-  // never to the raw historical series it's charted against. Applying it here too -- rather than the
-  // plain trailing average -- is what keeps every simulation built on this figure (Monte Carlo, the
-  // Bridge chart, the Current numbers box) answering the same spending question Actual's own crossover
-  // widget is, instead of silently reverting to 100% the moment someone sets it to anything else.
-  // `?? 1`, not a bare read: this value came off a live widget fetched as `unknown`, and upstream
-  // itself treats the field as optional with that same default, so CrossoverCardMeta's own
-  // non-optional type is a compile-time promise this runtime data was never guaranteed to keep.
-  const adjustmentFactor = meta.expenseAdjustmentFactor ?? 1
-  const annualSpend = Math.round(monthlyTotal * 12 * adjustmentFactor)
-  const basis =
-    `${meta.expenseCategoryIds.length} categories over ${months} months to ${endMonth}` +
+    `${categoryIds.length} categories over ${historyMonths} months to ${currentMonth()} (Plan section selection)` +
     (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
   return { annualSpend, basis }
 }
@@ -239,14 +202,14 @@ export interface GenerateOptions {
   incomeStreams: readonly RetirementIncomeStream[]
   monteCarloAssumptions: MonteCarloAssumptions
   pinnedMonteCarloFields: ReadonlySet<string>
-  // Set on the Plan section instead of Actual's own crossover-card checklist -- see
-  // DashboardConfig's own doc comment. Null keeps today's default (every non-income, non-hidden
-  // category).
+  // Set on the Plan section -- see DashboardConfig's own doc comment. Null keeps today's default
+  // (every non-income, non-hidden category).
   crossoverExpenseCategoryIds: readonly string[] | null
-  // The crossover widget's own remaining assumptions, with the Plan section's overrides already
-  // layered in -- see fire-dashboard.ts's crossoverAssumptionsWithOverrides.
-  crossoverAssumptions: CrossoverAssumptions
-  pinnedCrossoverFields: ReadonlySet<string>
+  // See fire-dashboard.ts's expenseAdjustmentFactorWithOverride/spendHistoryMonthsWithOverride
+  // (both resolved once in app-server.ts's requirePlan) -- spendFromLocalSelection's only other
+  // two inputs besides crossoverExpenseCategoryIds above.
+  expenseAdjustmentFactor: number
+  spendHistoryMonths: number
 }
 
 export interface RuleOf55Boost {
@@ -314,25 +277,11 @@ export async function generateDashboard(
   const existing = liveExisting ?? localExisting
   const mergeSource: GenerateResult["mergeSource"] = liveExisting ? "live" : localExisting ? "local" : "none"
 
-  // The Plan section's own expense-category selection (see spendFromLocalSelection) takes
-  // priority over everything below it. Only when it's unset does this fall back to the live
-  // crossover widget's own checklist/date range, and only when neither exists does it fall back
-  // further still to this tool's own "every non-income, non-hidden category, trailing 12 months"
-  // default -- a poor substitute for a real selection, since it would inflate the Monte Carlo
-  // widget's spend well past what a narrowed selection targets.
-  // Filtered against the real, currently non-income/non-hidden categories -- see
-  // spendFromLocalSelection's own doc comment for why a stale id (a deleted or hidden category)
-  // shouldn't reach the widget either.
-  const pinnedExpenseCategoryIds = options.crossoverExpenseCategoryIds?.filter((id) => expenseCategoryIds.includes(id)) ?? null
-  const localSpend = await spendFromLocalSelection(actualConfig, expenseCategoryIds, options.crossoverExpenseCategoryIds, options.crossoverAssumptions.expenseAdjustmentFactor)
-  const liveCrossoverMeta = liveExisting?.widgets.find((widget) => widget.type === "crossover-card")?.meta as CrossoverCardMeta | undefined
-  const hasLiveCrossoverSelection = liveCrossoverMeta != null && (liveCrossoverMeta.expenseCategoryIds ?? []).length > 0
+  // The Plan section's own expense-category selection (see spendFromLocalSelection) is the only
+  // input to this -- entirely local, never a live Actual crossover widget's own checklist/date
+  // range.
   const [spendResult, portfolioBalances] = await Promise.all([
-    localSpend
-      ? Promise.resolve(localSpend)
-      : hasLiveCrossoverSelection
-        ? spendFromCrossover(actualConfig, liveCrossoverMeta)
-        : trailingAnnualSpend(actualConfig, expenseCategoryIds).then((total) => ({ annualSpend: total, basis: null })),
+    spendFromLocalSelection(actualConfig, expenseCategoryIds, options.crossoverExpenseCategoryIds, options.expenseAdjustmentFactor, options.spendHistoryMonths),
     Promise.all(portfolioIds.map((accountId) => fetchAccountBalance(actualConfig, accountId, BALANCE_SINCE_DATE))),
   ])
   const { annualSpend, basis: spendBasis } = spendResult
@@ -367,7 +316,7 @@ export async function generateDashboard(
   }))
   const incomeStreams = [...options.incomeStreams, ...debtStreams]
 
-  const generated = buildFireDashboard(expenseCategoryIds, portfolioIds, options.crossoverAssumptions, totalMonthlyContribution(accounts))
+  const generated = buildFireDashboard()
   generated.widgets.push(
     ...buildMonteCarloWidgets(
       0,
@@ -382,7 +331,7 @@ export async function generateDashboard(
     ),
   )
 
-  const dashboard = mergeGeneratedDashboard(generated, existing, options.pinnedMonteCarloFields, pinnedExpenseCategoryIds, options.pinnedCrossoverFields)
+  const dashboard = mergeGeneratedDashboard(generated, existing, options.pinnedMonteCarloFields)
   const dashboardJson = `${JSON.stringify(dashboard, null, 2)}\n`
   writeFileSync(options.outputPath, dashboardJson)
 
@@ -405,18 +354,16 @@ export interface CheckOptions {
   currentAge: number
   retirementAges: readonly number[]
   planToAge: number
-  // Used only when no crossover widget exists yet to derive real numbers from instead.
-  fallbackAnnualSpend: number
+  // Used only when no Monte Carlo widget exists yet to derive a real inflation assumption from
+  // instead.
   fallbackInflationMean: number
   incomeStreams: readonly RetirementIncomeStream[]
   monteCarloAssumptions: MonteCarloAssumptions
-  // Takes priority over a live crossover widget's own checklist when set -- see
-  // GenerateOptions.crossoverExpenseCategoryIds and spendFromLocalSelection below.
+  // See GenerateOptions.crossoverExpenseCategoryIds/expenseAdjustmentFactor/spendHistoryMonths --
+  // entirely local, same as Generate.
   crossoverExpenseCategoryIds: readonly string[] | null
-  // Only expenseAdjustmentFactor is actually read here (spendFromLocalSelection) -- Check never
-  // builds a fresh crossover widget the way Generate does, so the rest of CrossoverAssumptions has
-  // nothing to feed here.
-  crossoverAssumptions: CrossoverAssumptions
+  expenseAdjustmentFactor: number
+  spendHistoryMonths: number
 }
 
 export interface AccountContribution {
@@ -425,8 +372,6 @@ export interface AccountContribution {
 }
 
 export interface CheckResult {
-  monteCarloWidgetCount: number
-  crossoverWidgetCount: number
   // The plan's own current age and target age -- self-contained rather than relying on the
   // client's own copy (STATE.currentAge/STATE.dashboard.planToAge) staying in sync, since the
   // Monte Carlo and Bridge charts both need these to size a shared x-axis.
@@ -434,7 +379,8 @@ export interface CheckResult {
   planToAge: number
   contributions: AccountContribution[]
   annualSpend: number
-  // Null when no crossover widget's selection could be used, i.e. fallbackAnnualSpend was used instead.
+  // Null when no real Plan-section category selection was used -- spendFromLocalSelection fell
+  // back to every non-income/non-hidden category, which isn't a choice worth describing in text.
   spendBasis: string | null
   inflationMean: number
   staleFindings: Finding[]
@@ -491,33 +437,19 @@ export async function checkDashboard(
     .filter((widget) => widget.type === "monte-carlo-card")
     .map((widget) => widget.meta as MonteCarloCardMeta | null)
     .filter((meta): meta is MonteCarloCardMeta => meta !== null)
-  const crossoverMetas = widgets
-    .filter((widget) => widget.type === "crossover-card")
-    .map((widget) => widget.meta as CrossoverCardMeta | null)
-    .filter((meta): meta is CrossoverCardMeta => meta !== null)
 
-  let annualSpend = options.fallbackAnnualSpend
-  let spendBasis: string | null = null
-  // The Plan section's own selection takes priority over the live crossover widget's own
-  // checklist -- same ordering as generateDashboard's spendFromLocalSelection call, so Check and
-  // Generate never disagree about which one is authoritative.
-  let localSpend: { annualSpend: number; basis: string } | null = null
-  if (options.crossoverExpenseCategoryIds != null) {
-    const groups = await fetchCategoryGroups(actualConfig)
-    const allExpenseCategoryIds = groups.flatMap((group) => group.categories).filter((category) => !category.is_income && !category.hidden).map((category) => category.id)
-    localSpend = await spendFromLocalSelection(actualConfig, allExpenseCategoryIds, options.crossoverExpenseCategoryIds, options.crossoverAssumptions.expenseAdjustmentFactor)
-  }
-  if (localSpend) {
-    annualSpend = localSpend.annualSpend
-    spendBasis = localSpend.basis
-  } else {
-    const crossover = crossoverMetas.find((meta) => (meta.expenseCategoryIds ?? []).length > 0)
-    if (crossover) {
-      const derived = await spendFromCrossover(actualConfig, crossover)
-      annualSpend = derived.annualSpend
-      spendBasis = derived.basis
-    }
-  }
+  // Entirely local -- see spendFromLocalSelection's own doc comment for why this never falls back
+  // to reading a live Actual crossover widget's own checklist. Same ordering as generateDashboard's
+  // own spendFromLocalSelection call, so Check and Generate never disagree about the answer.
+  const groups = await fetchCategoryGroups(actualConfig)
+  const allExpenseCategoryIds = groups.flatMap((group) => group.categories).filter((category) => !category.is_income && !category.hidden).map((category) => category.id)
+  const { annualSpend, basis: spendBasis } = await spendFromLocalSelection(
+    actualConfig,
+    allExpenseCategoryIds,
+    options.crossoverExpenseCategoryIds,
+    options.expenseAdjustmentFactor,
+    options.spendHistoryMonths,
+  )
 
   const debtStreams = debtPayoffIncomeStreams(accounts, options.currentAge)
   const incomeStreams = [...options.incomeStreams, ...debtStreams]
@@ -660,10 +592,8 @@ export async function checkDashboard(
   const monteCarloFindings = monteCarloByAge.map((entry) => monteCarloFinding(entry.result, options.currentAge, entry.retirementAge, options.planToAge))
 
   return {
-    monteCarloWidgetCount: monteCarloMetas.length,
     currentAge: options.currentAge,
     planToAge: options.planToAge,
-    crossoverWidgetCount: crossoverMetas.length,
     contributions: accounts
       .filter((account) => portfolioIds.includes(account.id))
       .map((account) => ({ accountName: account.name, monthlyCents: Math.round((contributionsAnnualByAccount.get(account.id) ?? 0) / 12) })),
