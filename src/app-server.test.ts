@@ -162,38 +162,33 @@ describe("PATCH /api/retirement/plan", () => {
     expect(body.dashboard.crossoverExpenseCategoryIds).toBeNull()
   })
 
-  it("persists a full set of pinned crossover assumptions", async () => {
+  it("persists a pinned crossoverExpenseAdjustmentFactor", async () => {
     const url = await boot()
-    const res = await fetch(`${url}api/retirement/plan`, {
-      method: "PATCH",
-      body: JSON.stringify({ crossoverSafeWithdrawalRate: 0.035, crossoverEstimatedReturn: 0.06, crossoverProjectionType: "median", crossoverExpenseAdjustmentFactor: 0.85 }),
-    })
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverExpenseAdjustmentFactor: 0.85 }) })
     expect(res.status).toBe(200)
     const body = await readJson<StateResponse>(res)
-    expect(body.dashboard).toMatchObject({
-      crossoverSafeWithdrawalRate: 0.035,
-      crossoverEstimatedReturn: 0.06,
-      crossoverProjectionType: "median",
-      crossoverExpenseAdjustmentFactor: 0.85,
-    })
-  })
-
-  it("rejects a non-positive crossoverSafeWithdrawalRate", async () => {
-    const url = await boot()
-    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverSafeWithdrawalRate: 0 }) })
-    expect(res.status).toBe(400)
-  })
-
-  it("rejects an unrecognized crossoverProjectionType", async () => {
-    const url = await boot()
-    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverProjectionType: "bogus" }) })
-    expect(res.status).toBe(400)
+    expect(body.dashboard).toMatchObject({ crossoverExpenseAdjustmentFactor: 0.85 })
   })
 
   it("rejects a non-positive crossoverExpenseAdjustmentFactor", async () => {
     const url = await boot()
     const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverExpenseAdjustmentFactor: 0 }) })
     expect(res.status).toBe(400)
+  })
+
+  it("persists a pinned crossoverSpendHistoryMonths, and reflects it on the next read", async () => {
+    const url = await boot()
+    const patchRes = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverSpendHistoryMonths: 6 }) })
+    expect(patchRes.status).toBe(200)
+    const res = await fetch(`${url}api/retirement/state`)
+    const body = await readJson<StateResponse>(res)
+    expect(body.dashboard.crossoverSpendHistoryMonths).toBe(6)
+  })
+
+  it("rejects a non-positive or non-integer crossoverSpendHistoryMonths", async () => {
+    const url = await boot()
+    expect((await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverSpendHistoryMonths: 0 }) })).status).toBe(400)
+    expect((await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverSpendHistoryMonths: 3.5 }) })).status).toBe(400)
   })
 
   it("persists a pinned monteCarloWithdrawalRule", async () => {
@@ -318,14 +313,14 @@ describe("POST /api/retirement/generate", () => {
     const body = await readJson<GenerateResult>(res)
     expect(body.portfolioAccountCount).toBe(1)
     expect(body.portfolioTotal).toBe(500000)
-    expect(body.widgetTypes).toContain("crossover-card")
-    expect(body.spendBasis).toBeNull() // no live crossover selection yet -- used the plain fallback
+    expect(body.widgetTypes).toEqual(["net-worth-card", "monte-carlo-card"])
+    expect(body.spendBasis).toBeNull() // no Plan-section selection yet -- used the plain fallback
   })
 
-  it("uses the live crossover widget's own narrower category selection for spend, not every category", async () => {
-    // "cat-a" is the crossover's own (narrower) selection; "cat-b" (a one-time/irregular category
-    // someone unchecked in Actual) only shows up in the full category list -- generate must not
-    // silently fall back to counting it just because it technically exists.
+  it("ignores a live crossover widget's own category selection entirely -- spend never reads back from Actual", async () => {
+    // "cat-a" is the live widget's own (narrower) selection; with no Plan-section selection of its
+    // own, spend must fall back to EVERY category (cat-a + cat-b), not read the live widget's
+    // narrower one -- this app no longer looks at Actual's own crossover widget for spend at all.
     const url = await boot({
       accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
       categoryGroups: [
@@ -365,12 +360,12 @@ describe("POST /api/retirement/generate", () => {
     const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
     expect(res.status).toBe(200)
     const body = await readJson<GenerateResult>(res)
-    expect(body.expenseCategoryCount).toBe(2) // both categories exist in the budget...
-    expect(body.annualSpend).toBe(120000) // ...but spend only counts the crossover's own selection (10000 x 12)
-    expect(body.spendBasis).toContain("1 categories")
+    expect(body.expenseCategoryCount).toBe(2)
+    expect(body.annualSpend).toBe(1320000) // every category, not just the live widget's cat-a: (10000 + 100000) x 12
+    expect(body.spendBasis).toBeNull() // no Plan-section selection -- the plain "every category" default, no basis text
   })
 
-  it("prefers the Plan section's own expense-category selection over the live crossover widget's, for both spend and the exported widget", async () => {
+  it("prefers the Plan section's own expense-category selection over the live crossover widget's", async () => {
     // The whole point of the Plan section's own picker: once set, it's authoritative, so narrowing
     // categories never again requires opening Actual -- even when a crossover widget with its own
     // (different) selection is already live.
@@ -418,12 +413,9 @@ describe("POST /api/retirement/generate", () => {
     const body = await readJson<GenerateResult>(res)
     expect(body.annualSpend).toBe(1200000) // 100000 x 12 -- cat-b, not the live widget's cat-a
     expect(body.spendBasis).toContain("Plan section selection")
-    const dashboard = JSON.parse(body.dashboardJson) as { widgets: { type: string; meta: { expenseCategoryIds: string[] } | null }[] }
-    const crossover = dashboard.widgets.find((widget) => widget.type === "crossover-card")
-    expect(crossover?.meta?.expenseCategoryIds).toEqual(["cat-b"])
   })
 
-  it("applies a pinned crossoverExpenseAdjustmentFactor to the Plan section's own local-selection spend, and pins it onto the exported widget", async () => {
+  it("applies a pinned crossoverExpenseAdjustmentFactor to the Plan section's own local-selection spend", async () => {
     const url = await boot({
       accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
       categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
@@ -442,18 +434,33 @@ describe("POST /api/retirement/generate", () => {
     const body = await readJson<GenerateResult>(res)
     expect(body.annualSpend).toBe(102000) // 10000 x 12 x 0.85
     expect(body.spendBasis).toContain("× 85% target income")
-    const dashboard = JSON.parse(body.dashboardJson) as { widgets: { type: string; meta: { expenseAdjustmentFactor: number } | null }[] }
-    const crossover = dashboard.widgets.find((widget) => widget.type === "crossover-card")
-    expect(crossover?.meta?.expenseAdjustmentFactor).toBe(0.85)
   })
 
-  it("applies the crossover widget's own Target Income % to spend, the same way Actual applies it to its own projection", async () => {
-    // Actual calls this field "Target Income (% of expenses)" in its own crossover UI
-    // (expenseAdjustmentFactor on the wire) and multiplies its own projected-expense figure by it --
-    // never the raw historical series. This app's spend assumption has to apply the same multiplier
-    // to the same trailing average, or every simulation built on it (Monte Carlo, Bridge, the
-    // Current numbers box) silently answers a different question than Actual's own widget does the
-    // moment this is set to anything but 100%.
+  it("applies a pinned crossoverSpendHistoryMonths to the Plan section's own local-selection spend", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
+      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90, crossoverExpenseCategoryIds: ["cat-a"], crossoverSpendHistoryMonths: 6 }),
+    })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
+    expect(res.status).toBe(200)
+    const body = await readJson<GenerateResult>(res)
+    expect(body.spendBasis).toContain("over 6 months")
+  })
+
+  it("ignores a live crossover widget's own Target Income % -- only the Plan section's own pinned value applies", async () => {
+    // The live widget's own expenseAdjustmentFactor (0.9, "Target Income (% of expenses)" in
+    // Actual's own crossover UI) must have zero effect here: this app reads that setting only from
+    // its own Plan section (crossoverExpenseAdjustmentFactor, see the pinned-factor test above),
+    // never back from Actual. With nothing pinned, spend is the plain trailing average, unscaled.
     const url = await boot({
       accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
       categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
@@ -479,8 +486,8 @@ describe("POST /api/retirement/generate", () => {
     const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
     expect(res.status).toBe(200)
     const body = await readJson<GenerateResult>(res)
-    expect(body.annualSpend).toBe(108000) // 10000 x 12 x 0.9
-    expect(body.spendBasis).toContain("× 90% target income")
+    expect(body.annualSpend).toBe(120000) // 10000 x 12, unscaled -- the live widget's 0.9 is ignored
+    expect(body.spendBasis).toBeNull()
   })
 })
 
@@ -493,7 +500,6 @@ describe("GET /api/retirement/check", () => {
     const res = await fetch(`${url}api/retirement/check`)
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
-    expect(body.monteCarloWidgetCount).toBe(0)
     expect(body.staleFindings).toEqual([])
   })
 

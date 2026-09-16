@@ -11,7 +11,6 @@ import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } 
 import {
   ACCOUNT_TYPES,
   ACCOUNT_TYPE_TRAITS,
-  CROSSOVER_PROJECTION_TYPES,
   MONTE_CARLO_ALLOCATION_PRESETS,
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
   MONTE_CARLO_RETURN_MODELS,
@@ -32,7 +31,6 @@ import type {
   AccountType,
   ClassifiedAccount,
   ContributionLimitGroup,
-  CrossoverProjectionType,
   EmployerContributionSummary,
   FireAccountOverride,
   FireConfig,
@@ -48,7 +46,15 @@ import { loadIrsLimits } from "./irs-limits.ts"
 import { calculateMortgagePayoff } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
 import { checkDashboard, generateDashboard } from "./fire-generate.ts"
-import { ALLOCATION_PRESET_RETURNS, WITHDRAWAL_TAX_RATES, crossoverAssumptionsWithOverrides, monteCarloAssumptionsWithOverrides, pinnedCrossoverFields, pinnedMonteCarloFields, retirementIncomeStreams } from "./fire-dashboard.ts"
+import {
+  ALLOCATION_PRESET_RETURNS,
+  WITHDRAWAL_TAX_RATES,
+  expenseAdjustmentFactorWithOverride,
+  monteCarloAssumptionsWithOverrides,
+  pinnedMonteCarloFields,
+  retirementIncomeStreams,
+  spendHistoryMonthsWithOverride,
+} from "./fire-dashboard.ts"
 
 // A plain node:http server -- no new dependency, matching this repo's zero-runtime-deps
 // convention. Routes are namespaced under /api/retirement/ so a future /api/budget/... or
@@ -362,8 +368,8 @@ function requirePlan(fireConfig: FireConfig): {
   monteCarloAssumptions: ReturnType<typeof monteCarloAssumptionsWithOverrides>
   pinnedMonteCarloFields: ReturnType<typeof pinnedMonteCarloFields>
   crossoverExpenseCategoryIds: string[] | null
-  crossoverAssumptions: ReturnType<typeof crossoverAssumptionsWithOverrides>
-  pinnedCrossoverFields: ReturnType<typeof pinnedCrossoverFields>
+  expenseAdjustmentFactor: number
+  spendHistoryMonths: number
 } {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
@@ -383,8 +389,8 @@ function requirePlan(fireConfig: FireConfig): {
     monteCarloAssumptions: monteCarloAssumptionsWithOverrides(fireConfig.dashboard),
     pinnedMonteCarloFields: pinnedMonteCarloFields(fireConfig.dashboard),
     crossoverExpenseCategoryIds: fireConfig.dashboard.crossoverExpenseCategoryIds,
-    crossoverAssumptions: crossoverAssumptionsWithOverrides(fireConfig.dashboard),
-    pinnedCrossoverFields: pinnedCrossoverFields(fireConfig.dashboard),
+    expenseAdjustmentFactor: expenseAdjustmentFactorWithOverride(fireConfig.dashboard),
+    spendHistoryMonths: spendHistoryMonthsWithOverride(fireConfig.dashboard),
   }
 }
 
@@ -698,32 +704,19 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           }
           dashboard.crossoverExpenseCategoryIds = value as string[] | null
         }
-        if ("crossoverSafeWithdrawalRate" in body) {
-          const value = body.crossoverSafeWithdrawalRate
-          if (value !== null && (typeof value !== "number" || value <= 0)) {
-            throw new Error("crossoverSafeWithdrawalRate must be a positive number or null.")
-          }
-          dashboard.crossoverSafeWithdrawalRate = value
-        }
-        if ("crossoverEstimatedReturn" in body) {
-          const value = body.crossoverEstimatedReturn
-          if (value !== null && typeof value !== "number") {
-            throw new Error("crossoverEstimatedReturn must be a number or null.")
-          }
-          dashboard.crossoverEstimatedReturn = value
-        }
-        if ("crossoverProjectionType" in body) {
-          if (body.crossoverProjectionType !== null && !CROSSOVER_PROJECTION_TYPES.includes(body.crossoverProjectionType as CrossoverProjectionType)) {
-            throw new Error(`crossoverProjectionType must be one of ${CROSSOVER_PROJECTION_TYPES.join(", ")}, or null.`)
-          }
-          dashboard.crossoverProjectionType = body.crossoverProjectionType as CrossoverProjectionType | null
-        }
         if ("crossoverExpenseAdjustmentFactor" in body) {
           const value = body.crossoverExpenseAdjustmentFactor
           if (value !== null && (typeof value !== "number" || value <= 0)) {
             throw new Error("crossoverExpenseAdjustmentFactor must be a positive number or null.")
           }
           dashboard.crossoverExpenseAdjustmentFactor = value
+        }
+        if ("crossoverSpendHistoryMonths" in body) {
+          const value = body.crossoverSpendHistoryMonths
+          if (value !== null && (typeof value !== "number" || !Number.isInteger(value) || value <= 0)) {
+            throw new Error("crossoverSpendHistoryMonths must be a positive integer or null.")
+          }
+          dashboard.crossoverSpendHistoryMonths = value
         }
         if ("monteCarloWithdrawalRule" in body) {
           const rule = body.monteCarloWithdrawalRule
@@ -817,7 +810,6 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
         const result = await checkDashboard(actualConfig, accounts, {
           ...plan,
-          fallbackAnnualSpend: 0,
           fallbackInflationMean: 0.03,
         })
         sendJson(res, 200, result)

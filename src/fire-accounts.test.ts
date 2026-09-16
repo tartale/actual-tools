@@ -546,32 +546,6 @@ describe("loadFireConfig", () => {
     expect(() => loadFireConfig("/fake/path")).toThrow("crossoverExpenseCategoryIds must be a non-empty array of category id strings, or null")
   })
 
-  it("accepts a real crossoverProjectionType value", () => {
-    const goodConfig = { version: 1, accounts: [], dashboard: { crossoverProjectionType: "median" } }
-    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
-    const { config } = loadFireConfig("/fake/path")
-    expect(config.dashboard.crossoverProjectionType).toBe("median")
-  })
-
-  it("throws on an unrecognized crossoverProjectionType value", () => {
-    const badConfig = { version: 1, accounts: [], dashboard: { crossoverProjectionType: "bogus" } }
-    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
-    expect(() => loadFireConfig("/fake/path")).toThrow("crossoverProjectionType")
-  })
-
-  it("throws on a non-positive crossoverSafeWithdrawalRate", () => {
-    const badConfig = { version: 1, accounts: [], dashboard: { crossoverSafeWithdrawalRate: 0 } }
-    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
-    expect(() => loadFireConfig("/fake/path")).toThrow("crossoverSafeWithdrawalRate must be a positive number")
-  })
-
-  it("accepts a negative crossoverEstimatedReturn (a pessimistic assumption is still valid)", () => {
-    const goodConfig = { version: 1, accounts: [], dashboard: { crossoverEstimatedReturn: -0.01 } }
-    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(goodConfig))
-    const { config } = loadFireConfig("/fake/path")
-    expect(config.dashboard.crossoverEstimatedReturn).toBe(-0.01)
-  })
-
   it("throws on a non-positive crossoverExpenseAdjustmentFactor", () => {
     const badConfig = { version: 1, accounts: [], dashboard: { crossoverExpenseAdjustmentFactor: -0.1 } }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))

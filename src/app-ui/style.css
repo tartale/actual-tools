@@ -190,6 +190,8 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .input-affix.prefix-dollar input { padding-left: 17px; }
 .input-affix.suffix-percent::after { content: "%"; right: 9px; }
 .input-affix.suffix-percent input { padding-right: 22px; }
+.input-affix.suffix-months::after { content: "mo"; right: 9px; }
+.input-affix.suffix-months input { padding-right: 26px; }
 .input-affix:has(input:disabled)::before, .input-affix:has(input:disabled)::after { opacity: 0.5; }
 .field input:focus, select:focus, .toggle:focus-visible, .btn:focus-visible {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);

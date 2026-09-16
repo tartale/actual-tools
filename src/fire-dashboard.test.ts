@@ -2,25 +2,23 @@ import { describe, expect, it } from "vitest"
 
 import {
   ALLOCATION_PRESET_RETURNS,
-  buildCrossoverWidget,
   buildFireDashboard,
   buildMonteCarloWidget,
   buildMonteCarloWidgets,
   buildNetWorthWidget,
   buildPot,
   buildSpendingPhases,
-  crossoverAssumptionsWithOverrides,
   effectiveAccessAge,
+  expenseAdjustmentFactorWithOverride,
   mergeGeneratedDashboard,
   monteCarloAssumptionsWithOverrides,
-  pinnedCrossoverFields,
   pinnedMonteCarloFields,
   portfolioAccountIds,
   retirementIncomeStreams,
-  totalMonthlyContribution,
+  spendHistoryMonthsWithOverride,
   withdrawalTaxRateFor,
 } from "./fire-dashboard.ts"
-import type { CrossoverAssumptions, ExistingDashboard, MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { ExistingDashboard, MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { ClassifiedAccount, DashboardConfig } from "./fire-accounts.ts"
 import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
 
@@ -52,17 +50,6 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     source: "heuristic",
     ...overrides,
   }
-}
-
-// Fixtures matching Actual's own UI defaults, so tests read the same way the old hardcoded
-// defaults used to -- these are now caller-supplied (./actual configure), not baked into the
-// builder functions.
-const CROSSOVER_ASSUMPTIONS: CrossoverAssumptions = {
-  safeWithdrawalRate: 0.04,
-  estimatedReturn: null,
-  projectionType: "hampel",
-  expenseAdjustmentFactor: 1.0,
-  showHiddenCategories: false,
 }
 
 const MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
@@ -102,22 +89,6 @@ describe("portfolioAccountIds", () => {
   })
 })
 
-describe("totalMonthlyContribution", () => {
-  it("sums contributions across portfolio accounts only", () => {
-    const accounts = [
-      account({ id: "a1", category: "investment-taxable", monthlyContribution: 50000 }),
-      account({ id: "a2", category: "hsa", monthlyContribution: 10000 }),
-      account({ id: "a3", category: "cash", monthlyContribution: 99999 }),
-    ]
-    expect(totalMonthlyContribution(accounts)).toBe(60000)
-  })
-
-  it("returns null (not 0) when nothing is configured", () => {
-    const accounts = [account({ id: "a1", category: "investment-taxable" })]
-    expect(totalMonthlyContribution(accounts)).toBeNull()
-  })
-})
-
 describe("buildNetWorthWidget", () => {
   it("has no account/category filter and spans the full page width", () => {
     const widget = buildNetWorthWidget(0, 0)
@@ -132,50 +103,12 @@ describe("buildNetWorthWidget", () => {
   })
 })
 
-describe("buildCrossoverWidget", () => {
-  it("never leaves expenseCategoryIds empty when given categories", () => {
-    const widget = buildCrossoverWidget(0, 2, ["cat-1", "cat-2"], ["acct-1"], CROSSOVER_ASSUMPTIONS, null)
-    expect(widget.meta?.expenseCategoryIds).toEqual(["cat-1", "cat-2"])
-  })
-
-  it("passes portfolio account ids through as incomeAccountIds, unchanged", () => {
-    const widget = buildCrossoverWidget(0, 2, ["cat-1"], ["acct-1", "acct-2"], CROSSOVER_ASSUMPTIONS, null)
-    expect(widget.meta?.incomeAccountIds).toEqual(["acct-1", "acct-2"])
-  })
-
-  it("threads the given assumptions through", () => {
-    const widget = buildCrossoverWidget(0, 2, ["cat-1"], ["acct-1"], { ...CROSSOVER_ASSUMPTIONS, safeWithdrawalRate: 0.035 }, null)
-    expect(widget.meta).toMatchObject({
-      safeWithdrawalRate: 0.035,
-      estimatedReturn: null,
-      projectionType: "hampel",
-      expenseAdjustmentFactor: 1.0,
-    })
-  })
-
-  it("threads the monthly expectedContribution through", () => {
-    const widget = buildCrossoverWidget(0, 2, ["cat-1"], ["acct-1"], CROSSOVER_ASSUMPTIONS, 60000)
-    expect(widget.meta?.expectedContribution).toBe(60000)
-  })
-})
-
 describe("buildFireDashboard", () => {
-  it("assembles both widgets on non-overlapping grid coordinates", () => {
-    const dashboard = buildFireDashboard(["cat-1"], ["acct-1"], CROSSOVER_ASSUMPTIONS, null)
+  it("assembles just the net-worth widget, full-width on row 0", () => {
+    const dashboard = buildFireDashboard()
     expect(dashboard.version).toBe(1)
-    expect(dashboard.widgets.map((widget) => widget.type)).toEqual(["net-worth-card", "crossover-card"])
-
-    const [netWorth, crossover] = dashboard.widgets
-    // net worth spans the full page width on row 0
-    expect(netWorth).toMatchObject({ x: 0, y: 0, width: 12 })
-    // crossover sits full-width on the row below
-    expect(crossover).toMatchObject({ x: 0, y: 2, width: 12 })
-  })
-
-  it("threads the given category and account ids into the crossover widget", () => {
-    const dashboard = buildFireDashboard(["cat-1", "cat-2"], ["acct-1"], CROSSOVER_ASSUMPTIONS, null)
-    const crossover = dashboard.widgets.find((widget) => widget.type === "crossover-card")
-    expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["cat-1", "cat-2"], incomeAccountIds: ["acct-1"] })
+    expect(dashboard.widgets.map((widget) => widget.type)).toEqual(["net-worth-card"])
+    expect(dashboard.widgets[0]).toMatchObject({ x: 0, y: 0, width: 12 })
   })
 })
 
@@ -446,40 +379,23 @@ describe("pinnedMonteCarloFields", () => {
   })
 })
 
-describe("crossoverAssumptionsWithOverrides", () => {
-  it("falls back to the plain defaults when nothing is pinned", () => {
-    expect(crossoverAssumptionsWithOverrides(DEFAULT_DASHBOARD_CONFIG)).toEqual(CROSSOVER_ASSUMPTIONS)
+describe("expenseAdjustmentFactorWithOverride", () => {
+  it("falls back to the plain default (1.0) when nothing is pinned", () => {
+    expect(expenseAdjustmentFactorWithOverride(DEFAULT_DASHBOARD_CONFIG)).toBe(1.0)
   })
 
-  it("layers only the fields actually set, leaving the rest at their defaults", () => {
-    const overridden = crossoverAssumptionsWithOverrides({
-      ...DEFAULT_DASHBOARD_CONFIG,
-      crossoverSafeWithdrawalRate: 0.035,
-      crossoverExpenseAdjustmentFactor: 0.85,
-    })
-    expect(overridden.safeWithdrawalRate).toBe(0.035)
-    expect(overridden.expenseAdjustmentFactor).toBe(0.85)
-    expect(overridden.estimatedReturn).toBe(CROSSOVER_ASSUMPTIONS.estimatedReturn)
-    expect(overridden.projectionType).toBe(CROSSOVER_ASSUMPTIONS.projectionType)
-  })
-
-  it("layers a pinned projectionType over the default", () => {
-    expect(crossoverAssumptionsWithOverrides({ ...DEFAULT_DASHBOARD_CONFIG, crossoverProjectionType: "median" }).projectionType).toBe("median")
+  it("uses the pinned value when set", () => {
+    expect(expenseAdjustmentFactorWithOverride({ ...DEFAULT_DASHBOARD_CONFIG, crossoverExpenseAdjustmentFactor: 0.85 })).toBe(0.85)
   })
 })
 
-describe("pinnedCrossoverFields", () => {
-  it("returns an empty set when nothing is configured", () => {
-    expect(pinnedCrossoverFields(DEFAULT_DASHBOARD_CONFIG)).toEqual(new Set())
+describe("spendHistoryMonthsWithOverride", () => {
+  it("falls back to the plain default (12) when nothing is pinned", () => {
+    expect(spendHistoryMonthsWithOverride(DEFAULT_DASHBOARD_CONFIG)).toBe(12)
   })
 
-  it("names the CrossoverCardMeta field for each dashboard field that's actually set", () => {
-    const pinned = pinnedCrossoverFields({
-      ...DEFAULT_DASHBOARD_CONFIG,
-      crossoverSafeWithdrawalRate: 0.035,
-      crossoverExpenseAdjustmentFactor: 0.85,
-    })
-    expect(pinned).toEqual(new Set(["safeWithdrawalRate", "expenseAdjustmentFactor"]))
+  it("uses the pinned value when set", () => {
+    expect(spendHistoryMonthsWithOverride({ ...DEFAULT_DASHBOARD_CONFIG, crossoverSpendHistoryMonths: 6 })).toBe(6)
   })
 })
 
@@ -585,12 +501,12 @@ describe("mergeGeneratedDashboard", () => {
   const portfolioAccount = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" })
 
   it("returns the generated dashboard unchanged when there's no existing file", () => {
-    const generated = buildFireDashboard(["cat-1"], ["a1"], CROSSOVER_ASSUMPTIONS, null)
+    const generated = buildFireDashboard()
     expect(mergeGeneratedDashboard(generated, null)).toEqual(generated)
   })
 
   it("preserves a net-worth-card customization outright -- it has no owned fields", () => {
-    const generated = buildFireDashboard(["cat-1"], ["a1"], CROSSOVER_ASSUMPTIONS, null)
+    const generated = buildFireDashboard()
     const existing: ExistingDashboard = {
       version: 1,
       widgets: [{ type: "net-worth-card", x: 0, y: 0, width: 12, height: 2, meta: { name: "My Net Worth", mode: "stacked" } }],
@@ -599,134 +515,17 @@ describe("mergeGeneratedDashboard", () => {
     expect(merged.widgets[0]?.meta).toEqual({ name: "My Net Worth", mode: "stacked" })
   })
 
-  it("preserves a hand-narrowed category/account selection, not just other assumptions", () => {
-    // Actual's own crossover widget lets a person uncheck individual categories/accounts --
-    // narrowing that selection is exactly the edit a regenerate must not silently discard.
-    const generated = buildFireDashboard(["new-cat", "another-cat"], ["new-acct", "another-acct"], CROSSOVER_ASSUMPTIONS, null)
+  it("drops a stale crossover-card widget from a dashboard exported before it stopped being generated", () => {
+    // See FireWidgetType's own doc comment -- crossover-card is still a recognized, OWNED type
+    // purely so a leftover one from an old export is cleanly dropped here, not preserved forever
+    // as unrelated "foreign" content.
+    const generated = buildFireDashboard()
     const existing: ExistingDashboard = {
       version: 1,
-      widgets: [
-        {
-          type: "crossover-card",
-          x: 0,
-          y: 2,
-          width: 12,
-          height: 4,
-          meta: {
-            name: "FIRE Crossover",
-            expenseCategoryIds: ["new-cat"], // hand-narrowed: dropped "another-cat"
-            incomeAccountIds: ["new-acct"], // hand-narrowed: dropped "another-acct"
-            safeWithdrawalRate: 0.035,
-            estimatedReturn: null,
-            expectedContribution: null,
-            projectionType: "hampel",
-            expenseAdjustmentFactor: 1,
-          },
-        },
-      ],
+      widgets: [{ type: "crossover-card", x: 0, y: 2, width: 12, height: 4, meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-1"], incomeAccountIds: ["a1"] } }],
     }
     const merged = mergeGeneratedDashboard(generated, existing)
-    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
-    expect(crossover?.meta).toMatchObject({
-      expenseCategoryIds: ["new-cat"],
-      incomeAccountIds: ["new-acct"],
-      safeWithdrawalRate: 0.035,
-    })
-  })
-
-  it("prefers the Plan section's own pinned expense-category selection over the existing widget's", () => {
-    // The Plan section's own selection (fire-accounts.ts's DashboardConfig.crossoverExpenseCategoryIds)
-    // is meant to be authoritative once set -- it should win even over a selection someone
-    // separately hand-narrowed inside Actual's own crossover widget UI.
-    const generated = buildFireDashboard(["new-cat", "another-cat"], ["new-acct"], CROSSOVER_ASSUMPTIONS, null)
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "crossover-card",
-          x: 0,
-          y: 2,
-          width: 12,
-          height: 4,
-          meta: {
-            name: "FIRE Crossover",
-            expenseCategoryIds: ["new-cat"], // hand-narrowed inside Actual
-            incomeAccountIds: ["new-acct"],
-            safeWithdrawalRate: 0.04,
-            estimatedReturn: null,
-            expectedContribution: null,
-            projectionType: "hampel",
-            expenseAdjustmentFactor: 1,
-          },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing, new Set(), ["another-cat"])
-    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
-    expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["another-cat"] })
-  })
-
-  it("prefers a pinned crossover assumption over the existing widget's own hand-tuned value", () => {
-    const generated = buildFireDashboard(["new-cat"], ["new-acct"], { ...CROSSOVER_ASSUMPTIONS, safeWithdrawalRate: 0.035 }, null)
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "crossover-card",
-          x: 0,
-          y: 2,
-          width: 12,
-          height: 4,
-          meta: { name: "FIRE Crossover", expenseCategoryIds: ["new-cat"], incomeAccountIds: ["new-acct"], safeWithdrawalRate: 0.045, estimatedReturn: 0.06 },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing, new Set(), null, new Set(["safeWithdrawalRate"]))
-    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
-    expect(crossover?.meta).toMatchObject({ safeWithdrawalRate: 0.035, estimatedReturn: 0.06 }) // unpinned field still preserved
-  })
-
-  it("falls back to the existing widget's own selection when nothing is pinned", () => {
-    const generated = buildFireDashboard(["new-cat", "another-cat"], ["new-acct"], CROSSOVER_ASSUMPTIONS, null)
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "crossover-card",
-          x: 0,
-          y: 2,
-          width: 12,
-          height: 4,
-          meta: { name: "FIRE Crossover", expenseCategoryIds: ["new-cat"], incomeAccountIds: ["new-acct"], safeWithdrawalRate: 0.04 },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing, new Set(), null)
-    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
-    expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["new-cat"] })
-  })
-
-  it("falls back to the freshly generated category/account list when the existing selection is empty", () => {
-    // Actual's crossover projection zeroes out historical expense data entirely when
-    // expenseCategoryIds is empty (silently claiming "already FI"), so an empty existing
-    // selection is never worth preserving verbatim.
-    const generated = buildFireDashboard(["new-cat"], ["new-acct"], CROSSOVER_ASSUMPTIONS, null)
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "crossover-card",
-          x: 0,
-          y: 2,
-          width: 12,
-          height: 4,
-          meta: { name: "FIRE Crossover", expenseCategoryIds: [], incomeAccountIds: [], safeWithdrawalRate: 0.04 },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    const crossover = merged.widgets.find((widget) => widget.type === "crossover-card")
-    expect(crossover?.meta).toMatchObject({ expenseCategoryIds: ["new-cat"], incomeAccountIds: ["new-acct"] })
+    expect(merged.widgets.map((widget) => widget.type)).toEqual(["net-worth-card"])
   })
 
   it("prefers a pinned withdrawalRule over the existing widget's own hand-tuned rule", () => {
@@ -916,7 +715,7 @@ describe("mergeGeneratedDashboard", () => {
   })
 
   it("carries through untouched a widget of a type it never generates", () => {
-    const generated = buildFireDashboard(["cat-1"], ["a1"], CROSSOVER_ASSUMPTIONS, null)
+    const generated = buildFireDashboard()
     const existing: ExistingDashboard = {
       version: 1,
       widgets: [{ type: "custom-note-card", x: 0, y: 20, width: 12, height: 2, meta: { text: "hand-added" } }],

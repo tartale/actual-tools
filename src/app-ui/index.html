@@ -74,7 +74,7 @@
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
           <button type="button" class="modal-close" id="exportModalClose" title="Close" aria-label="Close">×</button>
           <h2 id="exportModalTitle">Export to Actual Dashboard</h2>
-          <p>Builds net-worth, crossover, and Monte Carlo widgets from live balances and the accounts in Accounts. Download the file, then bring it into Actual:</p>
+          <p>Builds net-worth and Monte Carlo widgets from live balances and the accounts in Accounts. Download the file, then bring it into Actual:</p>
           <ol>
             <li>Open your budget in Actual and go to <strong>Reports</strong>.</li>
             <li>Create a new dashboard page (e.g. name it "FIRE") — or reuse one this app already generated.</li>
@@ -121,25 +121,12 @@
           <div class="card-body">
             <div class="income-grid">
               <div class="field">
-                <label for="crossoverSafeWithdrawalRate">Safe withdrawal rate<button type="button" class="help-icon" data-help="The amount you plan to withdraw from your portfolio each year to fund your living expenses.">?</button></label>
-                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="crossoverSafeWithdrawalRate" placeholder="not entered"></div>
-              </div>
-              <div class="field">
-                <label for="crossoverEstimatedReturn">Estimated return<button type="button" class="help-icon" data-help="The expected annual return rate for your investments, used to project the growth of your portfolio.">?</button></label>
-                <div class="input-affix suffix-percent"><input type="number" step="0.1" id="crossoverEstimatedReturn" placeholder="auto"></div>
-              </div>
-              <div class="field">
-                <label for="crossoverProjectionType">Projection type<button type="button" class="help-icon" data-help="How past expenses are projected into the future.&#10;&#10;Hampel Filtered Median: filters out outliers before calculating the median expense.&#10;&#10;Median: uses the median of all historical expenses, without filtering.&#10;&#10;Mean: uses the average of all historical expenses.">?</button></label>
-                <select id="crossoverProjectionType">
-                  <option value="">not entered</option>
-                  <option value="hampel">Hampel Filtered Median</option>
-                  <option value="median">Median</option>
-                  <option value="mean">Mean</option>
-                </select>
-              </div>
-              <div class="field">
                 <label for="crossoverExpenseAdjustment">Expense Adjustment<button type="button" class="help-icon" data-help="How much to scale your projected expenses by.&#10;&#10;100% plans to spend the same as your projected expenses. Above 100% plans to spend more in retirement; below 100% plans to spend less.">?</button></label>
                 <div class="input-affix suffix-percent"><input type="number" step="1" id="crossoverExpenseAdjustment" placeholder="100"></div>
+              </div>
+              <div class="field">
+                <label for="crossoverSpendHistoryMonths">Spend history<button type="button" class="help-icon" data-help="How many trailing months of category spending to average, for the expense categories selected below.&#10;&#10;A longer window smooths out one-off months (a big trip, a large medical bill); a shorter one reacts faster to a real, lasting change in spending.">?</button></label>
+                <div class="input-affix suffix-months"><input type="number" step="1" min="1" id="crossoverSpendHistoryMonths" placeholder="12"></div>
               </div>
             </div>
             <div class="field full spend-config-buffer">
