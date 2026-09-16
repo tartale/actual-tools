@@ -49,27 +49,8 @@
         </div>
       </div>
 
-      <!-- Portfolio (instant, from STATE) plus whatever /api/retirement/check adds once it resolves
-           (Spend, any Rule of 55/debt-payoff adjustment) -- all plain label/number tiles, no
-           sentences, no separate "Current numbers" card or heading; see renderSummary/
-           renderSummaryStats in app.js. No Current age/Retirement ages/Plan to age tiles here any
-           more either -- those duplicated the Plan card's own editable fields below, just read-only,
-           which was two boxes for one value. -->
-      <div class="panel-loading top-loading" id="topLoading"><div class="spinner" aria-hidden="true"></div>Loading…</div>
-      <div class="summary" id="summaryTiles" hidden>
-        <div class="tile"><div class="label">Portfolio</div><div class="value num" id="sumPortfolio">—</div></div>
-      </div>
-
-      <!-- Stale findings: always visible, not a foldable card, right below the tiles above -- these
-           are alerts, not settings, so they stay out from under a fold a person could leave
-           collapsed. Hidden (not just empty) while there's nothing to say -- see renderStaleResult. -->
-      <div class="card" id="staleResult" hidden></div>
-
-      <!-- One flat page, foldable cards, each independently expanded or collapsed -- Expand/
-           Collapse all and Refresh live up in .page-head now, beside the privacy toggle. Fold
-           state persists per section across a reload (see applySectionFolds/saveSectionFolds in
-           app.js). Refresh pulls fresh data for the whole page -- the tiles/Stale above and
-           Analysis below -- from one button. -->
+      <!-- Position-fixed overlay -- lives here just because "right after page-head" is as good a
+           spot as any; its place in the DOM has no bearing on where it renders. -->
       <div class="modal-backdrop" id="exportModalBackdrop" hidden>
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
           <button type="button" class="modal-close" id="exportModalClose" title="Close" aria-label="Close">×</button>
@@ -85,6 +66,16 @@
           <div class="gen-result" id="genResult" hidden></div>
         </div>
       </div>
+
+      <!-- Two columns wide enough to hold both (see the min-width media query in style.css) --
+           .retirement-inputs scrolls normally; .retirement-live-sticky (everything the live
+           recalculation touches: tiles, Stale, the Bridge/Monte Carlo charts) sticks near the top
+           of the viewport as .retirement-inputs scrolls past it, so tweaking a field and watching
+           its effect never needs scrolling back and forth between the two. Narrower than that,
+           falls back to today's single stacked column -- not enough width to split, and nothing is
+           sticky there. -->
+      <div class="retirement-split">
+      <div class="retirement-inputs">
         <div class="card" data-section="plan">
           <div class="card-head">
             <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Plan</h2></span>
@@ -346,6 +337,23 @@
           <div class="accounts" id="accountsList"><div class="empty-note">Loading accounts…</div></div>
           </div>
         </div>
+      </div>
+
+      <div class="retirement-live">
+      <div class="retirement-live-sticky">
+        <!-- Portfolio (instant, from STATE) plus whatever /api/retirement/check adds once it
+             resolves (Spend, any Rule of 55/debt-payoff adjustment) -- all plain label/number
+             tiles, no sentences, no separate "Current numbers" card or heading; see
+             renderSummary/renderSummaryStats in app.js. -->
+        <div class="panel-loading top-loading" id="topLoading"><div class="spinner" aria-hidden="true"></div>Loading…</div>
+        <div class="summary" id="summaryTiles" hidden>
+          <div class="tile"><div class="label">Portfolio</div><div class="value num" id="sumPortfolio">—</div></div>
+        </div>
+
+        <!-- Stale findings: always visible, not a foldable card -- these are alerts, not settings,
+             so they stay out from under a fold a person could leave collapsed. Hidden (not just
+             empty) while there's nothing to say -- see renderStaleResult. -->
+        <div class="card" id="staleResult" hidden></div>
 
         <div class="card" data-section="analysis">
           <div class="card-head">
@@ -357,7 +365,10 @@
           </div>
           </div>
         </div>
+      </div>
+      </div>
 
+      </div>
       </div>
 
       <div class="page active" id="page-budget">
