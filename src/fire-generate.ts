@@ -33,6 +33,7 @@ import {
   detectSpendingPhaseDrift,
   historicalBridgeYear,
   monteCarloFinding,
+  projectAccountBalance,
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
@@ -206,6 +207,7 @@ function debtPayoffIncomeStreams(accounts: readonly ClassifiedAccount[], current
       monthlyPayment: account.mortgageMonthlyPayment,
       balanceAsOfDate: account.mortgageBalanceAsOfDate,
       balanceAsOf: account.mortgageBalanceAsOf,
+      extraMonthlyPrincipal: account.mortgageExtraPrincipal ?? undefined,
     })
     if ("error" in payoff || payoff.monthsRemaining <= 0) {
       continue
@@ -214,6 +216,15 @@ function debtPayoffIncomeStreams(accounts: readonly ClassifiedAccount[], current
       id: `debt-payoff-${account.id}`,
       name: `${account.name} paid off`,
       startAge: currentAge + Math.round(payoff.monthsRemaining / 12),
+      // Deliberately NOT (mortgageMonthlyPayment + mortgageExtraPrincipal): the netting below this
+      // still rests on the same documented assumption as ever -- "this payment is already counted
+      // in your budgeted spend" -- and that holds far less often for extra principal specifically.
+      // It's a discretionary overpayment, commonly funded from savings/a windfall rather than a
+      // routine tracked bill, and can genuinely be its own separate (unselected) category even when
+      // the regular payment is tracked -- confirmed against a real plan this generalization was
+      // checked against, where exactly that was true. mortgageExtraPrincipal still shortens the
+      // payoff itself (see calculateMortgagePayoff above, which needs both to get the date right);
+      // it just doesn't also free up spend once paid off.
       annualAmount: account.mortgageMonthlyPayment * 12,
     })
   }
@@ -334,11 +345,17 @@ export async function generateDashboard(
   // summary line for a boost that only some scenarios benefit from is still worth surfacing; the
   // per-scenario widgets themselves (buildMonteCarloWidget) are what actually enforce the cutoff.
   const latestRetirementAge = Math.max(...options.retirementAges)
+  const contributionsAnnualByAccount = new Map(
+    accounts.flatMap((account) => (account.monthlyContribution == null ? [] : [[account.id, account.monthlyContribution * 12] as [string, number]])),
+  )
   const ruleOf55Boosts: RuleOf55Boost[] = []
   for (const account of accounts) {
     const boosted = effectiveAccessAge(account, latestRetirementAge)
     if (boosted !== account.accessAge) {
-      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number, amount: balanceByAccountId.get(account.id) ?? 0 })
+      // The amount that will actually be there BY the unlock age, not what's in the account today
+      // -- see projectAccountBalance's own doc comment.
+      const projected = projectAccountBalance(toBridgeAccounts([account], balanceByAccountId, contributionsAnnualByAccount, latestRetirementAge), options.currentAge, boosted as number)
+      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number, amount: projected })
     }
   }
 
@@ -450,6 +467,10 @@ export interface CheckResult {
   portfolioTotal: number
   ruleOf55Boosts: RuleOf55Boost[]
   debtPayoffs: DebtPayoff[]
+  // Pension and Social Security only -- options.incomeStreams before debtStreams are merged into
+  // the local incomeStreams below, so the Bridge chart can mark "income starts here" without also
+  // duplicating the debt-payoff markers it already draws from debtPayoffs above.
+  incomeStreams: readonly RetirementIncomeStream[]
 }
 
 // Function to analyze the dashboard that is actually live in Actual, rather than generating a new
@@ -536,6 +557,14 @@ export async function checkDashboard(
   // Prefer the inflation the live dashboard is actually simulating with; fall back only when
   // nothing has been imported yet.
   const inflationMean = monteCarloMetas[0]?.inflationMean ?? options.fallbackInflationMean
+  // The same gross-inflate formula simulateBridge's own loop applies for its projectedSpend field
+  // (income NOT netted out -- see BridgeYear's own doc comment for why), for an arbitrary age
+  // rather than a running simulation -- scenario-independent (annualSpend/inflationMean don't vary
+  // by retirementAge), so computed once and reused across every scenario's own history below,
+  // rather than duplicated inline for each. For an age before currentAge, the negative exponent
+  // runs the same formula backward: what this plan's projected expenses were worth back then, not a
+  // claim about what was actually spent.
+  const projectedSpendAt = (age: number): number => annualSpend * Math.pow(1 + inflationMean, age - options.currentAge)
 
   const transactionEntries = await Promise.all(
     portfolioIds.map(async (accountId): Promise<[string, Transaction[]]> => [accountId, await fetchAccountTransactions(actualConfig, accountId, BALANCE_SINCE_DATE)]),
@@ -580,7 +609,10 @@ export async function checkDashboard(
   for (const account of accounts) {
     const boosted = effectiveAccessAge(account, latestRetirementAge)
     if (boosted !== account.accessAge) {
-      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number, amount: balances.get(account.id) ?? 0 })
+      // The amount that will actually be there BY the unlock age, not what's in the account today
+      // -- see projectAccountBalance's own doc comment.
+      const projected = projectAccountBalance(toBridgeAccounts([account], balances, contributionsAnnualByAccount, latestRetirementAge), options.currentAge, boosted as number)
+      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number, amount: projected })
     }
   }
 
@@ -598,8 +630,8 @@ export async function checkDashboard(
     // even with only one year of lookback, and (for a retirementAge equal to currentAge) meets
     // timeline's own first point exactly rather than leaving a one-year gap right before it.
     const history = [
-      ...historicalAges.map((age) => historicalBridgeYear(toBridgeAccounts(accounts, historicalBalancesByAge.get(age) as Map<string, number>, contributionsAnnualByAccount, retirementAge), age)),
-      ...(historicalAges.length > 0 ? [historicalBridgeYear(currentBridgeAccounts, options.currentAge)] : []),
+      ...historicalAges.map((age) => historicalBridgeYear(toBridgeAccounts(accounts, historicalBalancesByAge.get(age) as Map<string, number>, contributionsAnnualByAccount, retirementAge), age, projectedSpendAt(age))),
+      ...(historicalAges.length > 0 ? [historicalBridgeYear(currentBridgeAccounts, options.currentAge, projectedSpendAt(options.currentAge))] : []),
     ]
     return { ...result, history }
   })
@@ -648,6 +680,7 @@ export async function checkDashboard(
     portfolioTotal,
     ruleOf55Boosts,
     debtPayoffs,
+    incomeStreams: options.incomeStreams,
   }
 }
 

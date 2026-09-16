@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Runway — Actual Companion</title>
+  <!-- A rising line ending in the same chevron the Bridge/Monte Carlo charts use for "still
+       climbing, deliberately not drawn further" -- see BRIDGE_WINDOW_YEARS in app.js -- in the
+       app's own --accent purple on its own --surface background (style.css), so the tab icon
+       echoes the charts this app actually draws rather than a generic mark. -->
+  <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CiAgPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzE0MTUyMCIvPgogIDxwYXRoIGQ9Ik02IDI0IEwxMyAxNyBMMTcgMjEgTDI2IDEwIiBzdHJva2U9IiM5NDQ2ZWQiIHN0cm9rZS13aWR0aD0iMy4yIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGZpbGw9Im5vbmUiLz4KICA8cGF0aCBkPSJNMjIgOC41IEwyNyA4LjUgTDI3IDEzLjUiIHN0cm9rZT0iIzk0NDZlZCIgc3Ryb2tlLXdpZHRoPSIzLjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgZmlsbD0ibm9uZSIvPgo8L3N2Zz4K">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -28,7 +33,6 @@
       <div class="page-head">
         <div>
           <h1>Retirement</h1>
-          <p>Account facts feed the FIRE dashboard's Monte Carlo simulation; everything else — withdrawal rate, tax model, inflation — stays owned by Actual itself.</p>
         </div>
         <div class="page-head-actions">
           <button type="button" class="btn secondary" id="refreshBtn">Refresh</button>
@@ -43,17 +47,6 @@
             </svg>
           </button>
         </div>
-      </div>
-
-      <div class="walkthrough" id="walkthrough" hidden>
-        <button type="button" class="walkthrough-dismiss" id="walkthroughDismiss" title="Dismiss" aria-label="Dismiss this walkthrough">×</button>
-        <h2>Getting started</h2>
-        <p>No FIRE dashboard is imported into Actual yet. Two steps to get one going:</p>
-        <ol>
-          <li>Below, fill in <strong>Plan</strong>, <strong>Expense Projection</strong>, and <strong>Simulation Settings</strong>, and check each account's <strong>type</strong> in <strong>Accounts</strong> — allocation, contributions, and everything else follow from that.</li>
-          <li>Click <strong>Export to Dashboard</strong> above and follow the steps there to bring it into Actual.</li>
-        </ol>
-        <p>Come back here any time after that — Stale (at the very top) flags anything that's fallen out of sync as you keep editing.</p>
       </div>
 
       <!-- Portfolio (instant, from STATE) plus whatever /api/retirement/check adds once it resolves
@@ -359,6 +352,10 @@
           </div>
           <div class="card-fold">
           <div class="derived reorder-hint" id="reorderHint" hidden>Withdrawal strategy is "Drain pots in order" — drag accounts below by the ⠿ handle to set the order pots are drained in.</div>
+          <div class="category-picker-toolbar">
+            <button type="button" class="btn secondary" id="accountsExpandAll">Expand all</button>
+            <button type="button" class="btn secondary" id="accountsCollapseAll">Collapse all</button>
+          </div>
           <div class="accounts" id="accountsList"><div class="empty-note">Loading accounts…</div></div>
           </div>
         </div>

@@ -134,6 +134,7 @@ interface AccountState {
   mortgageMonthlyPayment: number | null
   mortgageBalanceAsOfDate: string | null
   mortgageBalanceAsOf: number | null
+  mortgageExtraPrincipal: number | null
   mortgagePayoff: MortgagePayoff | { error: string } | null
   // Whole-year age at payoff, same rounding as fire-generate.ts's debtPayoffIncomeStreams (which
   // this mirrors) -- null whenever mortgagePayoff itself is null/an error, or currentAge isn't
@@ -205,6 +206,7 @@ async function buildState(
             monthlyPayment: account.mortgageMonthlyPayment,
             balanceAsOfDate: account.mortgageBalanceAsOfDate,
             balanceAsOf: account.mortgageBalanceAsOf,
+            extraMonthlyPrincipal: account.mortgageExtraPrincipal ?? undefined,
           })
         : null
     const mortgagePayoffAge = mortgagePayoff && !("error" in mortgagePayoff) && currentAge !== null ? currentAge + Math.round(mortgagePayoff.monthsRemaining / 12) : null
@@ -237,6 +239,7 @@ async function buildState(
       mortgageMonthlyPayment: account.mortgageMonthlyPayment,
       mortgageBalanceAsOfDate: account.mortgageBalanceAsOfDate,
       mortgageBalanceAsOf: account.mortgageBalanceAsOf,
+      mortgageExtraPrincipal: account.mortgageExtraPrincipal,
       mortgagePayoff,
       mortgagePayoffAge,
       rothBasis: account.rothBasis,
@@ -486,6 +489,7 @@ function applyAccountPatch(
   applyPositiveOrNull("employerMatchCapRate", "employerMatchCapRate")
   applyPositiveOrNull("mortgageMonthlyPayment", "mortgageMonthlyPayment")
   applyPositiveOrNull("mortgageBalanceAsOf", "mortgageBalanceAsOf")
+  applyPositiveOrNull("mortgageExtraPrincipal", "mortgageExtraPrincipal")
   applyPositiveOrNull("rothBasis", "rothBasis")
 
   if ("mortgageInterestRate" in patch) {

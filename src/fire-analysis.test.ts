@@ -48,6 +48,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     mortgageMonthlyPayment: null,
     mortgageBalanceAsOfDate: null,
     mortgageBalanceAsOf: null,
+    mortgageExtraPrincipal: null,
     rothBasis: null,
     customWithdrawalTaxRate: null,
     withdrawalOrder: null,
@@ -108,22 +109,27 @@ describe("simulateBridge", () => {
   it("records one timeline point per year, ending at zero the year the reachable pool runs dry", () => {
     const result = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
     expect(result.timeline).toEqual([
-      { age: 50, accessibleBalance: 1000, lockedBalance: 0 },
-      { age: 51, accessibleBalance: 900, lockedBalance: 0 },
-      { age: 52, accessibleBalance: 800, lockedBalance: 0 },
-      { age: 53, accessibleBalance: 700, lockedBalance: 0 },
-      { age: 54, accessibleBalance: 600, lockedBalance: 0 },
-      { age: 55, accessibleBalance: 500, lockedBalance: 0 },
-      { age: 56, accessibleBalance: 400, lockedBalance: 0 },
-      { age: 57, accessibleBalance: 300, lockedBalance: 0 },
-      { age: 58, accessibleBalance: 200, lockedBalance: 0 },
-      { age: 59, accessibleBalance: 100, lockedBalance: 0 },
-      { age: 60, accessibleBalance: 0, lockedBalance: 0 },
+      { age: 50, accessibleBalance: 1000, lockedBalance: 0, projectedSpend: 100 },
+      { age: 51, accessibleBalance: 900, lockedBalance: 0, projectedSpend: 100 },
+      { age: 52, accessibleBalance: 800, lockedBalance: 0, projectedSpend: 100 },
+      { age: 53, accessibleBalance: 700, lockedBalance: 0, projectedSpend: 100 },
+      { age: 54, accessibleBalance: 600, lockedBalance: 0, projectedSpend: 100 },
+      { age: 55, accessibleBalance: 500, lockedBalance: 0, projectedSpend: 100 },
+      { age: 56, accessibleBalance: 400, lockedBalance: 0, projectedSpend: 100 },
+      { age: 57, accessibleBalance: 300, lockedBalance: 0, projectedSpend: 100 },
+      { age: 58, accessibleBalance: 200, lockedBalance: 0, projectedSpend: 100 },
+      { age: 59, accessibleBalance: 100, lockedBalance: 0, projectedSpend: 100 },
+      { age: 60, accessibleBalance: 0, lockedBalance: 0, projectedSpend: 100 },
     ])
     // The first point is exactly the retirement-age split, and the last is the depletion age --
     // the same two facts BridgeResult's own summary fields already assert, restated here as the
     // shape the chart actually draws from.
-    expect(result.timeline[0]).toEqual({ age: result.retirementAge, accessibleBalance: result.accessibleAtRetirement, lockedBalance: result.lockedAtRetirement })
+    expect(result.timeline[0]).toEqual({
+      age: result.retirementAge,
+      accessibleBalance: result.accessibleAtRetirement,
+      lockedBalance: result.lockedAtRetirement,
+      projectedSpend: 100,
+    })
     expect(result.timeline.at(-1)?.age).toBe(result.depletionAge)
   })
 
@@ -143,9 +149,9 @@ describe("simulateBridge", () => {
     const result = simulateBridge(accounts, 50, 50, 100, 100, 0)
     const byAge = new Map(result.timeline.map((year) => [year.age, year]))
     // The year before it unlocks: still split, locked sitting untouched at its starting balance.
-    expect(byAge.get(52)).toEqual({ age: 52, accessibleBalance: 300, lockedBalance: 500 })
+    expect(byAge.get(52)).toEqual({ age: 52, accessibleBalance: 300, lockedBalance: 500, projectedSpend: 100 })
     // The unlock year itself: the whole 500 has moved over, before that year's own withdrawal.
-    expect(byAge.get(53)).toEqual({ age: 53, accessibleBalance: 700, lockedBalance: 0 })
+    expect(byAge.get(53)).toEqual({ age: 53, accessibleBalance: 700, lockedBalance: 0, projectedSpend: 100 })
     // Never locked again once unlocked.
     expect(result.timeline.filter((year) => year.age >= 53).every((year) => year.lockedBalance === 0)).toBe(true)
   })

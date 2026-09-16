@@ -20,6 +20,10 @@ export interface MortgageDetails {
   monthlyPayment: number
   balanceAsOfDate: string
   balanceAsOf: number
+  // Extra paid toward principal every month, on top of monthlyPayment. Entirely fungible with it
+  // for this formula's purposes -- interest accrues on the declining balance regardless of which
+  // "bucket" a dollar came from, so it's simply added to the payment below.
+  extraMonthlyPrincipal?: number
 }
 
 export interface MortgagePayoff {
@@ -35,23 +39,25 @@ export interface MortgagePayoff {
 // interest accruing each month -- the balance would grow forever, not reach zero.
 export function calculateMortgagePayoff(details: MortgageDetails): MortgagePayoff | { error: string } {
   const monthlyRate = details.interestRate / 12
+  // Extra principal is just more cash applied to the same declining balance every month -- the
+  // amortization math below has no notion of "scheduled" vs. "extra," so the two are summed once
+  // here rather than threaded through separately.
+  const payment = details.monthlyPayment + (details.extraMonthlyPrincipal ?? 0)
   if (details.balanceAsOf <= 0) {
     return { monthsRemaining: 0, payoffDate: details.balanceAsOfDate }
   }
   if (monthlyRate === 0) {
-    if (details.monthlyPayment <= 0) {
+    if (payment <= 0) {
       return { error: "Monthly payment must be greater than zero." }
     }
-    const monthsRemaining = Math.ceil(details.balanceAsOf / details.monthlyPayment)
+    const monthsRemaining = Math.ceil(details.balanceAsOf / payment)
     return { monthsRemaining, payoffDate: addMonthsToDate(details.balanceAsOfDate, monthsRemaining) }
   }
   const monthlyInterest = details.balanceAsOf * monthlyRate
-  if (details.monthlyPayment <= monthlyInterest) {
+  if (payment <= monthlyInterest) {
     return { error: "Payment doesn't cover the interest accruing each month -- the balance would grow, not shrink." }
   }
-  const monthsRemaining = Math.ceil(
-    -Math.log(1 - (details.balanceAsOf * monthlyRate) / details.monthlyPayment) / Math.log(1 + monthlyRate),
-  )
+  const monthsRemaining = Math.ceil(-Math.log(1 - (details.balanceAsOf * monthlyRate) / payment) / Math.log(1 + monthlyRate))
   return { monthsRemaining, payoffDate: addMonthsToDate(details.balanceAsOfDate, monthsRemaining) }
 }
 
@@ -117,13 +123,26 @@ export interface BridgeYear {
   age: number
   accessibleBalance: number
   lockedBalance: number
+  // The plan's own cost of living that age -- inflation applied, but income (pension/Social
+  // Security/debt payoff) NOT netted out, so this reads as a stable, ever-growing expenses figure
+  // rather than one that mysteriously drops the moment a pension starts (or, for an age before
+  // currentAge, the same formula run backward -- what expenses were worth in this plan's terms back
+  // then, not a claim about what was really spent). Income still reduces the portfolio withdrawal
+  // that drives the balance line itself -- see simulateBridge's own netAnnualSpend -- this field
+  // just isn't where that reduction shows up. Set on every point going forward from
+  // simulateBridge/historicalBridgeYear alike; optional only because a caller that never passes
+  // one (a test fixture, say) shouldn't be forced to fabricate a figure it doesn't have.
+  projectedSpend?: number
 }
 
 // Function to split a one-shot snapshot of accounts (a historical balance as of some past age, or
 // any other static balance figure) into accessible/locked totals -- the same accessAge rule
 // simulateBridge's own internal splitAt applies to its year-by-year MUTATED balances, but usable
-// here against toBridgeAccounts' plain, unchanging balance snapshot instead.
-export function historicalBridgeYear(accounts: readonly BridgeAccount[], age: number): BridgeYear {
+// here against toBridgeAccounts' plain, unchanging balance snapshot instead. projectedSpend is
+// passed in rather than computed here (unlike simulateBridge's own inline version) since this
+// function has no notion of annualSpend/inflationMean/incomeStreams of its own -- see this
+// BridgeYear field's own doc comment for what the figure means for an age before currentAge.
+export function historicalBridgeYear(accounts: readonly BridgeAccount[], age: number, projectedSpend?: number): BridgeYear {
   let accessibleBalance = 0
   let lockedBalance = 0
   for (const account of accounts) {
@@ -133,7 +152,22 @@ export function historicalBridgeYear(accounts: readonly BridgeAccount[], age: nu
       lockedBalance += account.balance
     }
   }
-  return { age, accessibleBalance, lockedBalance }
+  return { age, accessibleBalance, lockedBalance, projectedSpend }
+}
+
+// Function to project one or more accounts' balances forward from currentAge to targetAge --
+// contributions then mean growth, every year, no withdrawals -- the exact same per-year model
+// simulateBridge's own accumulation phase applies, just for an arbitrary single age rather than a
+// whole scenario's timeline. Used for a figure like a Rule of 55 boost's dollar amount: how much
+// will actually be in this account by the age it unlocks, not what's in it today.
+export function projectAccountBalance(accounts: readonly BridgeAccount[], currentAge: number, targetAge: number): number {
+  return accounts.reduce((total, account) => {
+    let value = account.balance
+    for (let age = currentAge; age < targetAge; age++) {
+      value = (value + account.annualContribution) * (1 + account.returnMean)
+    }
+    return total + value
+  }, 0)
 }
 
 // Function to project a single retirement-age scenario forward at mean returns with no
@@ -190,11 +224,27 @@ export function simulateBridge(
   }
 
   for (let age = currentAge; age < planToAge; age++) {
+    // Pension/Social Security are entered as today's-dollars figures, same as annualSpend, so the
+    // offset is netted out before inflating the result rather than after -- keeps guaranteed
+    // income growing in step with spend under this same inflation assumption, rather than fixed in
+    // nominal terms and shrinking in real value every year. Computed for every age, not just once
+    // withdrawals start -- living expenses (and a stream that starts before retirement, like an
+    // early debt payoff) are still real pre-retirement, just funded by a paycheck instead of the
+    // portfolio. `spend` (net of income) is what actually drives the withdrawal below -- the
+    // portfolio only needs to cover what income doesn't -- while `grossSpend` is the figure every
+    // point recorded this iteration (the capturedSplit snapshot below included) carries as its own
+    // projectedSpend (see BridgeYear's own doc comment for why that one stays gross).
+    const incomeAtAge = incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount, 0)
+    const netAnnualSpend = Math.max(0, annualSpend - incomeAtAge)
+    const inflationFactor = Math.pow(1 + inflationMean, age - currentAge)
+    const spend = netAnnualSpend * inflationFactor
+    const grossSpend = annualSpend * inflationFactor
+
     if (!capturedSplit && age >= retirementAge) {
       const split = splitAt(age)
       accessibleAtRetirement = split.accessible
       lockedAtRetirement = split.locked
-      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked })
+      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend })
       capturedSplit = true
     }
 
@@ -202,10 +252,10 @@ export function simulateBridge(
     // above care about -- this is the actual line the chart draws.
     if (age >= retirementAge) {
       const split = splitAt(age)
-      timeline.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked })
+      timeline.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend })
     } else {
       const split = splitAt(age)
-      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked })
+      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend })
     }
 
     if (age < retirementAge) {
@@ -213,13 +263,6 @@ export function simulateBridge(
         balances[index] = (balances[index] as number) + account.annualContribution
       })
     } else {
-      // Pension/Social Security are entered as today's-dollars figures, same as annualSpend, so
-      // the offset is netted out before inflating the result rather than after -- keeps guaranteed
-      // income growing in step with spend under this same inflation assumption, rather than fixed
-      // in nominal terms and shrinking in real value every year.
-      const incomeAtAge = incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount, 0)
-      const netAnnualSpend = Math.max(0, annualSpend - incomeAtAge)
-      const spend = netAnnualSpend * Math.pow(1 + inflationMean, age - currentAge)
       const reachable = accounts.map((account, index) => index).filter((index) => isAccessible(accounts[index] as BridgeAccount, age))
       const reachableTotal = reachable.reduce((total, index) => total + (balances[index] as number), 0)
       if (reachableTotal <= FUNDING_TOLERANCE_CENTS) {

@@ -532,7 +532,9 @@ describe("GET /api/retirement/check", () => {
     // Debt accounts are never part of the simulated portfolio -- only the two real pots count.
     expect(body.portfolioAccountCount).toBe(2)
     expect(body.portfolioTotal).toBe(15000000)
-    expect(body.ruleOf55Boosts).toEqual([{ accountName: "Fidelity 401k", from: 59, to: 55, amount: 10000000 }])
+    // amount is the account's $100,000 balance PROJECTED forward from today's age to the boosted
+    // access age (55), not the raw current balance -- see projectAccountBalance in fire-analysis.ts.
+    expect(body.ruleOf55Boosts).toEqual([{ accountName: "Fidelity 401k", from: 59, to: 55, amount: 12864663.50625 }])
     expect(body.debtPayoffs).toHaveLength(1)
     expect(body.debtPayoffs[0]).toMatchObject({ accountName: "Mortgage", monthlyAmount: 100000 })
     expect(typeof body.debtPayoffs[0]?.payoffAge).toBe("number")

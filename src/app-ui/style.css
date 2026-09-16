@@ -243,6 +243,9 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .acct-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 .acct-fields .field.full { grid-column: 1 / -1; }
 .acct-fields .field.hidden { display: none; }
+/* Own display:grid needs its own [hidden] override -- there is no global [hidden]{display:none}
+   rule in this app (see .bridge-crosshair's own doc comment for the bug that taught us that). */
+.acct-fields[hidden] { display: none; }
 /* Allocation's option text spells out the stock/bond split (e.g. "equity-80 — 80% stocks / 20%
    bonds") -- one quarter-width column truncates it, so this field gets two. */
 .field.wide { grid-column: span 2; }
@@ -262,6 +265,10 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .spend-config-buffer { margin-top: 20px; }
 .category-picker-toolbar { display: flex; align-items: center; gap: 14px; margin: 6px 0 8px; flex-wrap: wrap; }
 .category-picker-toolbar .checkbox-label { font-size: 11.5px; }
+/* Unlike the Expense Projection instance (already indented by its own .field wrapper), this one
+   sits directly in .card-fold with nothing to align it to .account-row's own 16px left padding
+   below -- matched by hand here instead. */
+.card[data-section="accounts"] .category-picker-toolbar { padding-left: 16px; }
 .help-icon {
   display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
   margin-left: 6px; border-radius: 50%; border: 1px solid var(--line); background: none;
@@ -407,8 +414,20 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    reads as the same fact as the neutral unlock lines above (a depletion-triggered "would have
    helped" marker vs. this account's own "opens here" fact, true whether or not anything depletes). */
 .bridge-ruleof55-line { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
-.bridge-ruleof55-label { font-size: 9.5px; fill: var(--accent); }
-.bridge-ruleof55-arrow { stroke: var(--accent); stroke-width: 1.5; }
+.bridge-ruleof55-label { font-size: 8.5px; fill: var(--accent); }
+/* A mortgage/loan's own projected payoff age -- --info rather than --accent so it never reads as
+   the same fact as Rule of 55 (a different reference line entirely: spending going DOWN, not money
+   becoming accessible). Its label shares the same age-sorted, top-to-bottom stack as Rule of 55 and
+   income (see renderBridgeChart's `markers`), so the three never collide even at a crowded age. */
+.bridge-mortgage-line { stroke: var(--info); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
+.bridge-mortgage-label { font-size: 8.5px; fill: var(--info); }
+/* Pension/Social Security starting -- --ok rather than --accent/--info so it never reads as
+   either of those two other marker types. */
+.bridge-income-line { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
+.bridge-income-label { font-size: 8.5px; fill: var(--ok); }
+/* Painted over any chart line a marker label's own vertical line runs behind -- see the doc comment
+   above renderBridgeChart's `markerLines`. */
+.bridge-label-halo { fill: var(--surface); }
 /* Stands in for a windowed funded line running off the chart's own right edge -- see the doc
    comment on this marker in renderBridgeChart for why that convention needed a visible replacement
    once the axis started running out to planToAge instead of stopping at the scenario's own window. */
@@ -438,7 +457,8 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .bridge-tooltip-key { width: 10px; height: 2px; border-radius: 1px; flex: none; }
 .bridge-tooltip-value { font-weight: 600; color: var(--ink-strong); font-variant-numeric: tabular-nums; }
 .bridge-tooltip-label { color: var(--ink-soft); }
-.bridge-tooltip-locked { color: var(--ink-faint); }
+.bridge-tooltip-metric { color: var(--ink-soft); }
+.bridge-tooltip-sep { color: var(--line); }
 
 .empty-note { padding: 14px 16px; font-size: 12.5px; color: var(--ink-faint); font-style: italic; }
 
@@ -486,15 +506,6 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .top-error[hidden] { display: none; }
 .top-error .error-retry { flex: none; }
 
-.walkthrough { position: relative; background: var(--accent-selected-bg); border: 1px solid var(--accent); border-radius: var(--radius-md); padding: 16px 40px 16px 18px; margin-bottom: 16px; font-size: 12.5px; color: var(--ink-soft); }
-.walkthrough[hidden] { display: none; }
-.walkthrough h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--ink-strong); }
-.walkthrough p { margin: 6px 0; }
-.walkthrough ol { margin: 8px 0; padding-left: 20px; }
-.walkthrough li { margin-bottom: 6px; }
-.walkthrough strong { color: var(--ink-strong); font-weight: 600; }
-.walkthrough-dismiss { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border: none; background: transparent; color: var(--ink-faint); font-size: 16px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
-.walkthrough-dismiss:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
 
 /* Export to Dashboard modal -- this app's only true modal dialog (everything else is an inline
    card or a small anchored dropdown like .bt-menu), so its chrome is defined fresh here rather
