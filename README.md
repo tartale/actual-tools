@@ -395,17 +395,6 @@ anything about the dashboard actually imported into Actual (or these very
 tiles) that no longer matches what regenerating right now would produce;
 see "Check" further below for exactly what it looks at.
 
-The first time you open the page with nothing imported into Actual yet, a
-**"Getting started"** banner walks through two steps end to end: fill in
-Plan/Expense Projection/Simulation Settings/Accounts here → click
-**Export to Dashboard** and follow the steps in that modal. The banner
-appears automatically whenever no live FIRE dashboard is found (the same
-`monteCarloWidgetCount`/`crossoverWidgetCount` Check itself reports) and
-disappears on its own the moment one is — or dismiss it with the × any
-time before that; the dismissal is a per-browser cookie, so it stays
-dismissed across restarts without needing a live dashboard to hide it
-permanently.
-
 **Plan**: birth date, one or more retirement ages to compare (space- or
 comma-separated), and the age to assume the plan needs to last to (a
 conservative default, not a lifespan estimate).
@@ -668,13 +657,19 @@ Actual's plain per-account defaults:
   all.
 - Spending steps down automatically as guaranteed income and debt payoff
   arrive: a pension/Social Security stream you've entered (see
-  "Retirement income" above), and, per debt account with mortgage payoff
-  fields filled in, once that loan is projected to be paid off. **This
-  assumes the debt payment is counted in your budgeted spend already**
-  (the common Actual setup — a "Mortgage" category you fund monthly, not
-  a bare account-to-account transfer); if yours is tracked purely as a
-  transfer, it was never part of the simulated spend, and this phase would
-  overstate the reduction.
+  "Retirement income" above), and, per debt account with payoff fields
+  filled in (any loan — a mortgage, a HELOC, a car loan — the fields are
+  just named after the common case), once that loan is projected to be
+  paid off. **This assumes the regular payment is counted in your
+  budgeted spend already** (the common Actual setup — a category you
+  fund monthly, not a bare account-to-account transfer); if yours is
+  tracked purely as a transfer, it was never part of the simulated
+  spend, and this phase would overstate the reduction. An extra
+  principal amount you've entered shortens the payoff itself but is
+  deliberately **not** added to what frees up once paid off — it's a
+  discretionary overpayment, often funded outside your regular budgeted
+  spend (its own separate, unselected category, or straight from
+  savings) even when the regular payment is tracked normally.
 
 **Check** reads the dashboard that is **live in Actual** — not the
 generated file — through Actual's own ActualQL `run-query` endpoint (gated
@@ -717,7 +712,17 @@ editing in the app. Two things get checked:
   with the still-locked balance as a dashed companion in the same color —
   a scenario that runs dry gets a hollow ring and a muted "unlocks NN"
   reference line marking how far off the next unlock actually is; one
-  that funds the whole plan gets neither. This chart cannot live in
+  that funds the whole plan gets neither. A Rule of 55 boost, a debt
+  payoff, and a pension/Social Security start each get their own labeled
+  reference line too, stacked top-to-bottom in age order (soonest
+  highest) so a crowded stretch never collides. Hovering shows the exact
+  accessible/locked balance and that year's expenses at any age — the
+  expenses figure is always the plan's own gross cost of living, not
+  reduced by guaranteed income kicking in, so it reads as a stable,
+  ever-growing number rather than one that mysteriously drops the moment
+  a pension starts (income still reduces how much of that spend the
+  portfolio itself has to cover — that's the accessible-balance line
+  above, just not this figure). This chart cannot live in
   Actual's own dashboard — every one of Actual's widget types (checked
   against upstream, not guessed) is a query over your ledger, with no
   slot for a projected series like this one, so it stays here, in the

@@ -4,7 +4,7 @@ description: "Design/status of the bridge burndown chart on ./actual app's Retir
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-09-10T20:06:07.282Z
+  modified: 2026-09-16T00:00:00.000Z
   originSessionId: e2895bd5-4b33-4a55-8b6d-f01dc8ec722d
 ---
 
@@ -290,3 +290,54 @@ persists per-section) preceded implementing it.
   longer exists (Analysis isn't folded by default, so nothing needs opening) and its one
   assertion read `#analyzeSummary` (also gone) -- renamed to `openRetirementPage`, dropped the
   click, and switched the assertion to reading tile text out of `#summaryTiles`.
+
+**Fifth follow-up, same session as [[fire-dashboard]]'s "Extra principal" round: reference-line
+markers unified across three kinds, tooltip reworded, and `projectedSpend` stopped netting out
+guaranteed income.**
+
+1. **Pension/Social Security start markers added** (`CheckResult.incomeStreams`, sourced straight
+   from `retirementIncomeStreams`/`CheckOptions.incomeStreams` in fire-generate.ts -- the same
+   pension+SS streams already driving the withdrawal math, exposed rather than recomputed) --
+   labeled with the stream's own `name` ("Pension" / "Social Security" / joined with `+` if two
+   streams share an age), not a generic "Income Starts" (that generic wording was tried first and
+   replaced same-round, per direct feedback).
+2. **All three marker kinds (Rule of 55, debt payoff, income start) unified into one age-sorted
+   stack**, previously each with its own fixed anchor (Rule of 55 top, debt payoff bottom, income
+   also top) that could still collide at a crowded age. Now: sort every marker across all three
+   kinds by age, assign each a row (13px apart) top-to-bottom in that order -- leftmost/soonest
+   highest, stepping one row lower per marker to the right -- so a crowded stretch never overlaps
+   regardless of which kinds land there. Each marker's small direction arrow was removed outright
+   (per direct feedback: "the arrows... trample the label for the next marker") once the stagger
+   made a fixed-direction arrow both redundant and actively colliding.
+3. **Text halos**: any marker's own full-height vertical guide line, or a chart series line, could
+   run directly behind another marker's label -- painted over with a `var(--surface)`-filled `<rect>`
+   sized to the label. Order matters here in a way that bit once already: painting each marker's own
+   line+halo+text together (looping once) only protects a label from lines painted *before* it in
+   that same loop -- a later marker's line, drawn after an earlier marker's halo+text, still pierced
+   it. Fixed by painting in three full passes instead (every line, then every halo, then every
+   label), so a label's halo covers ANY marker's line, not just the one sharing its own row.
+4. **Tooltip**: "unlocked" renamed to "accessible" everywhere (matching the chart's own legend
+   wording, `bridge-style-key`), and after a couple of back-and-forth reorderings landed back on
+   "(projected) expenses" first, then accessible, then locked -- the ordering itself was live
+   feedback-driven and worth remembering only as "expenses leads," not the intermediate attempts.
+5. **A real semantic bug/design fix in `projectedSpend` itself**: this field (what the tooltip's
+   "expenses" row shows) was computed as `netAnnualSpend` (income already subtracted) inflated --
+   the same figure that correctly drives the withdrawal math, but wrong to *display*, since it made
+   "expenses" appear to drop the moment a pension or Social Security stream started, when the
+   user's actual cost of living hadn't changed at all -- only how much of it the portfolio itself
+   still had to cover. Fixed in both `simulateBridge` (fire-analysis.ts) and its historical-point
+   twin `projectedSpendAt` (fire-generate.ts) by computing a separate `grossSpend =
+   annualSpend * inflationFactor` for the `projectedSpend` field, while `spend` (net of income)
+   keeps driving the actual withdrawal/balance-line math completely unchanged. Verified live:
+   `projectedSpend` now grows smoothly (pure inflation) straight through both the Social Security
+   (62) and pension (65) start ages in the user's own real data, while `accessibleBalance` still
+   visibly benefits from the reduced withdrawal need at those same ages.
+6. Two existing `fire-analysis.test.ts` assertions were already stale before this round (asserting
+   exact `timeline` objects via `toEqual` without a `projectedSpend` key, from when that field was
+   made unconditional on every point in an earlier round) -- surfaced only once the full suite ran
+   at this "let's ship it" breaking point, not before; fixed by adding the expected
+   `projectedSpend: 100` (both test fixtures use `annualSpend: 100, inflationMean: 0`, so gross
+   spend is flat at 100 every year). A third failure, `app-server.test.ts`'s Rule of 55 boost
+   amount, was genuine test debt from the *previous* session's "boost reflects PROJECTED balance,
+   not current balance" fix never being propagated to this one route-level test -- updated to the
+   correct projected figure.

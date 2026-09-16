@@ -356,6 +356,7 @@ export interface ClassifiedAccount {
   mortgageMonthlyPayment: number | null
   mortgageBalanceAsOfDate: string | null
   mortgageBalanceAsOf: number | null
+  mortgageExtraPrincipal: number | null
   // roth-ira only -- cumulative contributions ever made (cost basis), in cents. IRC
   // Sec. 408A(d)(4)'s ordering rule lets a Roth IRA's own contributions/conversions be withdrawn
   // tax- and penalty-free at any age, before touching earnings, unlike every other retirement
@@ -422,6 +423,13 @@ export interface FireAccountOverride {
   mortgageMonthlyPayment?: number
   mortgageBalanceAsOfDate?: string
   mortgageBalanceAsOf?: number
+  // Extra paid toward principal every month, on top of mortgageMonthlyPayment -- entirely
+  // fungible with the regular payment as far as calculateMortgagePayoff's own amortization math
+  // is concerned (interest accrues on the declining balance regardless of which "bucket" a dollar
+  // came from), so it's just added to the payment there. Not folded into mortgageMonthlyPayment
+  // itself so the UI can keep showing the real minimum payment separately from what's actually
+  // being sent.
+  mortgageExtraPrincipal?: number
   // See ClassifiedAccount's doc comment -- only meaningful for roth-ira.
   rothBasis?: number | null
   // See ClassifiedAccount's doc comment -- only meaningful for the "sequential" withdrawal strategy.
@@ -925,6 +933,7 @@ export function classifyAccounts(
         mortgageMonthlyPayment: override.mortgageMonthlyPayment ?? null,
         mortgageBalanceAsOfDate: override.mortgageBalanceAsOfDate ?? null,
         mortgageBalanceAsOf: override.mortgageBalanceAsOf ?? null,
+        mortgageExtraPrincipal: override.mortgageExtraPrincipal ?? null,
         rothBasis: override.rothBasis ?? null,
         withdrawalOrder: override.withdrawalOrder ?? null,
         source: "override" as const,
@@ -949,6 +958,7 @@ export function classifyAccounts(
         mortgageMonthlyPayment: null,
         mortgageBalanceAsOfDate: null,
         mortgageBalanceAsOf: null,
+        mortgageExtraPrincipal: null,
         rothBasis: null,
         withdrawalOrder: null,
         source: "heuristic" as const,
@@ -971,6 +981,7 @@ export function classifyAccounts(
       mortgageMonthlyPayment: null,
       mortgageBalanceAsOfDate: null,
       mortgageBalanceAsOf: null,
+      mortgageExtraPrincipal: null,
       rothBasis: null,
       withdrawalOrder: null,
       source: "default" as const,

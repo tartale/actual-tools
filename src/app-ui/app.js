@@ -65,15 +65,27 @@ function formatMoneyInputValue(cents) {
   return cents == null ? "" : (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 // Function to wire the focus/blur pair every dollar <input> needs: plain digits while editing (so
-// typing isn't fighting inserted commas), reformatted with commas the moment it's not.
+// typing isn't fighting inserted commas), reformatted with commas the moment it's not. Also fires
+// a "moneycommit" event on blur when the value actually changed -- callers listen for that instead
+// of the native "change" event, because the focus handler's own rewrite of input.value (formatted
+// -> plain digits) becomes the browser's new baseline for its dirty check, so retyping the same
+// number back (e.g. "10,000.00" -> focus rewrites to "10000" -> user types "10000" again) leaves
+// the field textually identical to that baseline and the native "change" event never fires at all.
 function attachMoneyFormatting(input) {
   if (!input) return
+  let centsAtFocus = null
   input.addEventListener("focus", () => {
-    const cents = parseMoneyInputCents(input.value)
-    input.value = cents == null ? "" : (cents / 100).toString()
+    centsAtFocus = parseMoneyInputCents(input.value)
+    input.value = centsAtFocus == null ? "" : (centsAtFocus / 100).toString()
+    // Rewriting .value above drops the caret at the end with nothing selected, so typing right
+    // after a click appends to the old number instead of replacing it -- select it all so typing
+    // overwrites, the way clicking into a pre-filled amount field is expected to behave.
+    input.select()
   })
   input.addEventListener("blur", () => {
-    input.value = formatMoneyInputValue(parseMoneyInputCents(input.value))
+    const cents = parseMoneyInputCents(input.value)
+    input.value = formatMoneyInputValue(cents)
+    if (cents !== centsAtFocus) input.dispatchEvent(new Event("moneycommit"))
   })
 }
 
@@ -334,7 +346,7 @@ function renderTaxBands() {
       runExclusive(() => patchPlan({ monteCarloTaxBands: next }, "savedSimSettings"))
     }
     const rateInput = row.querySelector(".tb-rate")
-    fromInput.addEventListener("change", commitRow)
+    fromInput.addEventListener("moneycommit", commitRow)
     rateInput.addEventListener("change", commitRow)
     row.querySelector(".tax-band-remove").addEventListener("click", () => {
       const next = (STATE.dashboard.monteCarloTaxBands ?? []).filter((band) => band.id !== bandId)
@@ -350,23 +362,6 @@ let taxBandIdCounter = 0
 function nextTaxBandId() {
   taxBandIdCounter += 1
   return `band-${Date.now()}-${taxBandIdCounter}`
-}
-
-// Shows the "Getting started" walkthrough while no FIRE dashboard has ever been exported/imported
-// yet -- driven off runCheck's own result (monteCarloWidgetCount/crossoverWidgetCount), so it
-// appears/disappears in step with reality rather than tracking its own separate fetch. Suppressed
-// once the user dismisses it (a cookie, see getCookie/setCookie's own doc comment), even before
-// anything's been imported -- someone who already knows the flow shouldn't have to keep
-// re-dismissing it on every load.
-function updateWalkthrough(hasLiveDashboard) {
-  const el = document.getElementById("walkthrough")
-  let dismissed = false
-  try {
-    dismissed = getCookie("walkthroughDismissed") === "1"
-  } catch {
-    // Cookies disabled -- fall back to always showing it until a live dashboard appears.
-  }
-  el.hidden = hasLiveDashboard || dismissed
 }
 
 // Function to render the Spend configuration section's own expense-category picker (see
@@ -387,8 +382,60 @@ function updateWalkthrough(hasLiveDashboard) {
 // checkbox change triggers -- redrawn on every render() (not just after its own fetch) the same way
 // renderSimSettings et al. are; checkboxes have no in-progress-typing state to protect the way a
 // text <input> does, so there's no idle guard needed here.
+// Persisted the same way RETIREMENT_SECTIONS' own fold state is (see saveSectionFolds/
+// applySectionFolds) -- a cookie of collapsed group ids, read once here at load (group ids are
+// stable Actual category-group ids, so a saved set from a previous session still means the same
+// groups) and rewritten on every fold/unfold and Expand/Collapse all below.
 let EXPENSE_CATEGORY_FOLDS = new Set()
-const EXPENSE_CATEGORY_VIEW = { showHidden: false, hideUnchecked: false }
+try {
+  const savedFolds = getCookie("expenseCategoryFolds")
+  if (savedFolds) EXPENSE_CATEGORY_FOLDS = new Set(savedFolds.split(","))
+} catch {
+  // Cookies disabled -- starts fully expanded for this page view, same as the default.
+}
+function saveExpenseCategoryFolds() {
+  try {
+    setCookie("expenseCategoryFolds", [...EXPENSE_CATEGORY_FOLDS].join(","))
+  } catch {
+    // Cookies disabled -- folding still works for this page view, it just won't be remembered.
+  }
+}
+// Persisted the same simple "1"/"0" way privacyMode's own cookie is -- see
+// [[persist-expand-collapse-state]] (this isn't a fold, but the same "don't reset a view
+// preference on refresh" principle applies to it too). The checkboxes themselves are restored to
+// match once the DOM's ready, near the bottom of this file.
+let EXPENSE_CATEGORY_VIEW
+try {
+  EXPENSE_CATEGORY_VIEW = { showHidden: getCookie("expenseCategoriesShowHidden") === "1", hideUnchecked: getCookie("expenseCategoriesHideUnchecked") === "1" }
+} catch {
+  EXPENSE_CATEGORY_VIEW = { showHidden: false, hideUnchecked: false }
+}
+function saveExpenseCategoryView() {
+  try {
+    setCookie("expenseCategoriesShowHidden", EXPENSE_CATEGORY_VIEW.showHidden ? "1" : "0")
+    setCookie("expenseCategoriesHideUnchecked", EXPENSE_CATEGORY_VIEW.hideUnchecked ? "1" : "0")
+  } catch {
+    // Cookies disabled -- the view filters still work for this page view, they just won't be remembered.
+  }
+}
+
+// Same pattern as EXPENSE_CATEGORY_FOLDS just above -- a cookie of collapsed account ids, read once
+// at load and rewritten on every fold/unfold, so an account's own expand/collapse state survives a
+// refresh the same way (see [[persist-expand-collapse-state]]).
+let ACCOUNT_FOLDS = new Set()
+try {
+  const savedAccountFolds = getCookie("accountFolds")
+  if (savedAccountFolds) ACCOUNT_FOLDS = new Set(savedAccountFolds.split(","))
+} catch {
+  // Cookies disabled -- starts fully expanded for this page view, same as the default.
+}
+function saveAccountFolds() {
+  try {
+    setCookie("accountFolds", [...ACCOUNT_FOLDS].join(","))
+  } catch {
+    // Cookies disabled -- folding still works for this page view, it just won't be remembered.
+  }
+}
 
 function renderExpenseCategoryPicker() {
   const container = document.getElementById("expenseCategoryPicker")
@@ -436,6 +483,7 @@ function renderExpenseCategoryPicker() {
       const collapsing = toggle.getAttribute("aria-expanded") === "true"
       if (collapsing) EXPENSE_CATEGORY_FOLDS.add(groupId)
       else EXPENSE_CATEGORY_FOLDS.delete(groupId)
+      saveExpenseCategoryFolds()
       toggle.setAttribute("aria-expanded", String(!collapsing))
       toggle.textContent = collapsing ? "▶" : "▼"
       container.querySelector(`[data-group-body="${groupId}"]`).hidden = collapsing
@@ -572,16 +620,18 @@ function renderAccounts() {
         : `<div class="derived">Payoff in <span class="money">~${payoff.monthsRemaining} mo, around ${payoff.payoffDate}${account.mortgagePayoffAge != null ? ` (age ~${account.mortgagePayoffAge})` : ""}</span></div>`
       : ""
 
+    const accountFolded = ACCOUNT_FOLDS.has(account.id)
     row.innerHTML = `
       <div class="acct-id">
         ${reorderEnabled ? `<div class="drag-handle" title="Drag to change withdrawal order">⠿</div>` : ""}
+        <button type="button" class="bt-fold-toggle" data-fold-account="${account.id}" aria-expanded="${!accountFolded}">${accountFolded ? "▶" : "▼"}</button>
         <div class="acct-id-text">
           <div class="name">${escapeHtml(account.name)}</div>
           <div class="balance">${moneySpan(account.balance)}</div>
           <div class="cat-note">${accessNote}${ruleOf55Note}</div>
         </div>
       </div>
-      <div class="acct-fields">
+      <div class="acct-fields" ${accountFolded ? "hidden" : ""}>
         <div class="field full">
           <label>Account type</label>
           <select data-field="type">${typeOptions}</select>
@@ -687,12 +737,27 @@ function renderAccounts() {
             <input type="text" inputmode="decimal" data-field="mortgageBalanceAsOf" value="${formatMoneyInputValue(account.mortgageBalanceAsOf)}" placeholder="not entered">
           </div>
         </div>
+        <div class="field">
+          <label>Extra principal<button type="button" class="help-icon" data-help="Extra paid toward principal each month, on top of the regular payment above -- shortens the payoff estimate below.&#10;&#10;Only the regular payment is assumed to free up spend once this is paid off, not this extra amount -- it's usually a discretionary overpayment funded outside your regular budgeted spend, even when the regular payment itself is tracked normally.">?</button></label>
+          <div class="input-affix prefix-dollar">
+            <input type="text" inputmode="decimal" data-field="mortgageExtraPrincipal" value="${formatMoneyInputValue(account.mortgageExtraPrincipal)}" placeholder="not entered">
+          </div>
+        </div>
         ${payoffNote}` : ""}
         ${!typeInfo.isPortfolio ? `<div class="no-fields-note">Not part of the investable portfolio — no allocation or contribution to set.</div>` : ""}
         ${!typeInfo.isPortfolio ? "" : account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>` : (showContribution ? `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>` : "")}
       </div>
     `
 
+    row.querySelector("[data-fold-account]").addEventListener("click", (e) => {
+      const collapsing = e.target.getAttribute("aria-expanded") === "true"
+      if (collapsing) ACCOUNT_FOLDS.add(account.id)
+      else ACCOUNT_FOLDS.delete(account.id)
+      saveAccountFolds()
+      e.target.setAttribute("aria-expanded", String(!collapsing))
+      e.target.textContent = collapsing ? "▶" : "▼"
+      row.querySelector(".acct-fields").hidden = collapsing
+    })
     row.querySelector("select[data-field='type']").addEventListener("change", (e) => runExclusive(() => patchAccount(account.id, { type: e.target.value })))
     const allocSelect = row.querySelector("select[data-field='allocationPreset']")
     if (allocSelect) {
@@ -722,7 +787,7 @@ function renderAccounts() {
     const contribInput = row.querySelector("input[data-field='monthlyContribution']")
     if (contribInput) {
       attachMoneyFormatting(contribInput)
-      contribInput.addEventListener("change", (e) => {
+      contribInput.addEventListener("moneycommit", (e) => {
         runExclusive(() => patchAccount(account.id, { monthlyContribution: parseMoneyInputCents(e.target.value) }))
       })
     }
@@ -742,7 +807,7 @@ function renderAccounts() {
     const salaryInput = row.querySelector("input[data-field='annualSalary']")
     if (salaryInput) {
       attachMoneyFormatting(salaryInput)
-      salaryInput.addEventListener("change", (e) => {
+      salaryInput.addEventListener("moneycommit", (e) => {
         runExclusive(() => patchAccount(account.id, { annualSalary: parseMoneyInputCents(e.target.value) }))
       })
     }
@@ -768,7 +833,7 @@ function renderAccounts() {
     const rothBasisInput = row.querySelector("input[data-field='rothBasis']")
     if (rothBasisInput) {
       attachMoneyFormatting(rothBasisInput)
-      rothBasisInput.addEventListener("change", (e) => {
+      rothBasisInput.addEventListener("moneycommit", (e) => {
         runExclusive(() => patchAccount(account.id, { rothBasis: parseMoneyInputCents(e.target.value) }))
       })
     }
@@ -782,8 +847,15 @@ function renderAccounts() {
     const mortgagePaymentInput = row.querySelector("input[data-field='mortgageMonthlyPayment']")
     if (mortgagePaymentInput) {
       attachMoneyFormatting(mortgagePaymentInput)
-      mortgagePaymentInput.addEventListener("change", (e) => {
+      mortgagePaymentInput.addEventListener("moneycommit", (e) => {
         runExclusive(() => patchAccount(account.id, { mortgageMonthlyPayment: parseMoneyInputCents(e.target.value) }))
+      })
+    }
+    const mortgageExtraPrincipalInput = row.querySelector("input[data-field='mortgageExtraPrincipal']")
+    if (mortgageExtraPrincipalInput) {
+      attachMoneyFormatting(mortgageExtraPrincipalInput)
+      mortgageExtraPrincipalInput.addEventListener("moneycommit", (e) => {
+        runExclusive(() => patchAccount(account.id, { mortgageExtraPrincipal: parseMoneyInputCents(e.target.value) }))
       })
     }
     const mortgageDateInput = row.querySelector("input[data-field='mortgageBalanceAsOfDate']")
@@ -795,7 +867,7 @@ function renderAccounts() {
     const mortgageBalanceInput = row.querySelector("input[data-field='mortgageBalanceAsOf']")
     if (mortgageBalanceInput) {
       attachMoneyFormatting(mortgageBalanceInput)
-      mortgageBalanceInput.addEventListener("change", (e) => {
+      mortgageBalanceInput.addEventListener("moneycommit", (e) => {
         runExclusive(() => patchAccount(account.id, { mortgageBalanceAsOf: parseMoneyInputCents(e.target.value) }))
       })
     }
@@ -878,6 +950,13 @@ const BRIDGE_SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d551
 const DEFAULT_MONTE_CARLO_INFLATION_MEAN = 0.03
 const DEFAULT_MONTE_CARLO_SIMULATION_COUNT = 5000
 
+// Mirrors HISTORY_LOOKBACK_YEARS_MAX in fire-generate.ts -- the real check response is what
+// decides how far back a chart's history actually reaches (some accounts don't have this much
+// transaction history), but the loading skeleton has no real data yet to know that, so it reserves
+// space for the largest a chart could turn out to be (see [[no-layout-shift-ux-rule]]) rather than
+// starting at currentAge and jumping wider the moment real history arrives.
+const SKELETON_HISTORY_LOOKBACK_YEARS_MAX = 5
+
 // Function to format cents as a compact dollar figure for the chart's own axis -- $0, $50K, $1.2M
 // -- never the full $50,000.00 usd() prints elsewhere, which would crowd a narrow axis gutter.
 function usdCompact(cents) {
@@ -931,7 +1010,7 @@ function niceAxisTicks(maxCents, targetCount) {
 // its own line already stops naturally at the age it runs out, which is the entire point.
 const BRIDGE_WINDOW_YEARS = 20
 
-function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = []) {
+function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = [], debtPayoffs = [], incomeStreams = []) {
   const usable = bridgeResults.filter((r) => r.timeline.length > 0 && r.accessibleAtRetirement + r.lockedAtRetirement > 0)
   if (usable.length === 0) return null
 
@@ -1028,30 +1107,66 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     .map((age) => `<line x1="${scaleX(age).toFixed(1)}" y1="${margin.top}" x2="${scaleX(age).toFixed(1)}" y2="${height - margin.bottom}" class="bridge-unlock-line" />`)
     .join("")
 
-  // One shared reference line per distinct age at which an active 401(k)'s Rule-of-55 separation
-  // makes it accessible early (see effectiveAccessAge) -- neutral, like the unlock lines above,
-  // since more than one account can share the same boosted age. Drawn regardless of whether any
-  // scenario actually depletes, unlike the unlock lines: this is "here's when that account itself
-  // opens up," not "here's what would have saved a scenario that already ran out."
+  // Three kinds of "something changes at this age" reference line -- a 401(k)'s Rule-of-55
+  // separation making it accessible early, a mortgage/loan's projected payoff, a pension or Social
+  // Security stream starting -- neutral like the unlock lines above (belongs to no one scenario,
+  // drawn regardless of whether any scenario depletes). Combined into one x-sorted stack so a
+  // crowded age never collides: each keeps its own class for color, but a shared row index decides
+  // its label's height -- leftmost (soonest) highest, stepping one row lower per marker as age
+  // increases to the right, however many of the three kinds actually land in that stretch.
   const ruleOf55Ages = [...new Set(ruleOf55Boosts.map((b) => b.to))].filter((age) => age > minAge && age <= maxAge)
-  const ruleOf55Lines = ruleOf55Ages
-    .map((age) => {
-      const amount = ruleOf55Boosts.filter((b) => b.to === age).reduce((total, b) => total + b.amount, 0)
-      const x = scaleX(age)
-      const label = `Rule of 55: +${usdCompact(amount)}`
-      // No canvas measurement available for an inline SVG string -- ~5.3px/char is a fair estimate
-      // for this label's font-size (9.5px), good enough to decide which side of "middle" would run
-      // the label off the plot area, which is all this needs.
-      const halfLabelWidth = (label.length * 5.3) / 2
-      const anchor = x + halfLabelWidth > width - margin.right ? "end" : x - halfLabelWidth < margin.left ? "start" : "middle"
-      const dx = anchor === "end" ? -4 : anchor === "start" ? 4 : 0
-      return (
-        `<line x1="${x.toFixed(1)}" y1="${margin.top}" x2="${x.toFixed(1)}" y2="${height - margin.bottom}" class="bridge-ruleof55-line" />` +
-        `<text x="${x.toFixed(1)}" y="8" class="bridge-ruleof55-label" text-anchor="${anchor}" dx="${dx}">${escapeHtml(label)}</text>` +
-        `<path d="M${(x - 4).toFixed(1)},14 L${x.toFixed(1)},19 L${(x + 4).toFixed(1)},14" fill="none" class="bridge-ruleof55-arrow" />`
+  const debtPayoffAges = [...new Set(debtPayoffs.map((d) => d.payoffAge))].filter((age) => age > minAge && age <= maxAge)
+  const incomeAges = [...new Set(incomeStreams.map((s) => s.startAge))].filter((age) => age > minAge && age <= maxAge)
+  const markers = [
+    ...ruleOf55Ages.map((age) => ({
+      age,
+      className: "ruleof55",
+      label: `Rule of 55: +${usdCompact(ruleOf55Boosts.filter((b) => b.to === age).reduce((total, b) => total + b.amount, 0))}`,
+    })),
+    ...debtPayoffAges.map((age) => ({
+      age,
+      className: "mortgage",
+      label: `Debt Paid Off: -${usdCompact(debtPayoffs.filter((d) => d.payoffAge === age).reduce((total, d) => total + d.monthlyAmount, 0) * 12)}/yr`,
+    })),
+    ...incomeAges.map((age) => {
+      const streamsAtAge = incomeStreams.filter((s) => s.startAge === age)
+      return {
+        age,
+        className: "income",
+        label: `${streamsAtAge.map((s) => s.name).join(" + ")}: +${usdCompact(streamsAtAge.reduce((total, s) => total + s.annualAmount, 0))}/yr`,
+      }
+    }),
+  ].sort((a, b) => a.age - b.age)
+  const markerRowStep = 13
+  const positionedMarkers = markers.map(({ age, className, label }, row) => {
+    const x = scaleX(age)
+    const labelY = margin.top + 8 + row * markerRowStep
+    // No canvas measurement available for an inline SVG string -- ~5.3px/char is a fair estimate
+    // for this label's font-size (8.5px), good enough to decide which side of "middle" would run
+    // the label off the plot area, which is all this needs.
+    const labelWidth = label.length * 5.3
+    const halfLabelWidth = labelWidth / 2
+    const anchor = x + halfLabelWidth > width - margin.right ? "end" : x - halfLabelWidth < margin.left ? "start" : "middle"
+    const dx = anchor === "end" ? -4 : anchor === "start" ? 4 : 0
+    const haloLeft = anchor === "start" ? x + dx : anchor === "end" ? x + dx - labelWidth : x + dx - halfLabelWidth
+    return { x, labelY, className, label, anchor, dx, labelWidth, haloLeft }
+  })
+  // Every marker's own vertical guide line runs the FULL plot height, so a marker whose x lands
+  // under an earlier row's (wider) label would otherwise pierce it -- painting every line, THEN
+  // every halo, THEN every label (rather than looping once and emitting each marker's own
+  // line+halo+text together) means a label's halo covers ANY marker's line behind it, not just the
+  // one it shares a row with.
+  const markerLines =
+    positionedMarkers.map(({ x, className }) => `<line x1="${x.toFixed(1)}" y1="${margin.top}" x2="${x.toFixed(1)}" y2="${height - margin.bottom}" class="bridge-${className}-line" />`).join("") +
+    positionedMarkers
+      .map(({ labelY, haloLeft, labelWidth }) => `<rect x="${haloLeft.toFixed(1)}" y="${(labelY - 8).toFixed(1)}" width="${labelWidth.toFixed(1)}" height="11" class="bridge-label-halo" />`)
+      .join("") +
+    positionedMarkers
+      .map(
+        ({ x, labelY, className, label, anchor, dx }) =>
+          `<text x="${x.toFixed(1)}" y="${labelY.toFixed(1)}" class="bridge-${className}-label" text-anchor="${anchor}" dx="${dx}">${escapeHtml(label)}</text>`,
       )
-    })
-    .join("")
+      .join("")
 
   // Past 4 series, direct end-labels start to collide with each other rather than with the lines
   // -- fall back to the legend + tooltip, per the series-count ladder. Only depleting scenarios
@@ -1133,7 +1248,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
       ${ageAxis}
       ${seriesSvg}
       ${unlockLines}
-      ${ruleOf55Lines}
+      ${markerLines}
       <line class="bridge-crosshair" x1="0" y1="${margin.top}" x2="0" y2="${height - margin.bottom}" hidden />
       <rect class="bridge-hit" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="transparent" />
     </svg>
@@ -1151,7 +1266,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     ${showsLocked ? `<div class="bridge-style-key"><span class="bridge-key-line bridge-key-solid"></span>Accessible<span class="bridge-key-line bridge-key-dashed"></span>Locked</div>` : ""}
   `
 
-  wireBridgeTooltip(wrap, scenarios, { width, scaleX, minAge, maxAge, margin, plotWidth })
+  wireBridgeTooltip(wrap, scenarios, { width, scaleX, minAge, maxAge, margin, plotWidth, currentAge })
   return wrap
 }
 
@@ -1198,25 +1313,47 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
     heading.className = "bridge-tooltip-age"
     heading.textContent = `Age ${age}`
     tooltip.appendChild(heading)
+    // One flex-item span per figure (label + its value together), not bare text nodes -- the
+    // row's own flex gap only reads as a clean, even gap next to each "|" separator this way,
+    // rather than also prying a label away from its own value.
+    const metricSpan = (unitLabel, amount) => {
+      const metric = document.createElement("span")
+      metric.className = "bridge-tooltip-metric"
+      const value = document.createElement("span")
+      value.className = "bridge-tooltip-value"
+      value.textContent = usd(amount)
+      metric.append(`${unitLabel}: `, value)
+      return metric
+    }
     rows.forEach(({ result, index, point }) => {
       const row = document.createElement("div")
       row.className = "bridge-tooltip-row"
       const key = document.createElement("span")
       key.className = "bridge-tooltip-key"
       key.style.background = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
-      const value = document.createElement("span")
-      value.className = "bridge-tooltip-value"
-      value.textContent = usd(point.accessibleBalance)
-      const label = document.createElement("span")
-      label.className = "bridge-tooltip-label"
-      label.textContent = scenarios.length > 1 ? `retire ${result.retirementAge}` : "accessible"
-      row.append(key, value, label)
-      if (point.lockedBalance > 0) {
-        const locked = document.createElement("span")
-        locked.className = "bridge-tooltip-locked"
-        locked.textContent = `· ${usd(point.lockedBalance)} locked`
-        row.appendChild(locked)
+      row.appendChild(key)
+      if (scenarios.length > 1) {
+        const label = document.createElement("span")
+        label.className = "bridge-tooltip-label"
+        label.textContent = `retire at ${result.retirementAge}:`
+        row.appendChild(label)
       }
+      // "Projected" only reads right for an age that hasn't happened yet -- a pre-currentAge point
+      // runs the same formula backward (see BridgeYear's own projectedSpend doc comment), which
+      // isn't a projection at all, just this plan's own expense figure restated for that year.
+      const metrics = []
+      if (point.projectedSpend != null) metrics.push(metricSpan(age < scale.currentAge ? "expenses" : "projected expenses", point.projectedSpend))
+      metrics.push(metricSpan("accessible", point.accessibleBalance))
+      if (point.lockedBalance > 0) metrics.push(metricSpan("locked", point.lockedBalance))
+      metrics.forEach((metric, metricIndex) => {
+        if (metricIndex > 0) {
+          const sep = document.createElement("span")
+          sep.className = "bridge-tooltip-sep"
+          sep.textContent = "|"
+          row.appendChild(sep)
+        }
+        row.appendChild(metric)
+      })
       tooltip.appendChild(row)
     })
     tooltip.hidden = false
@@ -1562,7 +1699,7 @@ function renderChartSkeleton(ariaLabel, currentAge, planToAge, retirementAges, p
   const margin = { top: 12, right: 16, bottom: 24, left: 54 }
   const plotWidth = width - margin.left - margin.right
   const plotHeight = height - margin.top - margin.bottom
-  const minAge = currentAge
+  const minAge = currentAge - SKELETON_HISTORY_LOOKBACK_YEARS_MAX
   const maxAge = planToAge
   const scaleX = (age) => margin.left + (maxAge === minAge ? 0 : ((age - minAge) / (maxAge - minAge)) * plotWidth)
 
@@ -1742,7 +1879,6 @@ async function runCheck() {
   try {
     const result = await api("/api/retirement/check")
     if (requestId !== checkRequestId) return
-    updateWalkthrough(result.monteCarloWidgetCount > 0 || result.crossoverWidgetCount > 0)
     renderSummaryStats(result)
     renderStaleResult(result.staleFindings)
     firstCheckDone = true
@@ -1756,7 +1892,7 @@ async function runCheck() {
       const group = document.createElement("div")
       group.className = "findings-group"
       group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
-      const chart = renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts)
+      const chart = renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams)
       if (chart) group.appendChild(chart)
       result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
       container.appendChild(group)
@@ -1846,7 +1982,7 @@ document.getElementById("pensionStartAge").addEventListener("change", (e) => {
 })
 const pensionAmountInput = document.getElementById("pensionMonthlyAmount")
 attachMoneyFormatting(pensionAmountInput)
-pensionAmountInput.addEventListener("change", (e) => {
+pensionAmountInput.addEventListener("moneycommit", (e) => {
   runExclusive(() => patchPlan({ pensionMonthlyAmount: parseMoneyInputCents(e.target.value) }, "savedIncome"))
 })
 ;[
@@ -1856,7 +1992,7 @@ pensionAmountInput.addEventListener("change", (e) => {
 ].forEach(([id, field]) => {
   const input = document.getElementById(id)
   attachMoneyFormatting(input)
-  input.addEventListener("change", (e) => {
+  input.addEventListener("moneycommit", (e) => {
     runExclusive(() => patchPlan({ [field]: parseMoneyInputCents(e.target.value) }, "savedIncome"))
   })
 })
@@ -1897,7 +2033,7 @@ document.getElementById("mcInflationStdDev").addEventListener("change", (e) => {
 })
 const mcMinWithdrawalInput = document.getElementById("mcMinimumWithdrawal")
 attachMoneyFormatting(mcMinWithdrawalInput)
-mcMinWithdrawalInput.addEventListener("change", (e) => {
+mcMinWithdrawalInput.addEventListener("moneycommit", (e) => {
   runExclusive(() => patchPlan({ monteCarloMinimumWithdrawal: parseMoneyInputCents(e.target.value) }, "savedSimSettings"))
 })
 document.getElementById("mcSimulationCount").addEventListener("change", (e) => {
@@ -1922,21 +2058,43 @@ document.getElementById("crossoverExpenseAdjustment").addEventListener("change",
 document.getElementById("expenseCategoriesExpandAll").addEventListener("click", () => {
   if (!EXPENSE_CATEGORY_GROUPS) return
   EXPENSE_CATEGORY_GROUPS.forEach((group) => EXPENSE_CATEGORY_FOLDS.delete(group.id))
+  saveExpenseCategoryFolds()
   renderExpenseCategoryPicker()
 })
 document.getElementById("expenseCategoriesCollapseAll").addEventListener("click", () => {
   if (!EXPENSE_CATEGORY_GROUPS) return
   EXPENSE_CATEGORY_GROUPS.forEach((group) => EXPENSE_CATEGORY_FOLDS.add(group.id))
+  saveExpenseCategoryFolds()
   renderExpenseCategoryPicker()
+})
+document.getElementById("accountsExpandAll").addEventListener("click", () => {
+  if (!STATE) return
+  STATE.accounts.forEach((account) => ACCOUNT_FOLDS.delete(account.id))
+  saveAccountFolds()
+  renderAccounts()
+})
+document.getElementById("accountsCollapseAll").addEventListener("click", () => {
+  if (!STATE) return
+  STATE.accounts.forEach((account) => ACCOUNT_FOLDS.add(account.id))
+  saveAccountFolds()
+  renderAccounts()
 })
 document.getElementById("expenseCategoriesShowHidden").addEventListener("change", (e) => {
   EXPENSE_CATEGORY_VIEW.showHidden = e.target.checked
+  saveExpenseCategoryView()
   renderExpenseCategoryPicker()
 })
 document.getElementById("expenseCategoriesHideUnchecked").addEventListener("change", (e) => {
   EXPENSE_CATEGORY_VIEW.hideUnchecked = e.target.checked
+  saveExpenseCategoryView()
   renderExpenseCategoryPicker()
 })
+// Restores the two checkboxes above to match EXPENSE_CATEGORY_VIEW's own restored-from-cookie
+// state -- the view object is read from the cookie at load (see its own declaration), but these
+// static checkbox elements need their own .checked set to match, same as applyPrivacyMode does for
+// the privacy toggle.
+document.getElementById("expenseCategoriesShowHidden").checked = EXPENSE_CATEGORY_VIEW.showHidden
+document.getElementById("expenseCategoriesHideUnchecked").checked = EXPENSE_CATEGORY_VIEW.hideUnchecked
 document.getElementById("mcWithdrawalRuleType").addEventListener("change", (e) => {
   const type = e.target.value
   if (type === "") {
@@ -2972,8 +3130,8 @@ function renderTagResults(results) {
 document.getElementById("findAnomaliesBtn").addEventListener("click", () => runExclusive(runFindAnomalies))
 document.getElementById("tagAnomaliesBtn").addEventListener("click", () => runExclusive(runTagAnomalies))
 
-// Small per-browser preferences (privacy mode, whether the getting-started walkthrough has been
-// dismissed) are persisted via a cookie, not localStorage -- this app's own port changes on every
+// Small per-browser preferences (privacy mode, fold state, etc.) are persisted via a cookie, not
+// localStorage -- this app's own port changes on every
 // restart (the CLI's own default is an OS-assigned ephemeral port, see app.ts), and localStorage is
 // scoped to the full origin (scheme+host+port), so it would reset every time the server restarts on
 // a new port even though nothing about the browser or the preference itself changed. A cookie's
@@ -2999,15 +3157,6 @@ function applyPrivacyMode(active) {
   const btn = document.getElementById("privacyToggle")
   if (btn) btn.setAttribute("aria-pressed", String(active))
 }
-document.getElementById("walkthroughDismiss").addEventListener("click", () => {
-  document.getElementById("walkthrough").hidden = true
-  try {
-    setCookie("walkthroughDismissed", "1")
-  } catch {
-    // Cookies disabled -- stays dismissed for this page view only, reappears on the next load.
-  }
-})
-
 document.getElementById("privacyToggle").addEventListener("click", () => {
   const active = !document.body.classList.contains("privacy")
   applyPrivacyMode(active)
