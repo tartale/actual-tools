@@ -386,3 +386,66 @@ good widget down with a bad one).
   including the 5 real-browser ones in `src/browser-tests/`, gated behind
   `PLAYWRIGHT_BROWSERS_PATH` -- see [[sandbox-toolchain-policy]]) green, typecheck/lint/vendor-check
   all clean.
+
+**Seventh follow-up, next session: a full Retirement-page layout redesign, sketched with
+`AskUserQuestion` previews first.** The user named the real problem directly: "one of the best
+features is the live-recalculation, however, you need to scroll up to tweak, and scroll down to
+see the new chart." Three ASCII-mockup options were presented (split-pane sticky sidebar / chart
+pinned to top of one column / floating mini-chart widget); the user picked split-pane, and every
+later ask in the same round built on it -- worth remembering the mockup-first move worked well for
+a layout decision like this, not just a one-line recommendation.
+
+1. **Split-pane structure**: `.retirement-inputs` (Plan through Accounts, scrolls normally) and
+   `.retirement-live` (tiles/Stale/Analysis) as two CSS grid columns, `.retirement-live-sticky`
+   (the actual `position: sticky` element) nested one level inside `.retirement-live` -- sticky
+   needs a TALLER containing block to stick within, which is exactly what grid's own default
+   `align-items: stretch` gives it for free (deliberately not overridden to `start`) since
+   `.retirement-inputs` is normally the taller of the two. `main:has(#page-retirement.active) {
+   max-width: none }` lets this split stretch to fill the full window (Budget's own single card
+   stays capped) once that was asked for later in the same round. `.retirement-split` also got
+   Budget's own single-bordered-card look (`border`/`radius`/`background`, unconditionally, not
+   just at the wide breakpoint) once that was asked for too. No JS changes needed for any of this
+   -- fold-state, expand/collapse-all, and the live-recalc wiring already keyed off element ids/
+   `data-section`, never DOM nesting.
+2. **Toolbar relocation, twice**: Refresh/Expand-all/Collapse-all/Export-to-Dashboard moved out of
+   the page-head into two small `.column-toolbar`s, one per column -- first pass put
+   Refresh+Export with the live column (both sounded "about the results"), Expand/Collapse-all
+   with the inputs column. The user then reasoned through Refresh's own function out loud ("it
+   sounds like, per its function, refresh should be in the plan column") and was right: Refresh's
+   real job (confirmed by reading `refreshAll` -- it just calls the same `runCheck()` a debounced
+   field edit already triggers) is pulling in a change made *outside* this app, on the Actual side
+   directly -- an input-side concern, not an output one. Moved to join Expand/Collapse-all.
+   Expand-all/Collapse-all also got scoped to a new `INPUT_SECTIONS` constant (RETIREMENT_SECTIONS
+   minus "analysis") once they moved into the inputs column -- collapsing "everything" from a
+   button that now visually lives in that column but still reached into the OTHER column to hide
+   the chart would have cut directly against the whole point of the redesign; Analysis keeps its
+   own single fold toggle, unaffected.
+3. **Side rail -> topbar**: `<aside class="rail">` (vertical, 172px fixed column via `.app`'s own
+   grid) became `<header class="topbar">` (horizontal flex row, `.app` now a plain flex column) --
+   freed the whole former rail width for content, on top of the width the removed page titles
+   freed. `<h1>Retirement</h1>`/`<h1>Budget</h1>` removed outright (the topbar's own highlighted
+   nav item already says which page you're on) along with the CSS that only existed for them
+   (`.page-head`, `.card-head-page`, the bare `h1` rule, and a later-caught leftover
+   `.page-head-actions` that should have been cleaned up in the SAME pass but wasn't -- caught and
+   removed the next time this file was touched, a reminder to re-grep for a class's other users
+   right when removing its last one, not just delete the one now-empty rule). The privacy toggle
+   moved into the topbar itself (global, not page-specific, `margin-left: auto` to sit at the far
+   right).
+4. **Click-to-zoom, `addChartZoom` in app.js**: a magnifying-glass button (opacity 0 until the
+   chart is hovered) reparents the SAME chart DOM node (not a clone, not a re-render) into a wide
+   `.modal-chart` modal on click, and back to its original position (`parentNode`/`nextSibling`
+   remembered at zoom-open time) on close. Works with zero extra plumbing because
+   wireBridgeTooltip/wireMonteCarloTooltip's own pointer math already normalizes against the SVG's
+   *rendered* `getBoundingClientRect().width*`, not an assumption about its in-page size -- so the
+   exact same wiring draws correctly larger in the modal for free. Found and fixed one real,
+   narrowly-scoped test regression from this: `bridge-chart.test.ts`'s `plainEndDots` count queried
+   `circle` broadly under `.bridge-chart`, which now also matches the zoom button's own icon
+   `<circle>` -- rescoped the query to `.bridge-chart-svg circle` specifically, which is what the
+   test actually meant.
+5. Verified live at every step (Playwright, screenshots) rather than just by reading the CSS back:
+   the sticky column visible in place after scrolling ~2700px through Accounts, the mobile/narrow
+   fallback (single column, nothing sticky, topbar not wrapping) unaffected at each stage, a
+   1600px+ viewport genuinely reaching ~800-1900px chart widths as the ratio/stretch changes
+   landed, zoom open/close/Escape/backdrop-click and tooltip-while-zoomed all confirmed working,
+   and Budget's own page confirmed unaffected by each Retirement-only change (`:has()` scoping,
+   the topbar swap, the border).

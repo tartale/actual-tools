@@ -71,7 +71,7 @@ body.busy .saving-pill { opacity: 1; }
    features, not a separate monospace face. */
 .num { font-feature-settings: "tnum" 1, "ss01" 1, "ss04" 1; font-variant-numeric: tabular-nums; }
 
-.app { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+.app { display: flex; flex-direction: column; min-height: 100vh; }
 
 /* --- Privacy mode: an Actual-style eye toggle that blurs dollar figures (anything rendered via
    app.js's moneySpan) without touching ages, percentages, or plain labels. --- */
@@ -124,26 +124,31 @@ body.privacy input[data-field="ruleOf55SeparationAge"]:focus { filter: none; }
    cue even once the edges are soft. */
 body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); accent-color: var(--ink-faint); }
 
-/* --- Sidebar --- */
-.rail { background: var(--sidebar-bg); padding: 18px 14px; display: flex; flex-direction: column; gap: 26px; }
+/* --- Topbar --- */
+.topbar { background: var(--sidebar-bg); padding: 10px 24px; display: flex; align-items: center; gap: 28px; }
 .wordmark { font-weight: 700; font-size: 18px; letter-spacing: 0.3px; color: var(--ink-strong); display: flex; align-items: baseline; gap: 8px; }
 .wordmark .tag { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent-selected); border: 1px solid var(--sidebar-hover); padding: 1px 5px; border-radius: var(--radius-sm); }
-.subline { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
-nav.sections { display: flex; flex-direction: column; gap: 1px; }
-.section-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 9px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); cursor: pointer; }
+/* Inline next to the wordmark now (not a second line below it) -- a "·" leader separates it,
+   added via margin/border rather than content so it disappears cleanly if this ever wraps off. */
+.wordmark .subline { font-size: 11px; font-weight: 400; color: var(--ink-faint); padding-left: 10px; border-left: 1px solid var(--sidebar-hover); }
+nav.sections { display: flex; flex-direction: row; gap: 2px; }
+.section-item { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); cursor: pointer; }
 .section-item:hover:not(.active) { background: var(--sidebar-hover); }
 .section-item.active { background: var(--accent-selected-bg); color: var(--accent-selected); }
+/* Privacy toggle sits at the far right of the bar, past the nav items. */
+#privacyToggle { margin-left: auto; }
 
 /* --- Main --- */
-main { padding: 0 40px 56px; max-width: 1360px; }
-.page-head, .top-error:not([hidden]) { padding-top: 26px; }
-/* A card standing in for a page heading: same bar, a little more room for the larger type. */
-.card-head-page { padding: 14px 16px; }
+main { padding: 0 40px 56px; max-width: 1500px; flex: 1; }
+/* Retirement's own two-column split wants to use the full window, not cap out at main's own
+   general-purpose width (which still applies to Budget's single narrow action card). */
+main:has(#page-retirement.active) { max-width: none; }
+/* The active page itself carries this now -- neither page repeats its own name as a heading
+   below the topbar's already-highlighted nav item, so there's no page-head element left to hang
+   it on. */
+.page.active, .top-error:not([hidden]) { padding-top: 26px; }
 .page { display: none; }
 .page.active { display: block; }
-.page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 20px; }
-h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color: var(--ink-strong); text-wrap: balance; }
-.page-head p { margin: 4px 0 0; color: var(--ink-soft); font-size: 12.5px; max-width: 48ch; }
 
 /* auto-fit rather than a fixed 4 columns -- Portfolio is the only tile always present; Spend and
    any Rule of 55/debt-payoff tiles (see renderSummaryStats in app.js) are added once
@@ -155,9 +160,11 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
 .summary .tile .value { font-size: 17px; font-weight: 600; margin-top: 2px; color: var(--ink-strong); }
 .summary .tile .tile-note { font-size: 12px; font-weight: 400; color: var(--ink-faint); }
 
-/* Refresh/Expand all/Collapse all/Export to Dashboard sit in .page-head itself, beside the
-   privacy toggle, rather than their own row above the cards. */
-.page-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+/* Same bordered-box treatment as Budget's own single .card, wrapping the two columns together as
+   one page-level container rather than leaving them floating directly on the page background --
+   applies unconditionally (not just the wide split, see the media query below), so the stacked
+   narrow layout gets it too. */
+.retirement-split { background: var(--surface); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 20px; }
 
 /* Wide viewports only (see the media query below) -- .retirement-inputs (Plan through Accounts)
    scrolls normally in the left column; .retirement-live (tiles/Stale/Analysis, everything the
@@ -166,9 +173,15 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; margin: 0; color:
    .retirement-live-sticky has real room to stick within as the page scrolls -- without that extra
    height, "sticky" would have nothing to stick against and behave like static positioning. */
 @media (min-width: 1150px) {
-  .retirement-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(420px, 560px); gap: 24px; }
+  .retirement-split { display: grid; grid-template-columns: minmax(340px, 2fr) minmax(620px, 3fr); gap: 24px; }
   .retirement-live-sticky { position: sticky; top: 16px; }
 }
+
+/* One per column. retirement-inputs: Refresh (despite recalculating, its real job is pulling in
+   whatever changed on the Actual side -- a new transaction, a category edit made outside this app
+   -- so it belongs with the inputs, not the results it feeds) alongside Expand/Collapse all.
+   retirement-live: Export to Dashboard, the one action that's actually about the live results. */
+.column-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 /* The caret + <h2> group, so .card-head's own space-between still has exactly two children -- this
    group on the left, whatever hint/button a card already had on the right, untouched. */
 .card-head-title { display: flex; align-items: center; gap: 8px; }
@@ -406,6 +419,10 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    with no theme toggle, so there is no second mode for a --series-N variable to swap under. */
 .bridge-chart { position: relative; margin: 4px 16px 2px; }
 .bridge-chart-svg { width: 100%; height: auto; display: block; }
+/* Click-to-zoom affordance -- see addChartZoom in app.js. Hidden until the chart itself is
+   hovered so it doesn't compete with the crosshair/tooltip for attention at rest. */
+.chart-zoom-btn { position: absolute; top: 0; right: 0; opacity: 0; transition: opacity 0.15s; }
+.bridge-chart:hover .chart-zoom-btn, .chart-zoom-btn:focus-visible { opacity: 1; }
 /* Wraps just the svg (not the legend below it) in renderChartSkeleton, so the loading overlay's
    inset:0 lines up with the plot area itself regardless of whether a legend renders under it. */
 .chart-svg-wrap { position: relative; }
@@ -541,6 +558,10 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .modal .btn { margin-top: 4px; }
 .modal-close { position: absolute; top: 12px; right: 12px; width: 24px; height: 24px; border: none; background: transparent; color: var(--ink-faint); font-size: 18px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .modal-close:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+/* Wide enough that a zoomed chart (viewBox 640x240, width:100%) renders meaningfully larger than
+   it does at its normal in-page size, not just in a bigger box around the same rendered size. */
+.modal-chart { max-width: 1100px; width: min(94vw, 1100px); }
+.modal-chart #chartZoomBody .bridge-chart { margin: 4px 0 2px; }
 
 /* Budget table -- styled to read like Actual's own budget page: a group row you can fold (caret to
    the left of its checkbox/name, matching Actual's own placement) showing that group's own
@@ -712,12 +733,11 @@ label.bt-group-check-label { display: inline-flex; align-items: center; gap: 8px
 .month-strip-arrow:hover { color: var(--ink-strong); }
 
 @media (max-width: 860px) {
-  .app { grid-template-columns: 1fr; }
-  .rail { flex-direction: row; overflow-x: auto; }
+  .topbar { overflow-x: auto; }
   .summary, .plan-grid, .acct-fields, .income-grid { grid-template-columns: 1fr 1fr; }
   .account-row { grid-template-columns: 1fr; }
   main { padding: 0 18px 18px; }
-  .page-head, .top-error:not([hidden]) { padding-top: 18px; }
+  .page.active, .top-error:not([hidden]) { padding-top: 18px; }
 }
 
 @media (min-width: 861px) and (max-width: 1150px) {
