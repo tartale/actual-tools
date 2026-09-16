@@ -328,9 +328,9 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
   const total = result.accessibleAtRetirement + result.lockedAtRetirement
   const share = total > 0 ? Math.round((result.accessibleAtRetirement / total) * 1000) / 10 : 0
   const split = [
-    `${formatUsd(result.accessibleAtRetirement)} reachable at ${result.retirementAge} (${share}%)` +
+    `${formatUsd(result.accessibleAtRetirement)} reachable at retirement (${share}%)` +
       (result.lockedAtRetirement > 0 && result.nextUnlockAge != null
-        ? `, ${formatUsd(result.lockedAtRetirement)} locked (earliest unlock at ${result.nextUnlockAge})`
+        ? `, ${formatUsd(result.lockedAtRetirement)} locked (earliest unlock at age ${result.nextUnlockAge})`
         : ""),
   ]
 
@@ -341,13 +341,13 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
     const gap = result.nextUnlockAfterDepletion - result.depletionAge
     return {
       level: "fail",
-      title: `age ${result.retirementAge} -- reachable money runs out at ${result.depletionAge}, ${gap} yr${gap === 1 ? "" : "s"} before the next ${formatUsd(result.lockedAtDepletion)} unlocks at ${result.nextUnlockAfterDepletion}.`,
+      title: `age ${result.retirementAge} -- reachable money runs out at age ${result.depletionAge}, ${gap} yr${gap === 1 ? "" : "s"} before the next ${formatUsd(result.lockedAtDepletion)} unlocks at age ${result.nextUnlockAfterDepletion}.`,
       detail: [...split, "This is already the best case -- mean returns, no volatility -- so every simulated run fails here too."],
     }
   }
   return {
     level: "warn",
-    title: `age ${result.retirementAge} -- runs out at ${result.depletionAge}, short of ${planToAge}.`,
+    title: `age ${result.retirementAge} -- runs out at age ${result.depletionAge}, short of age ${planToAge}.`,
     detail: [...split, "Everything has unlocked by then, so this is a shortfall, not a bridging problem."],
   }
 }
@@ -361,7 +361,7 @@ export function monteCarloFinding(result: MonteCarloSummary, currentAge: number,
   const successPct = Math.round(result.successRate * 100)
   const detail = [`Median ending balance ${formatUsd(result.medianEndingBalance)}.`]
   if (result.successRate >= 1) {
-    return { level: "ok", title: `age ${retirementAge} -- every simulated run funds the plan through ${planToAge}.`, detail }
+    return { level: "ok", title: `age ${retirementAge} -- every simulated run funds the plan through age ${planToAge}.`, detail }
   }
   if (result.medianDepletionYear != null) {
     detail.push(`Depleted runs typically ran out around age ${currentAge + result.medianDepletionYear}.`)
@@ -369,7 +369,7 @@ export function monteCarloFinding(result: MonteCarloSummary, currentAge: number,
   const level: FindingLevel = result.successRate >= 0.9 ? "ok" : result.successRate >= 0.5 ? "warn" : "fail"
   return {
     level,
-    title: `age ${retirementAge} -- ${successPct}% of ${result.simulationCount.toLocaleString()} simulated runs fund the plan through ${planToAge}.`,
+    title: `age ${retirementAge} -- ${successPct}% of ${result.simulationCount.toLocaleString()} simulated runs fund the plan through age ${planToAge}.`,
     detail,
   }
 }
@@ -501,7 +501,7 @@ export function detectPotDrift(
     if (stale.length > 0) {
       findings.push({
         level: "warn",
-        title: `${account.name}: Actual has access age ${stale.map((age) => age ?? "none").join("/")}, your current config would produce ${[...want].map((age) => age ?? "none").join("/")}.`,
+        title: `${account.name}: Actual has access age ${stale.map((age) => age ?? "none").join("/")}, your current config would produce access age ${[...want].map((age) => age ?? "none").join("/")}.`,
         detail: ["Your exported Actual dashboard predates this change. This doesn't affect the numbers on this page -- use Export to Dashboard to update it in Actual too."],
       })
     }

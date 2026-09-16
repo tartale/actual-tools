@@ -45,10 +45,37 @@ function usd(cents) {
   return sign + "$" + (Math.abs(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+// Splits a formatted dollar string ("$1,234.56"/"-$1,234.56", from usd()/usdCompact() alike) into
+// the sign+$ prefix and the digits -- privacy mode blurs only the digits (see .money in style.css),
+// leaving the $ itself (and any leading -) visible so a blurred figure still reads as "this is a
+// dollar amount," not just an unreadable smudge. Returns ready-to-insert HTML.
+function moneyHtml(formatted) {
+  const dollarIndex = formatted.indexOf("$")
+  return `${formatted.slice(0, dollarIndex + 1)}<span class="money">${formatted.slice(dollarIndex + 1)}</span>`
+}
+
+// Chart text (the SVG axis/markers, and the hover tooltip) swaps its own dollar/age content for a
+// fixed placeholder in privacy mode, rather than relying on the .money blur filter every other
+// dollar figure on the page uses -- a real bug hit building this: CSS filter on an SVG <tspan> (the
+// only way to style part of one <text> element differently from the rest) doesn't reliably render
+// in every engine (computed style reports blur(6px), nothing visibly blurs), and the tooltip is
+// rebuilt fresh on every pointermove regardless, so there's no re-render step to hang a blur toggle
+// off anyway. Swapping content sidesteps both problems, and is the same convention Actual's own UI
+// uses for masked figures. Both keep the real content when privacy mode is off, so callers can use
+// these unconditionally without their own if/else.
+function moneyMaskText(formatted, isPrivate) {
+  if (!isPrivate) return formatted
+  const dollarIndex = formatted.indexOf("$")
+  return `${formatted.slice(0, dollarIndex + 1)}~~~~~`
+}
+function ageMaskText(value, isPrivate) {
+  return isPrivate ? "~~" : String(value)
+}
+
 // Wraps a read-only dollar figure so privacy mode (see the eye toggle) can blur it without
 // touching the ones still being edited (plain <input> values are never wrapped in this).
 function moneySpan(cents) {
-  return `<span class="num money">${usd(cents)}</span>`
+  return `<span class="num">${moneyHtml(usd(cents))}</span>`
 }
 
 // A dollar <input> stores/shows a comma-formatted string ("1,500.00") at rest, since a native
@@ -924,12 +951,22 @@ function escapeHtml(text) {
   return div.innerHTML
 }
 
-// Server-built sentences (findings, boost/payoff lines) embed dollar amounts as plain text
-// (formatUsd's own "$1,234.56"/"-$1,234.56" shape) alongside ages/percentages that privacy mode
-// should leave readable -- this wraps just the dollar substrings in a .money span after escaping,
-// so the eye toggle can blur them without needing the server to mark them up itself.
+// Server-built sentences (findings, boost/payoff lines) embed dollar amounts and ages as plain
+// text -- this wraps both in .money spans after escaping (moneyHtml keeps a dollar figure's own $
+// visible), so the eye toggle can blur them without needing the server to mark them up itself.
+// Percentages/durations/simulation counts are left readable, and so is a retirement age being
+// *compared* (a planning input, not a real fact) or plan-to-age -- see CLAUDE.md's own privacy
+// rule for what counts as sensitive and why. Only "at age N"/"around age N"/"access age N" match
+// (real facts: an unlock/payoff/depletion age, a live-vs-configured access-age drift finding,
+// never the sentence's own leading "age N --" retirement-age lead-in or an "until/through/short of
+// age N" planToAge mention) -- every sensitive-age sentence in fire-analysis.ts is written with
+// one of those three exact lead-ins for this reason; a new one needs to follow the same convention
+// to get blurred here. Only the number itself is wrapped, not the word "age" -- that's just
+// English, not the sensitive part.
 function moneyify(text) {
-  return escapeHtml(text).replace(/-?\$[\d,]+\.\d{2}/g, (match) => `<span class="money">${match}</span>`)
+  return escapeHtml(text)
+    .replace(/-?\$[\d,]+\.\d{2}/g, (match) => moneyHtml(match))
+    .replace(/\b(at|around|access) age (\d+(?:\/\d+)*)/g, (_match, lead, nums) => `${lead} age <span class="money">${nums}</span>`)
 }
 
 // --- Bridge burndown chart (Analyze tab) ---
@@ -1011,6 +1048,9 @@ const BRIDGE_WINDOW_YEARS = 20
 function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = [], debtPayoffs = [], incomeStreams = []) {
   const usable = bridgeResults.filter((r) => r.timeline.length > 0 && r.accessibleAtRetirement + r.lockedAtRetirement > 0)
   if (usable.length === 0) return null
+  // Read once, not per-figure -- see svgMoneyText/svgAgeText's own doc comment for why this
+  // chart's own dollar/age text swaps content instead of relying on a blur filter.
+  const isPrivate = document.body.classList.contains("privacy")
 
   // What actually gets drawn for each scenario, and where its line stops. `trimmed` scenarios keep
   // no end mark at all below -- a line simply running off the right edge of a windowed chart is the
@@ -1081,7 +1121,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     .map(
       (tickCents) =>
         `<line x1="${margin.left}" y1="${scaleY(tickCents).toFixed(1)}" x2="${width - margin.right}" y2="${scaleY(tickCents).toFixed(1)}" class="bridge-grid" />` +
-        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${usdCompact(tickCents)}</text>`,
+        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${moneyMaskText(usdCompact(tickCents), isPrivate)}</text>`,
     )
     .join("")
 
@@ -1119,24 +1159,31 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     ...ruleOf55Ages.map((age) => ({
       age,
       className: "ruleof55",
-      label: `Rule of 55: +${usdCompact(ruleOf55Boosts.filter((b) => b.to === age).reduce((total, b) => total + b.amount, 0))}`,
+      name: "Rule of 55",
+      amount: `+${usdCompact(ruleOf55Boosts.filter((b) => b.to === age).reduce((total, b) => total + b.amount, 0))}`,
     })),
     ...debtPayoffAges.map((age) => ({
       age,
       className: "mortgage",
-      label: `Debt Paid Off: -${usdCompact(debtPayoffs.filter((d) => d.payoffAge === age).reduce((total, d) => total + d.monthlyAmount, 0) * 12)}/yr`,
+      name: "Debt Paid Off",
+      amount: `-${usdCompact(debtPayoffs.filter((d) => d.payoffAge === age).reduce((total, d) => total + d.monthlyAmount, 0) * 12)}/yr`,
     })),
     ...incomeAges.map((age) => {
       const streamsAtAge = incomeStreams.filter((s) => s.startAge === age)
       return {
         age,
         className: "income",
-        label: `${streamsAtAge.map((s) => s.name).join(" + ")}: +${usdCompact(streamsAtAge.reduce((total, s) => total + s.annualAmount, 0))}/yr`,
+        name: streamsAtAge.map((s) => s.name).join(" + "),
+        amount: `+${usdCompact(streamsAtAge.reduce((total, s) => total + s.annualAmount, 0))}/yr`,
       }
     }),
   ].sort((a, b) => a.age - b.age)
   const markerRowStep = 13
-  const positionedMarkers = markers.map(({ age, className, label }, row) => {
+  const positionedMarkers = markers.map(({ age, className, name, amount }, row) => {
+    // The amount actually rendered (see markerLines) -- masked text in privacy mode, so the width
+    // used for anchor/halo math below matches what's really on screen either way.
+    const shownAmount = moneyMaskText(amount, isPrivate)
+    const label = `${name}: ${shownAmount}`
     const x = scaleX(age)
     const labelY = margin.top + 8 + row * markerRowStep
     // No canvas measurement available for an inline SVG string -- ~5.3px/char is a fair estimate
@@ -1147,7 +1194,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     const anchor = x + halfLabelWidth > width - margin.right ? "end" : x - halfLabelWidth < margin.left ? "start" : "middle"
     const dx = anchor === "end" ? -4 : anchor === "start" ? 4 : 0
     const haloLeft = anchor === "start" ? x + dx : anchor === "end" ? x + dx - labelWidth : x + dx - halfLabelWidth
-    return { x, labelY, className, label, anchor, dx, labelWidth, haloLeft }
+    return { x, labelY, className, name, shownAmount, anchor, dx, labelWidth, haloLeft }
   })
   // Every marker's own vertical guide line runs the FULL plot height, so a marker whose x lands
   // under an earlier row's (wider) label would otherwise pierce it -- painting every line, THEN
@@ -1161,8 +1208,8 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
       .join("") +
     positionedMarkers
       .map(
-        ({ x, labelY, className, label, anchor, dx }) =>
-          `<text x="${x.toFixed(1)}" y="${labelY.toFixed(1)}" class="bridge-${className}-label" text-anchor="${anchor}" dx="${dx}">${escapeHtml(label)}</text>`,
+        ({ x, labelY, className, name, shownAmount, anchor, dx }) =>
+          `<text x="${x.toFixed(1)}" y="${labelY.toFixed(1)}" class="bridge-${className}-label" text-anchor="${anchor}" dx="${dx}">${escapeHtml(`${name}: ${shownAmount}`)}</text>`,
       )
       .join("")
 
@@ -1224,7 +1271,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
             : `<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="2" />`
       const endLabel =
         directLabels && result.depletionAge != null
-          ? `<text x="${endX.toFixed(1)}" y="${(endY - 9).toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">depletes at ${result.depletionAge}</text>`
+          ? `<text x="${endX.toFixed(1)}" y="${(endY - 9).toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">depletes at age ${result.depletionAge}</text>`
           : ""
       const lockedDashOffset = lockedPoints.length > 1 ? dashOffsetEndingMidDash(pathPixelLength(lockedPoints, "lockedBalance"), 4, 3) : 0
       return `<g data-series="${index}">
@@ -1306,6 +1353,10 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
     crosshair.setAttribute("x1", scale.scaleX(age).toFixed(1))
     crosshair.setAttribute("x2", scale.scaleX(age).toFixed(1))
 
+    // Read fresh on every hover move, not cached at wireBridgeTooltip's own call time -- the
+    // tooltip is rebuilt from scratch here regardless, so it may as well always reflect whatever
+    // the privacy toggle currently says rather than whatever it said when the chart was drawn.
+    const isPrivate = document.body.classList.contains("privacy")
     tooltip.innerHTML = ""
     const heading = document.createElement("div")
     heading.className = "bridge-tooltip-age"
@@ -1319,7 +1370,7 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
       metric.className = "bridge-tooltip-metric"
       const value = document.createElement("span")
       value.className = "bridge-tooltip-value"
-      value.textContent = usd(amount)
+      value.textContent = moneyMaskText(usd(amount), isPrivate)
       metric.append(`${unitLabel}: `, value)
       return metric
     }
@@ -1385,6 +1436,7 @@ let mcChartInstanceCounter = 0
 function renderMonteCarloChart(monteCarloResults, currentAge, monteCarloHistory = []) {
   const usable = monteCarloResults.filter((r) => r.percentileBands.length > 0)
   if (usable.length === 0) return null
+  const isPrivate = document.body.classList.contains("privacy")
 
   const series = usable.map((result) => ({
     result,
@@ -1438,7 +1490,7 @@ function renderMonteCarloChart(monteCarloResults, currentAge, monteCarloHistory 
     .map(
       (tickCents) =>
         `<line x1="${margin.left}" y1="${scaleY(tickCents).toFixed(1)}" x2="${width - margin.right}" y2="${scaleY(tickCents).toFixed(1)}" class="bridge-grid" />` +
-        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${usdCompact(tickCents)}</text>`,
+        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${moneyMaskText(usdCompact(tickCents), isPrivate)}</text>`,
     )
     .join("")
 
@@ -1559,6 +1611,7 @@ function wireMonteCarloTooltip(wrap, series, scale) {
   const byAge = series.map(({ points }) => new Map(points.map((point) => [point.age, point])))
 
   const move = (event) => {
+    const isPrivate = document.body.classList.contains("privacy")
     const rect = svg.getBoundingClientRect()
     const svgX = ((event.clientX - rect.left) / rect.width) * scale.width
     const fraction = Math.min(1, Math.max(0, (svgX - scale.margin.left) / scale.plotWidth))
@@ -1588,14 +1641,15 @@ function wireMonteCarloTooltip(wrap, series, scale) {
       key.style.background = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
       const value = document.createElement("span")
       value.className = "bridge-tooltip-value"
-      value.textContent = usd(point.p50)
+      value.textContent = moneyMaskText(usd(point.p50), isPrivate)
       const label = document.createElement("span")
       label.className = "bridge-tooltip-label"
       label.textContent = series.length > 1 ? `retire ${result.retirementAge} (median)` : "median"
       row.append(key, value, label)
       const range = document.createElement("span")
       range.className = "bridge-tooltip-locked"
-      range.textContent = `· ${usd(point.p10)}-${usd(point.p90)} (80% of runs)`
+      const rangeText = isPrivate ? "$~~~~~ to $~~~~~" : `${usd(point.p10)} to ${usd(point.p90)}`
+      range.textContent = `· ${rangeText} (80% of runs)`
       row.appendChild(range)
       tooltip.appendChild(row)
     })
@@ -1636,10 +1690,10 @@ function renderSummaryStats(result) {
   container.querySelectorAll(".tile-dynamic").forEach((el) => el.remove())
   const tiles = [{ label: "Spend", value: `${moneySpan(result.annualSpend)}/yr` }]
   result.ruleOf55Boosts.forEach((b) => {
-    tiles.push({ label: escapeHtml(b.accountName), value: `Rule of 55, age ${b.to}` })
+    tiles.push({ label: escapeHtml(b.accountName), value: `Rule of 55, age <span class="num money">${b.to}</span>` })
   })
   result.debtPayoffs.forEach((d) => {
-    tiles.push({ label: escapeHtml(d.accountName), value: `${moneySpan(d.monthlyAmount)}/mo, paid off at ${d.payoffAge}` })
+    tiles.push({ label: escapeHtml(d.accountName), value: `${moneySpan(d.monthlyAmount)}/mo, paid off at age <span class="num money">${d.payoffAge}</span>` })
   })
   tiles.forEach((t) => {
     const div = document.createElement("div")
@@ -1692,6 +1746,7 @@ const LOADING_MARKUP = `<div class="panel-loading chart-loading">
 // decided here, since Bridge's own version is conditional on a real guess (does ANY portfolio
 // account still have a locked accessAge?) that belongs with the rest of that call's own inputs.
 function renderChartSkeleton(ariaLabel, currentAge, planToAge, retirementAges, portfolioTotal, styleKey) {
+  const isPrivate = document.body.classList.contains("privacy")
   const width = 640
   const height = 240
   const margin = { top: 12, right: 16, bottom: 24, left: 54 }
@@ -1722,7 +1777,7 @@ function renderChartSkeleton(ariaLabel, currentAge, planToAge, retirementAges, p
     .map(
       (tickCents) =>
         `<line x1="${margin.left}" y1="${scaleY(tickCents).toFixed(1)}" x2="${width - margin.right}" y2="${scaleY(tickCents).toFixed(1)}" class="bridge-grid" />` +
-        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${usdCompact(tickCents)}</text>`,
+        `<text x="${margin.left - 8}" y="${scaleY(tickCents).toFixed(1)}" class="bridge-axis-label" text-anchor="end" dominant-baseline="middle">${moneyMaskText(usdCompact(tickCents), isPrivate)}</text>`,
     )
     .join("")
 
@@ -1870,6 +1925,40 @@ function revealTopSectionIfReady() {
   document.getElementById("summaryTiles").hidden = false
 }
 
+// The most recent successful /api/retirement/check response -- kept around so toggling privacy
+// mode can redraw the charts (see renderCheckResult) from data already in hand instead of firing a
+// fresh API call, since chart SVG text is mask-swapped at render time (see moneyMaskText) rather
+// than CSS-blurred, so it needs an actual re-render to pick up the new privacy state.
+let lastCheckResult = null
+
+function renderCheckResult(result) {
+  const container = document.getElementById("checkResult")
+  container.innerHTML = ""
+  if (result.bridgeFindings.length === 0 && result.monteCarloFindings.length === 0) {
+    container.innerHTML = `<div class="empty-note">No findings.</div>`
+    return
+  }
+  if (result.bridgeFindings.length > 0) {
+    const group = document.createElement("div")
+    group.className = "findings-group"
+    group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
+    const chart = renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams)
+    if (chart) group.appendChild(chart)
+    result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
+    container.appendChild(group)
+  }
+  if (result.monteCarloFindings.length > 0) {
+    const group = document.createElement("div")
+    group.className = "findings-group"
+    const simCount = result.monteCarloResults[0]?.simulationCount
+    group.innerHTML = `<div class="group-label">Monte Carlo${simCount ? ` · ${simCount.toLocaleString()} simulated runs` : ""}</div>`
+    const chart = renderMonteCarloChart(result.monteCarloResults, result.currentAge, result.monteCarloHistory)
+    if (chart) group.appendChild(chart)
+    result.monteCarloFindings.forEach((f) => group.appendChild(renderFinding(f)))
+    container.appendChild(group)
+  }
+}
+
 async function runCheck() {
   const requestId = ++checkRequestId
   const container = document.getElementById("checkResult")
@@ -1881,30 +1970,8 @@ async function runCheck() {
     renderStaleResult(result.staleFindings)
     firstCheckDone = true
     revealTopSectionIfReady()
-    container.innerHTML = ""
-    if (result.bridgeFindings.length === 0 && result.monteCarloFindings.length === 0) {
-      container.innerHTML = `<div class="empty-note">No findings.</div>`
-      return
-    }
-    if (result.bridgeFindings.length > 0) {
-      const group = document.createElement("div")
-      group.className = "findings-group"
-      group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
-      const chart = renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams)
-      if (chart) group.appendChild(chart)
-      result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
-      container.appendChild(group)
-    }
-    if (result.monteCarloFindings.length > 0) {
-      const group = document.createElement("div")
-      group.className = "findings-group"
-      const simCount = result.monteCarloResults[0]?.simulationCount
-      group.innerHTML = `<div class="group-label">Monte Carlo${simCount ? ` · ${simCount.toLocaleString()} simulated runs` : ""}</div>`
-      const chart = renderMonteCarloChart(result.monteCarloResults, result.currentAge, result.monteCarloHistory)
-      if (chart) group.appendChild(chart)
-      result.monteCarloFindings.forEach((f) => group.appendChild(renderFinding(f)))
-      container.appendChild(group)
-    }
+    lastCheckResult = result
+    renderCheckResult(result)
   } catch (error) {
     if (requestId !== checkRequestId) return
     firstCheckDone = true
@@ -3197,11 +3264,26 @@ function setCookie(name, value) {
 }
 
 // Privacy mode -- an Actual-style eye toggle that blurs dollar figures (anything wrapped in
-// moneySpan) without touching labels, ages, or percentages.
+// moneySpan) and a handful of other identifying fields (birth date, pension/Social Security
+// timing, ...) called out individually in style.css's own privacy rules. Export to Dashboard is
+// disabled outright rather than blurred while active -- its own download carries every one of
+// those real figures regardless of what's currently blurred on screen, so this is the one action
+// privacy mode can't just soften.
 function applyPrivacyMode(active) {
   document.body.classList.toggle("privacy", active)
   const btn = document.getElementById("privacyToggle")
   if (btn) btn.setAttribute("aria-pressed", String(active))
+  const exportBtn = document.getElementById("exportDashboardBtn")
+  if (exportBtn) {
+    exportBtn.disabled = active
+    exportBtn.title = active ? "Disabled in privacy mode" : ""
+  }
+  // Chart axis/marker/depletes-at text is mask-swapped at render time (see moneyMaskText), not
+  // CSS-blurred, so an already-drawn chart needs an actual re-render to pick up the new privacy
+  // state -- unlike the CSS-blur figures elsewhere on the page, which react to body.privacy on
+  // their own. Only re-render if a check has actually completed; runCheck's own first render
+  // already reads the current privacy state.
+  if (lastCheckResult) renderCheckResult(lastCheckResult)
 }
 document.getElementById("privacyToggle").addEventListener("click", () => {
   const active = !document.body.classList.contains("privacy")
