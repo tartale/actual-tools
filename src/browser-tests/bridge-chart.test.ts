@@ -193,7 +193,10 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
         criticalMarkers: el.querySelectorAll(".bridge-end-critical").length,
         unlockLines: el.querySelectorAll(".bridge-unlock-line").length,
         endLabels: el.querySelectorAll(".bridge-end-label").length,
-        plainEndDots: el.querySelectorAll("circle:not(.bridge-end-critical)").length,
+        // Scoped to the chart's own <svg>, not the whole .bridge-chart wrapper -- that wrapper
+        // also holds the click-to-zoom button (see addChartZoom in app.js), whose own icon is a
+        // <circle> too but isn't a data marker.
+        plainEndDots: el.querySelectorAll(".bridge-chart-svg circle:not(.bridge-end-critical)").length,
         hasStyleKey: Boolean(el.querySelector(".bridge-style-key")),
       }
     })

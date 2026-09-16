@@ -1265,7 +1265,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
   `
 
   wireBridgeTooltip(wrap, scenarios, { width, scaleX, minAge, maxAge, margin, plotWidth, currentAge })
-  return wrap
+  return addChartZoom(wrap, "Bridge burndown chart")
 }
 
 // Function to wire the chart's hover layer: a crosshair that snaps to the nearest whole age (every
@@ -1544,7 +1544,7 @@ function renderMonteCarloChart(monteCarloResults, currentAge, monteCarloHistory 
   `
 
   wireMonteCarloTooltip(wrap, series, { width, scaleX, minAge, maxAge, margin, plotWidth })
-  return wrap
+  return addChartZoom(wrap, "Monte Carlo simulation")
 }
 
 // Function to wire the fan chart's hover layer -- same crosshair-snaps-to-the-nearest-whole-age
@@ -2116,6 +2116,55 @@ document.getElementById("addTaxBandBtn").addEventListener("click", () => {
 document.getElementById("generateBtn").addEventListener("click", runGenerate)
 document.getElementById("refreshBtn").addEventListener("click", refreshAll)
 
+// --- Chart zoom ---
+//
+// Reparents the chart's own DOM node into the modal (not a clone/re-render), so its tooltip/hover
+// wiring -- set up once at render time in wireBridgeTooltip/wireMonteCarloTooltip -- keeps working
+// unchanged; that wiring's own coordinate math already normalizes by the SVG's rendered
+// getBoundingClientRect() width rather than assuming its in-page size, so the chart draws larger
+// in the modal for free, no separate "zoomed" rendering path needed.
+let zoomedChart = null
+let zoomedChartHome = null // { parent, nextSibling } -- where to put it back on close
+function openChartZoom(chartWrap, title) {
+  if (zoomedChart === chartWrap) return // already zoomed in on this one
+  zoomedChart = chartWrap
+  zoomedChartHome = { parent: chartWrap.parentNode, nextSibling: chartWrap.nextSibling }
+  document.getElementById("chartZoomTitle").textContent = title
+  document.getElementById("chartZoomBody").appendChild(chartWrap)
+  document.getElementById("chartZoomBackdrop").hidden = false
+}
+function closeChartZoom() {
+  if (zoomedChart && zoomedChartHome) {
+    zoomedChartHome.parent.insertBefore(zoomedChart, zoomedChartHome.nextSibling)
+  }
+  zoomedChart = null
+  zoomedChartHome = null
+  document.getElementById("chartZoomBackdrop").hidden = true
+}
+document.getElementById("chartZoomClose").addEventListener("click", closeChartZoom)
+document.getElementById("chartZoomBackdrop").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeChartZoom()
+})
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !document.getElementById("chartZoomBackdrop").hidden) closeChartZoom()
+})
+
+// Function to add the zoom button to a freshly rendered chart -- shared by
+// renderBridgeChart/renderMonteCarloChart, since both return the same .bridge-chart wrapper
+// shape. Mutates and returns the same `wrap` so a caller can chain it straight into `return`.
+function addChartZoom(wrap, title) {
+  const btn = document.createElement("button")
+  btn.type = "button"
+  btn.className = "icon-btn chart-zoom-btn"
+  btn.title = "Zoom in"
+  btn.setAttribute("aria-label", "Zoom in")
+  btn.innerHTML =
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>'
+  btn.addEventListener("click", () => openChartZoom(wrap, title))
+  wrap.appendChild(btn)
+  return wrap
+}
+
 // --- Export to Dashboard modal ---
 
 function openExportModal() {
@@ -2184,6 +2233,12 @@ document.addEventListener("keydown", (e) => {
 // revisited); the rest default open. DEFAULT_COLLAPSED_SECTIONS is what a first-ever visit (no
 // cookie yet) applies; after that, saveSectionFolds keeps the cookie authoritative for every reload.
 const RETIREMENT_SECTIONS = ["plan", "spend-configuration", "simulation-settings", "retirement-income", "accounts", "analysis"]
+// The retirement-inputs column's own sections -- what Expand all/Collapse all (now living in that
+// column's own toolbar, not the page-head) actually toggle. Deliberately excludes "analysis": it
+// sits in the other (retirement-live) column, already has its own single fold toggle right there,
+// and the whole point of that column is staying visible while the inputs column is worked on --
+// having an inputs-column button reach over and hide the chart would cut against that.
+const INPUT_SECTIONS = RETIREMENT_SECTIONS.filter((name) => name !== "analysis")
 const DEFAULT_COLLAPSED_SECTIONS = ["simulation-settings", "retirement-income"]
 
 // Function to fold or unfold one section -- shared by an individual card's own toggle and
@@ -2235,11 +2290,11 @@ document.querySelectorAll(".card-fold-toggle").forEach((toggle) => {
   })
 })
 document.getElementById("expandAllBtn").addEventListener("click", () => {
-  RETIREMENT_SECTIONS.forEach((name) => setSectionFolded(name, false))
+  INPUT_SECTIONS.forEach((name) => setSectionFolded(name, false))
   saveSectionFolds()
 })
 document.getElementById("collapseAllBtn").addEventListener("click", () => {
-  RETIREMENT_SECTIONS.forEach((name) => setSectionFolded(name, true))
+  INPUT_SECTIONS.forEach((name) => setSectionFolded(name, true))
   saveSectionFolds()
 })
 

@@ -15,42 +15,28 @@
   <div class="saving-pill">Saving…</div>
   <div class="help-popover" id="helpPopover" role="tooltip" hidden></div>
   <div class="app">
-    <aside class="rail">
-      <div>
-        <div class="wordmark">Runway <span class="tag">Beta</span></div>
-        <div class="subline">Companion for Actual Budget</div>
-      </div>
+    <header class="topbar">
+      <div class="wordmark">Runway <span class="tag">Beta</span><span class="subline">Companion for Actual Budget</span></div>
       <nav class="sections">
         <div class="section-item active" data-section="budget">Budget</div>
         <div class="section-item" data-section="retirement">Retirement</div>
       </nav>
-    </aside>
+      <!-- Global, not tied to either page -- both blur dollar figures via moneySpan. -->
+      <button type="button" class="icon-btn" id="privacyToggle" title="Toggle privacy mode" aria-label="Toggle privacy mode" aria-pressed="false">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 12C4.5 7 8 4.5 12 4.5S19.5 7 22 12c-2.5 5-6 7.5-10 7.5S4.5 17 2 12Z"/>
+          <circle cx="12" cy="12" r="3"/>
+          <path class="slash" d="M3 3l18 18"/>
+        </svg>
+      </button>
+    </header>
 
     <main>
       <div class="top-error" id="topError" hidden></div>
 
       <div class="page" id="page-retirement">
-      <div class="page-head">
-        <div>
-          <h1>Retirement</h1>
-        </div>
-        <div class="page-head-actions">
-          <button type="button" class="btn secondary" id="refreshBtn">Refresh</button>
-          <button type="button" class="btn secondary" id="expandAllBtn">Expand all</button>
-          <button type="button" class="btn secondary" id="collapseAllBtn">Collapse all</button>
-          <button type="button" class="btn" id="exportDashboardBtn">Export to Dashboard</button>
-          <button type="button" class="icon-btn" id="privacyToggle" title="Toggle privacy mode" aria-label="Toggle privacy mode" aria-pressed="false">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M2 12C4.5 7 8 4.5 12 4.5S19.5 7 22 12c-2.5 5-6 7.5-10 7.5S4.5 17 2 12Z"/>
-              <circle cx="12" cy="12" r="3"/>
-              <path class="slash" d="M3 3l18 18"/>
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      <!-- Position-fixed overlay -- lives here just because "right after page-head" is as good a
-           spot as any; its place in the DOM has no bearing on where it renders. -->
+      <!-- Position-fixed overlay -- lives here just because "right after the page opens" is as
+           good a spot as any; its place in the DOM has no bearing on where it renders. -->
       <div class="modal-backdrop" id="exportModalBackdrop" hidden>
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
           <button type="button" class="modal-close" id="exportModalClose" title="Close" aria-label="Close">×</button>
@@ -67,6 +53,18 @@
         </div>
       </div>
 
+      <!-- Zoomed-in chart view -- opened by the zoom button renderBridgeChart/renderMonteCarloChart
+           add to their own chart (see addChartZoom in app.js). #chartZoomBody holds whichever
+           chart's own DOM node gets moved into it, not a copy -- reparented back out on close, so
+           its hover/tooltip wiring is never re-created. -->
+      <div class="modal-backdrop" id="chartZoomBackdrop" hidden>
+        <div class="modal modal-chart" role="dialog" aria-modal="true" aria-labelledby="chartZoomTitle">
+          <button type="button" class="modal-close" id="chartZoomClose" title="Close" aria-label="Close">×</button>
+          <h2 id="chartZoomTitle"></h2>
+          <div id="chartZoomBody"></div>
+        </div>
+      </div>
+
       <!-- Two columns wide enough to hold both (see the min-width media query in style.css) --
            .retirement-inputs scrolls normally; .retirement-live-sticky (everything the live
            recalculation touches: tiles, Stale, the Bridge/Monte Carlo charts) sticks near the top
@@ -76,6 +74,11 @@
            sticky there. -->
       <div class="retirement-split">
       <div class="retirement-inputs">
+        <div class="column-toolbar">
+          <button type="button" class="btn secondary" id="refreshBtn">Refresh</button>
+          <button type="button" class="btn secondary" id="expandAllBtn">Expand all</button>
+          <button type="button" class="btn secondary" id="collapseAllBtn">Collapse all</button>
+        </div>
         <div class="card" data-section="plan">
           <div class="card-head">
             <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Plan</h2></span>
@@ -341,6 +344,9 @@
 
       <div class="retirement-live">
       <div class="retirement-live-sticky">
+        <div class="column-toolbar">
+          <button type="button" class="btn" id="exportDashboardBtn">Export to Dashboard</button>
+        </div>
         <!-- Portfolio (instant, from STATE) plus whatever /api/retirement/check adds once it
              resolves (Spend, any Rule of 55/debt-payoff adjustment) -- all plain label/number
              tiles, no sentences, no separate "Current numbers" card or heading; see
@@ -373,13 +379,9 @@
 
       <div class="page active" id="page-budget">
       <!-- One picker, one action list. "Find anomalies" is simply another action over the same
-           months and categories, rather than a second tab with a second copy of the same grid.
-           This card carries the section's own title and runs to the top of the page, so the Action
-           list is the first thing on it rather than the third. -->
+           months and categories, rather than a second tab with a second copy of the same grid. --
+           the page's own name is now the active topbar nav item, not repeated here as a heading. -->
       <div class="card">
-        <div class="card-head card-head-page">
-          <h1>Budget</h1>
-        </div>
         <div class="card-body">
           <div class="action-row">
             <div class="field action-field">

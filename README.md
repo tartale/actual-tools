@@ -372,28 +372,36 @@ flagged it, and what will be tagged is already boxed in the grid.
 
 ### Retirement
 
-One flat page, not a set of tabs: **Plan**, **Expense Projection**,
-**Simulation Settings**, **Retirement income**, **Accounts**, and
-**Analysis** are foldable cards, opened or closed independently, with an
-**Expand all**/**Collapse all** control, a **Refresh** button, and an
-**Export to Dashboard** button above them — Refresh re-runs everything on
-the page in one request (the same `/api/retirement/check` call every card
-below reads from), rather than each card needing its own. Editing a field
-also re-runs that same check on its own, a beat after you stop typing —
-Current numbers, Stale, and Analysis stay live as you work, not just after
-an explicit Refresh. Each card's fold state is remembered per browser
-across a reload, via a cookie, the same way which of Budget/Retirement was
-open already was.
+Not a set of tabs: a two-column split, wide enough viewports only (see
+the min-width media query in `style.css` — a single stacked column
+below that, same as everything here in either arrangement). The left
+column — **Plan**, **Expense Projection**, **Simulation Settings**,
+**Retirement income**, **Accounts** — is where you edit; the right
+column — **Portfolio**/**Spend**/**Stale**, and **Analysis**'s Bridge
+and Monte Carlo charts — is where you watch the result, and it stays
+pinned in place (`position: sticky`) as the left column scrolls, so
+tweaking a field never means scrolling down to see its effect and back
+up to keep editing. Editing a field re-runs the same
+`/api/retirement/check` call every card reads from, a beat after you
+stop typing, so the right column stays live as you work. Each card is
+independently foldable and remembers its own fold state per browser
+across a reload, via a cookie, the same way which of Budget/Retirement
+was open already was. **Refresh** (re-runs that same check on demand —
+its real job is pulling in a change made directly in Actual, like a new
+transaction, since editing a field here already triggers the same
+re-check on its own) and **Expand all**/**Collapse all** (the left
+column's own cards only — Analysis has its own single fold toggle,
+deliberately not swept up in a left-column bulk action) sit atop the
+left column; **Export to Dashboard** sits atop the right. Both charts
+have a click-to-zoom button (appears on hover) that opens the same
+chart, larger, in a modal — not a re-render, the chart's own DOM node
+moves there and back, so its hover/tooltip keeps working unchanged.
 
-At the very top, above every card: a row of tiles — **Portfolio** (current
-total, with the number of accounts behind it) is always there; **Spend**
-and, once they apply, a tile per **Rule of 55** boost and per **debt
-payoff** fill in as soon as the page's own check resolves. A **Stale**
-card appears right below the tiles — only when there actually is
-something stale, never a placeholder saying there isn't — flagging
-anything about the dashboard actually imported into Actual (or these very
-tiles) that no longer matches what regenerating right now would produce;
-see "Check" further below for exactly what it looks at.
+A **Stale** card appears right below the tiles — only when there
+actually is something stale, never a placeholder saying there isn't —
+flagging anything about the dashboard actually imported into Actual (or
+these very tiles) that no longer matches what regenerating right now
+would produce; see "Check" further below for exactly what it looks at.
 
 **Plan**: birth date, one or more retirement ages to compare (space- or
 comma-separated), and the age to assume the plan needs to last to (a
