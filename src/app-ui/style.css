@@ -95,13 +95,24 @@ body.privacy .input-affix input:focus { filter: none; }
 /* The stock/bond split is a real portfolio detail, not just a dollar figure -- blur it too. */
 body.privacy select[data-field="allocationPreset"] { filter: blur(6px); transition: filter 0.15s; }
 body.privacy select[data-field="allocationPreset"]:focus { filter: none; }
-/* Pension start age and Social Security claiming age are personal timeline choices, not public
-   figures like the IRS limits -- blur them too. */
-body.privacy #pensionStartAge, body.privacy #ssClaimAge { filter: blur(6px); transition: filter 0.15s; }
-body.privacy #pensionStartAge:focus, body.privacy #ssClaimAge:focus { filter: none; }
-/* Simulation settings are generic modeling assumptions, not personal financial data -- exempt
-   from the .input-affix input blur rule above (id selectors win regardless of source order). */
-body.privacy #mcInflationMean, body.privacy #mcInflationStdDev, body.privacy #mcMinimumWithdrawal { filter: none; }
+/* Birth date and pension/Social Security timing are personal choices, not public figures like the
+   IRS limits -- blur them too. Current age (read-only text, not an <input>, so no :focus
+   exemption to carry) follows birth date directly. Retirement ages to compare and plan-to-age are
+   deliberately NOT included here -- planning knobs, not the kind of personal-timeline fact this
+   rule is about. */
+body.privacy #pensionStartAge, body.privacy #ssClaimAge, body.privacy #birthDate {
+  filter: blur(6px); transition: filter 0.15s;
+}
+body.privacy #pensionStartAge:focus, body.privacy #ssClaimAge:focus, body.privacy #birthDate:focus {
+  filter: none;
+}
+body.privacy #ageDerived { filter: blur(6px); }
+/* Simulation settings, and Expense Adjustment/Spend history, are generic modeling assumptions, not
+   personal financial data -- exempt from the .input-affix input blur rule above (id selectors win
+   regardless of source order). */
+body.privacy #mcInflationMean, body.privacy #mcInflationStdDev, body.privacy #mcMinimumWithdrawal, body.privacy #crossoverExpenseAdjustment, body.privacy #crossoverSpendHistoryMonths {
+  filter: none;
+}
 /* The mortgage balance's "as of" date isn't wrapped in input-affix (it's a plain date input, not
    a dollar/percent one) but is still a real financial detail -- blur it too. */
 body.privacy input[data-field="mortgageBalanceAsOfDate"] { filter: blur(6px); transition: filter 0.15s; }

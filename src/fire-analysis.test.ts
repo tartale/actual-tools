@@ -221,7 +221,7 @@ describe("bridgeFinding", () => {
     )
     expect(finding.level).toBe("fail")
     expect(finding.title).toContain("5 yrs before the next")
-    expect(finding.title).toContain("unlocks at 59")
+    expect(finding.title).toContain("unlocks at age 59")
   })
 
   it("warns, rather than failing, when everything has already unlocked", () => {
@@ -252,7 +252,7 @@ describe("monteCarloFinding", () => {
   it("passes a scenario where every simulated run funds the plan", () => {
     const finding = monteCarloFinding(monteCarloSummary({ successRate: 1 }), 60, 65, 90)
     expect(finding.level).toBe("ok")
-    expect(finding.title).toContain("every simulated run funds the plan through 90")
+    expect(finding.title).toContain("every simulated run funds the plan through age 90")
   })
 
   it("still passes, but with the percentage stated, comfortably above the 90% line", () => {
@@ -359,7 +359,7 @@ describe("detectPotDrift", () => {
     const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday], [60])
     expect(findings).toHaveLength(1)
     expect(findings[0]?.level).toBe("warn")
-    expect(findings[0]?.title).toContain("Actual has access age 59, your current config would produce 55")
+    expect(findings[0]?.title).toContain("Actual has access age 59, your current config would produce access age 55")
   })
 
   it("stays quiet when the dashboard already matches the config", () => {
@@ -395,7 +395,7 @@ describe("detectPotDrift", () => {
     expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday], [52, 58])).toEqual([])
     expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 55 }])], [workday], [52, 58])).toEqual([])
     const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 50 }])], [workday], [52, 58])
-    expect(findings[0]?.title).toContain("Actual has access age 50, your current config would produce 59/55")
+    expect(findings[0]?.title).toContain("Actual has access age 50, your current config would produce access age 59/55")
   })
 })
 
