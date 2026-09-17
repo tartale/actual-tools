@@ -8,7 +8,11 @@ cd "${THIS_SCRIPT_DIR}"
 source "${THIS_SCRIPT_DIR}/lib/cli-format.sh"
 
 # The port the app serves on, matching compose.yaml's published port and src/app.ts's own default.
-SERVICE_PORT=4247
+# Ends in 76 (production) / 77 (--dev) -- this user's own convention across every project's ports,
+# so a container and a --dev process default to two different ports and can run side by side
+# without one's "restart the port" ever landing on the other by accident.
+SERVICE_PORT=4276
+DEV_PORT=4277
 
 # Function to display usage and exit. Takes the exit code: 0 for an explicit --help, 1 for an error.
 function usage() {
@@ -77,7 +81,7 @@ function serviceUsage() {
   echo >&2
   cliSection "Options" \
     "--dev" "start: run the sources directly instead, in the foreground, restarting on every edit. The container is not involved." \
-    "-p, --port N" "Port to check or serve on (default: ${SERVICE_PORT})."
+    "-p, --port N" "Port to check or serve on (default: ${SERVICE_PORT}, or ${DEV_PORT} with --dev)."
   exit "${exitCode}"
 }
 
@@ -335,7 +339,7 @@ function commandVendor() {
 # tab left open on it. A container would have to be rebuilt for each of those edits.
 function serviceStart() {
   local dev=false
-  local port="${SERVICE_PORT}"
+  local port=""
   local passthrough=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -354,8 +358,12 @@ function serviceStart() {
   done
 
   if [[ "${dev}" == true ]]; then
-    exec node --watch ./src/app.ts --port "${port}" "${passthrough[@]}"
+    # A different default than the container's own (77 vs. 76) so a --dev run and a running
+    # container never collide on the same port by default -- each is reachable at once, and
+    # `service stop`/`stop -p` on one can't accidentally take down the other.
+    exec node --watch ./src/app.ts --port "${port:-${DEV_PORT}}" "${passthrough[@]}"
   fi
+  port="${port:-${SERVICE_PORT}}"
 
   # Only --dev has anywhere to forward an option like --no-open to (app.ts itself, above); outside
   # --dev those were silently collected and then never used at all, so a typo'd flag looked accepted
@@ -377,7 +385,7 @@ function serviceStart() {
   if [[ -z "${AB_DATA_DIR:-}" ]]; then
     mkdir -p "${THIS_SCRIPT_DIR}/data"
   fi
-  # Published port only; inside the container it is always 4247. See compose.yaml.
+  # Published port only; inside the container it is always SERVICE_PORT (4276). See compose.yaml.
   AB_PORT="${port}" docker compose up -d
   echo
   serviceStatus --port "${port}"

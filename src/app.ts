@@ -27,7 +27,7 @@ import type { HelpPage } from "./cli-format.ts"
 // --watch` precisely so a source edit restarts the server automatically; an ephemeral port would
 // silently break that combination (the tab would keep polling a now-dead port forever). Pass
 // `-p 0` to opt back into the old OS-assigned behavior if you'd rather have that.
-const DEFAULT_PORT = 4247
+const DEFAULT_PORT = 4276
 const uiDir = join(dirname(fileURLToPath(import.meta.url)), "app-ui")
 
 interface Options {

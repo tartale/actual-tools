@@ -234,9 +234,10 @@ was.
 - `-g`, `--poverty-guidelines PATH` — path to the federal poverty
   guidelines reference file (default: `federal-poverty-guidelines.json`).
   Missing is fine, just skips the MAGI finding's %FPL/ACA-subsidy context.
-- `-p`, `--port N` — run on this port (default: `4247`, a fixed port
-  rather than an OS-assigned one — see "hot-reload" below for why). Pass
-  `0` to go back to an OS-assigned ephemeral port instead.
+- `-p`, `--port N` — run on this port (default: `4276`, or `4277` when
+  run via `./actual service start --dev` — a fixed port rather than an
+  OS-assigned one either way; see "hot-reload" below for why). Pass `0`
+  to go back to an OS-assigned ephemeral port instead.
 - `--no-open` — don't try to open the page in a browser automatically, just
   print the URL. Useful over SSH or in a container with no browser to open.
 
@@ -245,9 +246,9 @@ bound to every network interface rather than just loopback, and prints
 its URL:
 
 ```
-Runway is running at http://localhost:4247/
+Runway is running at http://localhost:4276/
 Also reachable from another device on your network at:
-  http://192.168.1.23:4247/
+  http://192.168.1.23:4276/
 (the app itself doesn't require its own login -- only share these on a network you trust)
 Press Ctrl+C to stop.
 ```
@@ -295,12 +296,17 @@ per-process id (`GET /api/dev/build-id`) every 1.5s and reloads itself the
 moment that id changes, which is what a restart produces — so a tab left
 open picks up the change on its own within a couple of seconds of saving
 a file, without you doing anything in the browser or the terminal.
-**This is exactly why the default port is now fixed** (`4247`, not an
+**This is exactly why the default port is now fixed** (`4276`, not an
 OS-assigned one): the restarted process has to land back on the same
 port for the open tab to find it again. Passing `-p 0` for the old
 ephemeral behavior means a restart moves to an unpredictable new port,
 which breaks this — the tab has no way to discover it and just goes
-quiet until you reload it by hand.
+quiet until you reload it by hand. `--dev` defaults to a different fixed
+port (`4277`) than the container's own (`4276`) for the same reason two
+projects never share a port by accident -- so a `--dev` run and an
+already-running container can coexist, each reachable at its own address
+at the same time, rather than one silently failing to bind because the
+other already has the port.
 
 `--watch` is skipped automatically for `-h`/`--help` (it would otherwise
 keep the process alive waiting for a file change even after printing the

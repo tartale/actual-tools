@@ -45,7 +45,7 @@ Once you have those, start the container:
 
 ```sh
 mkdir -p data
-docker run -d --name actual-tools -p 4247:4247 \
+docker run -d --name actual-tools -p 4276:4276 \
   --add-host actual-api.local:host-gateway \
   -v "$(pwd)/data:/app/data" ghcr.io/tartale/actual-tools:latest
 ```
@@ -57,7 +57,7 @@ server running on your own machine or LAN by that name; skip the whole
 `--add-host` flag if your REST API server is reachable by a plain IP
 address instead. Once it's up:
 
-1. Open **http://localhost:4247** in your browser.
+1. Open **http://localhost:4276** in your browser.
 2. Log in with your Actual Budget REST API server's own **URL**, your
    budget's **Sync ID** (from Actual's own Settings → Show advanced
    settings), and the **API key** you set for that server. The app checks
