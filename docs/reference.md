@@ -12,10 +12,16 @@ The CLI tools below (`budget set-values`, `budget anomalies`,
 
 | Variable         | Description                                                     |
 | ---------------- | ---------------------------------------------------------------- |
-| `AB_BASE_URL`    | API base URL, e.g. `http://host:5007/v1`                        |
+| `AB_BASE_URL`    | [actual-http-api](https://github.com/jhonderson/actual-http-api) base URL, e.g. `http://host:5007/v1` |
 | `AB_BUDGET_ID`   | Budget (sync) ID                                                |
 | `AB_API_KEY`     | API key, sent as the `x-api-key` header                        |
 | `DRY_RUN`        | `true` to report changes without writing them                  |
+
+`AB_BASE_URL` points at a running
+[actual-http-api](https://github.com/jhonderson/actual-http-api) instance
+(a separate REST wrapper service), not at Actual Budget's own server
+directly -- deploy that first if you don't already have one pointed at
+your budget.
 
 The companion app (`./actual service`, aka Runway) doesn't use these --
 it logs in through its own UI instead, storing what you enter in
@@ -247,9 +253,10 @@ Press Ctrl+C to stop.
 ```
 
 The first time you open it (nothing in `session.json` yet), it asks for
-your Actual server's URL, budget (sync) ID, and API key — all three found
-under Settings → Show advanced settings in Actual itself. It validates
-them against Actual before saving, so a typo surfaces immediately rather
+your [actual-http-api](https://github.com/jhonderson/actual-http-api)
+server's URL, budget (sync) ID, and API key — all three found under
+Settings → Show advanced settings in Actual itself. It validates them
+against that server before saving, so a typo surfaces immediately rather
 than on the first real page load. **Log out** (the icon next to the
 privacy toggle) clears them again.
 
