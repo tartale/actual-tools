@@ -378,9 +378,11 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
 // Function to turn one retirement age's estimated MAGI into prose, read alongside bridgeFinding's
 // own funding-status finding for the same age (checkDashboard appends this right after it). Always
 // "info" -- IRMAA thresholds aren't vendored, so this never passes or fails anything on its own,
-// just states the estimate (and, with `aca`, a %FPL/subsidy-cliff line -- see below). MAGI in
-// early retirement is mainly checked for ACA premium subsidy eligibility, which is why that's the
-// one threshold this does model. grossTaxDeferredWithdrawal is the caller's own estimate (see
+// just states the estimate. `aca`, when given, adds this same point-in-time MAGI's own %FPL to the
+// title -- NOT whether/when it crosses the 400% subsidy cliff, which is inherently a "when does
+// this happen" fact across a scenario's whole trajectory, not a single point in time the way this
+// finding is, so THAT lives as a chart marker instead (see acaCliffCrossings in fire-generate.ts and
+// renderBridgeChart in app.js). grossTaxDeferredWithdrawal is the caller's own estimate (see
 // checkDashboard in fire-generate.ts): the withdrawal need for the year, times whatever share of
 // the ACCESSIBLE portfolio at this age is tax-deferred -- a 401(k) still locked behind its own
 // accessAge contributes nothing, the same accessibility rule simulateBridge itself applies, so this
@@ -400,24 +402,14 @@ export function magiFinding(
   const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, filingStatus, table)
   const marginalPct = Math.round(estimate.marginalRate * 1000) / 10
   const effectivePct = Math.round(estimate.effectiveRate * 1000) / 10
-  const detail = [
-    `${formatUsd(grossTaxDeferredWithdrawal)} tax-deferred, ${formatUsd(pensionIncome)} pension, ${formatUsd(estimate.taxableSocialSecurity)} taxable Social Security -- taxable income ${formatUsd(estimate.taxableIncome)} after the standard deduction.`,
-    "A rough estimate, not a line from Form 1040: excludes still-locked accounts, doesn't gross up for the tax itself.",
-  ]
-  if (aca) {
-    const fplPct = Math.round((estimate.magi / federalPovertyGuideline(aca.householdSize, aca.guidelines)) * 1000) / 10
-    const overCliff = aca.guidelines.subsidyCliffAt400Pct && fplPct > 400
-    const cliffNote = aca.guidelines.subsidyCliffAt400Pct
-      ? overCliff
-        ? "over the 400% ACA subsidy cliff, no premium credit under current law"
-        : "under the 400% ACA subsidy cliff (current law)"
-      : null
-    detail.push(`${fplPct}% FPL (household of ${aca.householdSize})${cliffNote ? ` -- ${cliffNote}.` : "."}`)
-  }
+  const fplNote = aca ? ` (${Math.round((estimate.magi / federalPovertyGuideline(aca.householdSize, aca.guidelines)) * 1000) / 10}% FPL)` : ""
   return {
     level: "info",
-    title: `age ${retirementAge} -- est. MAGI ${formatUsd(estimate.magi)} puts you in the ${marginalPct}% federal bracket (${effectivePct}% effective).`,
-    detail,
+    title: `age ${retirementAge} -- est. MAGI ${formatUsd(estimate.magi)}${fplNote} puts you in the ${marginalPct}% federal bracket (${effectivePct}% effective).`,
+    detail: [
+      `${formatUsd(grossTaxDeferredWithdrawal)} tax-deferred, ${formatUsd(pensionIncome)} pension, ${formatUsd(estimate.taxableSocialSecurity)} taxable Social Security -- taxable income ${formatUsd(estimate.taxableIncome)} after the standard deduction.`,
+      "A rough estimate, not a line from Form 1040: excludes still-locked accounts, doesn't gross up for the tax itself.",
+    ],
   }
 }
 

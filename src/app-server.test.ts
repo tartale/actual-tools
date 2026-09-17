@@ -465,28 +465,61 @@ describe("GET /api/retirement/check", () => {
     subsidyCliffAt400Pct: true,
   }
 
-  it("adds a %FPL line to the MAGI finding when household size and poverty guidelines are both set", async () => {
+  it("marks the age a scenario's MAGI crosses the ACA subsidy cliff", async () => {
     const url = await boot({
-      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
-      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      accounts: [{ id: "ira", name: "Inherited IRA", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { ira: [{ amount: 500_000_00, transfer_id: null }] },
+      // $10,000/mo = $120,000/yr -- an inherited IRA has no accessAge (always reachable) and is
+      // tax-deferred, so the whole withdrawal counts, comfortably clearing 400% of a household-of-1
+      // FPL ($62,600).
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000_00, balance: 0, carryover: false }],
       dashboardRows: [],
     })
     writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
     writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
     await fetch(`${url}api/retirement/plan`, {
       method: "PATCH",
-      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 2 }),
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1 }),
     })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
 
     const res = await fetch(`${url}api/retirement/check`)
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
-    const magi = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
-    expect(magi?.detail[2]).toContain("% FPL (household of 2)")
+    expect(body.acaCliffCrossings).toHaveLength(1)
+    expect(body.acaCliffCrossings[0]).toMatchObject({ retirementAge: 65, crossesAtAge: 65 })
+    expect(body.acaCliffCrossings[0]?.pctFPL).toBeGreaterThan(400)
   })
 
-  it("leaves the MAGI finding's %FPL line off when household size isn't set, even with poverty guidelines available", async () => {
+  it("reports no cliff crossing when a scenario's MAGI stays under 400% FPL the whole way", async () => {
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Inherited IRA", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { ira: [{ amount: 500_000_00, transfer_id: null }] },
+      // $1,000/mo = $12,000/yr, well under 400% of even a household-of-1 FPL.
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -1000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1 }),
+    })
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.acaCliffCrossings).toEqual([])
+  })
+
+  it("reports no cliff crossing when household size isn't set, even with poverty guidelines available", async () => {
     const url = await boot({
       accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
       transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
@@ -500,8 +533,7 @@ describe("GET /api/retirement/check", () => {
     const res = await fetch(`${url}api/retirement/check`)
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
-    const magi = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
-    expect(magi?.detail).toHaveLength(2) // MAGI/bracket line + caveat line, no %FPL line
+    expect(body.acaCliffCrossings).toEqual([])
   })
 
   it("omits the MAGI finding when filing status isn't set, even with tax brackets available", async () => {
