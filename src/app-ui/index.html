@@ -29,10 +29,47 @@
           <path class="slash" d="M3 3l18 18"/>
         </svg>
       </button>
+      <!-- Logs out of Actual (clears the saved baseUrl/budgetId/apiKey -- see #loginBackdrop
+           below) -- global, not tied to either page, same as privacyToggle above. -->
+      <button type="button" class="icon-btn" id="logoutBtn" title="Log out of Actual" aria-label="Log out of Actual">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M15 4H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h9"/>
+          <path d="M10 12h11m0 0-3.5-3.5M21 12l-3.5 3.5"/>
+        </svg>
+      </button>
     </header>
 
     <main>
       <div class="top-error" id="topError" hidden></div>
+
+      <!-- Blocks the whole app until Actual credentials are on file -- checked once at load (see
+           checkSession in app.js) against /api/session, which never echoes a saved api key back,
+           so this modal has no "already filled in" state to restore, just empty fields every time
+           it's shown. Deliberately has no close (x)/backdrop-click/Escape dismissal, unlike
+           #chartZoomBackdrop below -- there's nothing sensible to fall back to without credentials,
+           so it isn't a modal you cancel out of, only one you complete. -->
+      <div class="modal-backdrop" id="loginBackdrop" hidden>
+        <div class="modal modal-login" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+          <h2 id="loginTitle">Log in to Actual</h2>
+          <p>Your self-hosted Actual server's own details -- found under Settings &rarr; Show advanced settings in Actual itself. Stored locally by this app, not sent anywhere else.</p>
+          <form id="loginForm">
+            <div class="field">
+              <label for="loginBaseUrl">Server URL</label>
+              <input type="text" id="loginBaseUrl" placeholder="https://actual.example.com" autocomplete="url" required>
+            </div>
+            <div class="field">
+              <label for="loginBudgetId">Budget ID (Sync ID)</label>
+              <input type="text" id="loginBudgetId" autocomplete="off" required>
+            </div>
+            <div class="field">
+              <label for="loginApiKey">API key</label>
+              <input type="password" id="loginApiKey" autocomplete="off" required>
+            </div>
+            <div class="derived warn-text" id="loginError" hidden></div>
+            <button type="submit" class="btn" id="loginSubmitBtn">Log in</button>
+          </form>
+        </div>
+      </div>
 
       <div class="page" id="page-retirement">
       <!-- Zoomed-in chart view -- opened by clicking anywhere on a chart, or its own zoom button
