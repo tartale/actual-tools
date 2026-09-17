@@ -17,6 +17,16 @@ Both the CLI and Runway depend on a running instance of the
 companion service, which itself talks to your self-hosted Actual Budget
 server; see that project for how to deploy it if you don't have one yet.
 
+Retirement/FIRE projections against your real accounts, with markers for
+a Rule of 55 boost, a debt payoff, and guaranteed income kicking in:
+
+![Retirement page](docs/images/retirement.png)
+
+Bulk budget edits with a live preview, styled after Actual's own budget
+table:
+
+![Budget page](docs/images/budget.png)
+
 ## Getting Started
 
 ### Before you start
@@ -26,8 +36,10 @@ server; see that project for how to deploy it if you don't have one yet.
   on it.
 - A self-hosted [Actual Budget REST API](https://github.com/jhonderson/actual-http-api)
   server deployed and pointed at that Actual server.
-- Your budget's **Sync ID** and an **API key** — both found under
-  Settings → Show advanced settings in Actual itself.
+- Your budget's **Sync ID**, found under Settings → Show advanced
+  settings in Actual itself, and the **API key** you set for your
+  actual-http-api server (its own `API_KEY` environment variable — not
+  something Actual generates).
 
 Once you have those, start the container:
 
@@ -46,10 +58,11 @@ server running on your own machine or LAN by that name; skip the whole
 address instead. Once it's up:
 
 1. Open **http://localhost:4247** in your browser.
-2. Log in with your Actual Budget REST API server's own **URL**, **budget
-   (sync) ID**, and **API key** — all three found under Settings → Show
-   advanced settings in Actual itself. The app checks them against that
-   server before saving, so a typo shows up immediately.
+2. Log in with your Actual Budget REST API server's own **URL**, your
+   budget's **Sync ID** (from Actual's own Settings → Show advanced
+   settings), and the **API key** you set for that server. The app checks
+   them against that server before saving, so a typo shows up
+   immediately.
 3. You're in. Everything autosaves as you go — there's no separate save
    step.
 

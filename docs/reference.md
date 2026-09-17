@@ -254,11 +254,12 @@ Press Ctrl+C to stop.
 
 The first time you open it (nothing in `session.json` yet), it asks for
 your [actual-http-api](https://github.com/jhonderson/actual-http-api)
-server's URL, budget (sync) ID, and API key — all three found under
-Settings → Show advanced settings in Actual itself. It validates them
-against that server before saving, so a typo surfaces immediately rather
-than on the first real page load. **Log out** (the icon next to the
-privacy toggle) clears them again.
+server's URL, your budget's Sync ID (from Actual's own Settings → Show
+advanced settings), and the API key you set for that server (its own
+`API_KEY` environment variable, not something Actual generates). It
+validates them against that server before saving, so a typo surfaces
+immediately rather than on the first real page load. **Log out** (the
+icon next to the privacy toggle) clears them again.
 
 Binding every interface means the page also works from another device on
 the same network — e.g. running this on a home server and pulling it up
