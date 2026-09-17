@@ -19,10 +19,17 @@ server; see that project for how to deploy it if you don't have one yet.
 
 ## Getting Started
 
-Requires [Docker](https://docs.docker.com/get-docker/), a running,
-self-hosted Actual Budget server, and a running, self-hosted
-[Actual Budget REST API](https://github.com/jhonderson/actual-http-api)
-server pointed at it.
+### Before you start
+
+- [Docker](https://docs.docker.com/get-docker/) installed and running.
+- A self-hosted Actual Budget server already running, with a budget open
+  on it.
+- A self-hosted [Actual Budget REST API](https://github.com/jhonderson/actual-http-api)
+  server deployed and pointed at that Actual server.
+- Your budget's **Sync ID** and an **API key** — both found under
+  Settings → Show advanced settings in Actual itself.
+
+Once you have those, start the container:
 
 ```sh
 mkdir -p data
