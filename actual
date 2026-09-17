@@ -367,8 +367,8 @@ function serviceStart() {
 
   requireDocker
   if ! docker image inspect actual-tools:local &> /dev/null; then
-    echo "No actual-tools:local image yet; build it with './actual build image'." >&2
-    exit 1
+    echo "No actual-tools:local image yet -- building it now (first run only)." >&2
+    buildImage
   fi
   # config.json is written here, so the directory has to exist before the mount does: docker would
   # otherwise create it as root and the app could not write into it. Only for the default location --
