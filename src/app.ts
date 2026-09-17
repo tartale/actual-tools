@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG_PATH } from "./fire-accounts.ts"
 import { DEFAULT_IRS_LIMITS_PATH } from "./irs-limits.ts"
 import { DEFAULT_FEDERAL_TAX_BRACKETS_PATH } from "./federal-tax-brackets.ts"
 import { DEFAULT_IRS_LIFE_EXPECTANCY_PATH } from "./irs-life-expectancy.ts"
+import { DEFAULT_FEDERAL_POVERTY_GUIDELINES_PATH } from "./federal-poverty-guidelines.ts"
 import { startAppServer } from "./app-server.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
@@ -33,6 +34,7 @@ interface Options {
   irsLimitsPath: string
   federalTaxBracketsPath: string
   irsLifeExpectancyPath: string
+  federalPovertyGuidelinesPath: string
   port: number
   open: boolean
 }
@@ -60,6 +62,10 @@ const HELP_PAGE: HelpPage = {
           name: "-l, --life-expectancy PATH",
           description: `Path to the IRS Single Life Expectancy reference file (default: ${DEFAULT_IRS_LIFE_EXPECTANCY_PATH}). Missing is fine, just skips the 72(t) SEPP amount calculators.`,
         },
+        {
+          name: "-g, --poverty-guidelines PATH",
+          description: `Path to the federal poverty guidelines reference file (default: ${DEFAULT_FEDERAL_POVERTY_GUIDELINES_PATH}). Missing is fine, just skips the MAGI finding's %FPL/ACA-subsidy line.`,
+        },
         { name: "-p, --port N", description: `Run on this port (default: ${DEFAULT_PORT}). Pass 0 for an OS-assigned ephemeral port instead -- note this breaks the page's hot-reload across a restart, since it won't land back on the same port.` },
         { name: "--no-open", description: "Don't try to open the page in a browser automatically -- just print the URL." },
         { name: "-h, --help", description: "Show this message and exit." },
@@ -78,6 +84,7 @@ function parseArguments(argv: readonly string[]): Options {
   let irsLimitsPath = DEFAULT_IRS_LIMITS_PATH
   let federalTaxBracketsPath = DEFAULT_FEDERAL_TAX_BRACKETS_PATH
   let irsLifeExpectancyPath = DEFAULT_IRS_LIFE_EXPECTANCY_PATH
+  let federalPovertyGuidelinesPath = DEFAULT_FEDERAL_POVERTY_GUIDELINES_PATH
   let port = DEFAULT_PORT
   let open = true
 
@@ -103,6 +110,11 @@ function parseArguments(argv: readonly string[]): Options {
       if (value === undefined || value.startsWith("-")) usage("Missing argument for --life-expectancy")
       irsLifeExpectancyPath = value
       i++
+    } else if (arg === "-g" || arg === "--poverty-guidelines") {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith("-")) usage("Missing argument for --poverty-guidelines")
+      federalPovertyGuidelinesPath = value
+      i++
     } else if (arg === "-p" || arg === "--port") {
       const value = argv[i + 1]
       const parsed = value === undefined ? NaN : Number(value)
@@ -119,7 +131,7 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  return { configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, port, open }
+  return { configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, port, open }
 }
 
 // Function to best-effort open a URL in the default browser. Swallowed non-fatally: this is a
@@ -147,6 +159,7 @@ async function main(): Promise<void> {
     irsLimitsPath: options.irsLimitsPath,
     federalTaxBracketsPath: options.federalTaxBracketsPath,
     irsLifeExpectancyPath: options.irsLifeExpectancyPath,
+    federalPovertyGuidelinesPath: options.federalPovertyGuidelinesPath,
     uiDir,
     port: options.port,
   })

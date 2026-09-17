@@ -107,6 +107,11 @@
                 </select>
                 <div class="derived">For the MAGI/effective-tax-rate estimate<span class="saved-flag" id="savedFilingStatus">saved</span></div>
               </div>
+              <div class="field">
+                <label for="householdSize">Household size<button type="button" class="help-icon" data-help="How many people are in your tax household.&#10;&#10;Used only to compare your estimated MAGI against the Federal Poverty Level for ACA premium subsidy eligibility -- doesn't affect the tax bracket/effective-rate estimate itself, which only needs Filing status.">?</button></label>
+                <input type="number" min="1" step="1" id="householdSize">
+                <div class="derived">For the ACA subsidy (%FPL) estimate<span class="saved-flag" id="savedHouseholdSize">saved</span></div>
+              </div>
             </div>
           </div>
           </div>

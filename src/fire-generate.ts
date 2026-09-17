@@ -27,6 +27,7 @@ import type { BridgeResult, Finding } from "./fire-analysis.ts"
 import { runRetirementMonteCarlo } from "./fire-monte-carlo.ts"
 import type { MonteCarloResultEntry, MonteCarloSummary } from "./fire-monte-carlo.ts"
 import type { FederalTaxBrackets, FilingStatus } from "./federal-tax-brackets.ts"
+import type { FederalPovertyGuidelines } from "./federal-poverty-guidelines.ts"
 
 // The non-CLI guts of what used to be reports-fire.ts's main(): fetching real data and analyzing
 // the dashboard, returning a plain structured result rather than printing one -- consumed by
@@ -168,6 +169,11 @@ export interface CheckOptions {
   // error" convention as ruleOf55Boosts/debtPayoffs.
   filingStatus: FilingStatus | null
   federalTaxBrackets: FederalTaxBrackets | null
+  // Both needed for the MAGI finding's %FPL/ACA-subsidy line specifically (not the MAGI/bracket
+  // line itself, which only needs the two above) -- either missing just omits that one extra line,
+  // same convention.
+  householdSize: number | null
+  federalPovertyGuidelines: FederalPovertyGuidelines | null
 }
 
 export interface AccountContribution {
@@ -390,7 +396,8 @@ export async function checkDashboard(
       // modeled income correct instead of double-subtracting them.
       const pensionIncome = options.incomeStreams.find((s) => s.id === "pension" && s.startAge <= retirementAge)?.annualAmount ?? 0
       const socialSecurityBenefit = options.incomeStreams.find((s) => s.id === "social-security" && s.startAge <= retirementAge)?.annualAmount ?? 0
-      findings.push(magiFinding(retirementAge, pensionIncome, socialSecurityBenefit, grossTaxDeferredWithdrawal, options.filingStatus, options.federalTaxBrackets))
+      const aca = options.householdSize != null && options.federalPovertyGuidelines != null ? { householdSize: options.householdSize, guidelines: options.federalPovertyGuidelines } : null
+      findings.push(magiFinding(retirementAge, pensionIncome, socialSecurityBenefit, grossTaxDeferredWithdrawal, options.filingStatus, options.federalTaxBrackets, aca))
     }
     return findings
   })

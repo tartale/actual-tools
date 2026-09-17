@@ -111,6 +111,7 @@ async function openRetirementPage(retirementAges: number[]): Promise<{ page: Pag
     irsLimitsPath: join(dir, "irs-limits.json"),
     federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),
     irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"),
+    federalPovertyGuidelinesPath: join(dir, "federal-poverty-guidelines.json"),
     uiDir: UI_DIR,
   })
   await fetch(`${server.url}api/retirement/plan`, {
@@ -265,7 +266,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
 
   it("shows no chart, and no page error, when a portfolio has nothing to bridge", async () => {
     vi.stubGlobal("fetch", mockActualFetch())
-    server = await startAppServer({ actualConfig, configPath: join(dir, "config.json"), irsLimitsPath: join(dir, "irs-limits.json"), federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"), irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"), uiDir: UI_DIR })
+    server = await startAppServer({ actualConfig, configPath: join(dir, "config.json"), irsLimitsPath: join(dir, "irs-limits.json"), federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"), irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"), federalPovertyGuidelinesPath: join(dir, "federal-poverty-guidelines.json"), uiDir: UI_DIR })
     await fetch(`${server.url}api/retirement/plan`, {
       method: "PATCH",
       body: JSON.stringify({ birthDate: birthDateForAge(50), retirementAges: [50], planToAge: 100 }),

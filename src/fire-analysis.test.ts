@@ -13,6 +13,7 @@ import type { ClassifiedAccount } from "./fire-accounts.ts"
 import type { RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
 import type { FederalTaxBrackets } from "./federal-tax-brackets.ts"
+import type { FederalPovertyGuidelines } from "./federal-poverty-guidelines.ts"
 
 // Function to build a bridge account with inert defaults -- no growth, no contributions, no tax --
 // so each test only has to state the one dimension it is actually exercising.
@@ -278,14 +279,41 @@ const MAGI_TABLE: FederalTaxBrackets = {
   },
 }
 
+const POVERTY_TABLE: FederalPovertyGuidelines = {
+  guidelineYear: 2025,
+  source: "https://example.com",
+  base: 1565000, // $15,650
+  perAdditionalPerson: 550000, // $5,500
+  subsidyCliffAt400Pct: true,
+}
+
 describe("magiFinding", () => {
   it("states MAGI, marginal/effective rate, and the withdrawal/pension/SS breakdown", () => {
-    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE)
+    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE, null)
     expect(finding.level).toBe("info")
     // MAGI $77,000, marginal 22% (see estimateMagi's own equivalent test) -- 811000/7700000 = 10.5%.
     expect(finding.title).toBe("age 59 -- est. MAGI $77,000.00 puts you in the 22% federal bracket (10.5% effective).")
     expect(finding.detail[0]).toBe("$60,000.00 tax-deferred, $0.00 pension, $17,000.00 taxable Social Security -- taxable income $60,900.00 after the standard deduction.")
     expect(finding.detail[1]).toContain("not a line from Form 1040")
+    expect(finding.detail).toHaveLength(2) // no aca -- no third line
+  })
+
+  it("adds a %FPL line under the 400% cliff when aca context is given", () => {
+    // MAGI $77,000 / $21,150 (household of 2: $15,650 + $5,500) = 364.07% -> 364.1%, under 400%.
+    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE, { householdSize: 2, guidelines: POVERTY_TABLE })
+    expect(finding.detail[2]).toBe("364.1% FPL (household of 2) -- under the 400% ACA subsidy cliff (current law).")
+  })
+
+  it("flags being over the 400% cliff for a smaller household at the same MAGI", () => {
+    // MAGI $77,000 / $15,650 (household of 1) = 492.0%, over 400%.
+    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE, { householdSize: 1, guidelines: POVERTY_TABLE })
+    expect(finding.detail[2]).toBe("492% FPL (household of 1) -- over the 400% ACA subsidy cliff, no premium credit under current law.")
+  })
+
+  it("states %FPL with no subsidy claim when the guidelines say there's no cliff (a future law change)", () => {
+    const noCliff = { ...POVERTY_TABLE, subsidyCliffAt400Pct: false }
+    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE, { householdSize: 1, guidelines: noCliff })
+    expect(finding.detail[2]).toBe("492% FPL (household of 1).")
   })
 })
 

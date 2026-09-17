@@ -65,6 +65,7 @@ let configPath: string
 let irsLimitsPath: string
 let federalTaxBracketsPath: string
 let irsLifeExpectancyPath: string
+let federalPovertyGuidelinesPath: string
 let server: RunningServer | null = null
 
 beforeEach(() => {
@@ -73,6 +74,7 @@ beforeEach(() => {
   irsLimitsPath = join(dir, "irs-limits.json")
   federalTaxBracketsPath = join(dir, "federal-tax-brackets.json")
   irsLifeExpectancyPath = join(dir, "irs-life-expectancy.json")
+  federalPovertyGuidelinesPath = join(dir, "federal-poverty-guidelines.json")
 })
 
 afterEach(async () => {
@@ -89,7 +91,7 @@ async function boot(fixture: FetchFixture = {}): Promise<string> {
     await server.close()
   }
   vi.stubGlobal("fetch", mockActualFetch(fixture))
-  server = await startAppServer({ actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, uiDir: dir })
+  server = await startAppServer({ actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir: dir })
   return server.url
 }
 
@@ -453,6 +455,53 @@ describe("GET /api/retirement/check", () => {
     expect(body.annualSpend).toBeGreaterThan(0) // a real, nonzero withdrawal need -- not a vacuous $0 test
     const magi = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
     expect(magi?.detail[0]).toContain("$0.00 tax-deferred")
+  })
+
+  const FEDERAL_POVERTY_GUIDELINES_FIXTURE = {
+    guidelineYear: 2025,
+    source: "https://example.com",
+    base: 1565000, // $15,650
+    perAdditionalPerson: 550000, // $5,500
+    subsidyCliffAt400Pct: true,
+  }
+
+  it("adds a %FPL line to the MAGI finding when household size and poverty guidelines are both set", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 2 }),
+    })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    const magi = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magi?.detail[2]).toContain("% FPL (household of 2)")
+  })
+
+  it("leaves the MAGI finding's %FPL line off when household size isn't set, even with poverty guidelines available", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    const magi = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magi?.detail).toHaveLength(2) // MAGI/bracket line + caveat line, no %FPL line
   })
 
   it("omits the MAGI finding when filing status isn't set, even with tax brackets available", async () => {
