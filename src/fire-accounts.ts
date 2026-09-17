@@ -468,11 +468,15 @@ export interface DashboardConfig {
   birthDate: string | null
   retirementAges: number[]
   planToAge: number
-  // Drives the standard deduction and bracket thresholds for the MAGI/effective-tax-rate estimate
-  // (see federal-tax-brackets.ts) -- null until entered, same "not set yet" convention as birthDate,
-  // and the estimate simply doesn't run without it (falls back to the flat WITHDRAWAL_TAX_RATES
-  // estimate, same as today).
+  // Drives the standard deduction and bracket thresholds for the MAGI/effective-tax-rate finding
+  // (see magiFinding in fire-analysis.ts) -- null until entered, same "not set yet" convention as
+  // birthDate, and that finding simply doesn't appear without it.
   filingStatus: FilingStatus | null
+  // How many people are in the tax household -- used only for the MAGI finding's %FPL/ACA-subsidy
+  // line (see magiFinding), which is skipped without it, same "not set yet" convention as
+  // filingStatus. Independent of filingStatus itself (a married couple can have any number of
+  // dependents), so it isn't derived from it.
+  householdSize: number | null
   // Cents/mo, null until entered. A pension with no start age (or vice versa) isn't applied --
   // see retirementIncomeStreams in fire-dashboard.ts.
   pensionStartAge: number | null
@@ -543,6 +547,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   retirementAges: [],
   planToAge: DEFAULT_PLAN_TO_AGE,
   filingStatus: null,
+  householdSize: null,
   pensionStartAge: null,
   pensionMonthlyAmount: null,
   socialSecurityClaimingAge: null,
@@ -1139,6 +1144,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.filingStatus != null && !FILING_STATUSES.includes(dashboardSource.filingStatus)) {
     throw new Error(`Invalid config in ${path}: dashboard.filingStatus must be one of ${FILING_STATUSES.join(", ")}, or null.`)
   }
+  if (dashboardSource.householdSize != null && (typeof dashboardSource.householdSize !== "number" || dashboardSource.householdSize <= 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.householdSize must be a positive number, or null.`)
+  }
   if (dashboardSource.pensionStartAge != null && (typeof dashboardSource.pensionStartAge !== "number" || dashboardSource.pensionStartAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.pensionStartAge must be a positive number.`)
   }
@@ -1231,6 +1239,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       retirementAges: dashboardSource.retirementAges ?? DEFAULT_DASHBOARD_CONFIG.retirementAges,
       planToAge: dashboardSource.planToAge ?? DEFAULT_DASHBOARD_CONFIG.planToAge,
       filingStatus: dashboardSource.filingStatus ?? DEFAULT_DASHBOARD_CONFIG.filingStatus,
+      householdSize: dashboardSource.householdSize ?? DEFAULT_DASHBOARD_CONFIG.householdSize,
       pensionStartAge: dashboardSource.pensionStartAge ?? DEFAULT_DASHBOARD_CONFIG.pensionStartAge,
       pensionMonthlyAmount: dashboardSource.pensionMonthlyAmount ?? DEFAULT_DASHBOARD_CONFIG.pensionMonthlyAmount,
       socialSecurityClaimingAge: dashboardSource.socialSecurityClaimingAge ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityClaimingAge,

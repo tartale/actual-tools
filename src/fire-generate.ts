@@ -17,6 +17,7 @@ import {
   bridgeFinding,
   calculateMortgagePayoff,
   historicalBridgeYear,
+  magiFinding,
   monteCarloFinding,
   projectAccountBalance,
   simulateBridge,
@@ -25,6 +26,10 @@ import {
 import type { BridgeResult, Finding } from "./fire-analysis.ts"
 import { runRetirementMonteCarlo } from "./fire-monte-carlo.ts"
 import type { MonteCarloResultEntry, MonteCarloSummary } from "./fire-monte-carlo.ts"
+import { estimateMagi } from "./federal-tax-brackets.ts"
+import type { FederalTaxBrackets, FilingStatus } from "./federal-tax-brackets.ts"
+import { federalPovertyGuideline } from "./federal-poverty-guidelines.ts"
+import type { FederalPovertyGuidelines } from "./federal-poverty-guidelines.ts"
 
 // The non-CLI guts of what used to be reports-fire.ts's main(): fetching real data and analyzing
 // the dashboard, returning a plain structured result rather than printing one -- consumed by
@@ -161,6 +166,16 @@ export interface CheckOptions {
   crossoverExpenseCategoryIds: readonly string[] | null
   expenseAdjustmentFactor: number
   spendHistoryMonths: number
+  // Both needed for the MAGI/effective-tax-rate finding (see magiFinding in fire-analysis.ts) --
+  // either missing just skips that finding entirely (checkDashboard), the same "absent, not an
+  // error" convention as ruleOf55Boosts/debtPayoffs.
+  filingStatus: FilingStatus | null
+  federalTaxBrackets: FederalTaxBrackets | null
+  // Both needed for the MAGI finding's %FPL/ACA-subsidy line specifically (not the MAGI/bracket
+  // line itself, which only needs the two above) -- either missing just omits that one extra line,
+  // same convention.
+  householdSize: number | null
+  federalPovertyGuidelines: FederalPovertyGuidelines | null
 }
 
 export interface AccountContribution {
@@ -211,6 +226,10 @@ export interface CheckResult {
   // the local incomeStreams below, so the Bridge chart can mark "income starts here" without also
   // duplicating the debt-payoff markers it already draws from debtPayoffs above.
   incomeStreams: readonly RetirementIncomeStream[]
+  // One entry per scenario that actually crosses 400% FPL somewhere between retiring and
+  // planToAge -- empty (not an error) whenever household size/filing status/either reference file
+  // is missing, or a scenario simply never crosses it. See the computation's own doc comment.
+  acaCliffCrossings: { retirementAge: number; crossesAtAge: number; pctFPL: number }[]
 }
 
 // Function to analyze the dashboard that is actually live in Actual, rather than generating a new
@@ -338,7 +357,94 @@ export async function checkDashboard(
     ]
     return { ...result, history }
   })
-  const bridgeFindings = bridgeResults.map((result) => bridgeFinding(result, options.planToAge))
+  // A second finding per scenario, right after its own funding-status finding, estimating that
+  // year's MAGI/effective-tax-rate -- see magiFinding's own doc comment for the simplifying
+  // assumptions. Skipped (not an error) whenever filing status or the tax-bracket table is missing,
+  // same convention as ruleOf55Boosts/debtPayoffs being empty rather than reported as broken.
+  // Share of the portfolio balance that's BOTH tax-deferred AND actually reachable at a given AGE
+  // -- e.g. a 401(k) still locked behind its own accessAge contributes 0, not its balance, exactly
+  // matching isAccessible's own check inside simulateBridge. retirementAge is separate from evalAge
+  // (the year actually being priced) because it's only what effectiveAccessAge needs to decide
+  // whether a Rule-of-55 boost applies at all (a fact fixed once per scenario); evalAge is what
+  // decides whether a given account has actually UNLOCKED by then, which -- unlike the boost
+  // eligibility itself -- keeps changing across the years a single scenario's own trajectory covers
+  // (see magiInputsAt/acaCliffCrossings below, both of which call this at more than just the
+  // retirement year itself). Using today's real balances (not a forward projection to evalAge) is a
+  // deliberate simplification -- the dominant source of error this corrects for is locked-vs-
+  // accessible (all-or-nothing per account), not the smaller effect of accounts growing at slightly
+  // different rates in between.
+  const accessibleTaxDeferredShare = (evalAge: number, retirementAge: number): number => {
+    const portfolioAccounts = accounts.filter((account) => portfolioIds.includes(account.id))
+    let accessibleTotal = 0
+    let accessibleTaxDeferred = 0
+    for (const account of portfolioAccounts) {
+      const accessAge = effectiveAccessAge(account, retirementAge)
+      if (accessAge != null && evalAge < accessAge) continue // still locked at this age
+      const balance = balances.get(account.id) ?? 0
+      accessibleTotal += balance
+      if (account.taxTreatment === "tax-deferred") accessibleTaxDeferred += balance
+    }
+    return accessibleTotal > 0 ? accessibleTaxDeferred / accessibleTotal : 0
+  }
+
+  // Function to estimate one scenario's ordinary-income inputs at a given age -- shared by
+  // magiFinding's own call below (at the retirement age only) and acaCliffCrossings (which needs
+  // the same figures at every age of the trajectory to find when, if ever, MAGI crosses the ACA
+  // subsidy cliff).
+  const magiInputsAt = (age: number, retirementAge: number) => {
+    // incomeStreams here is the FULL merged set (pension/SS + any debt-freed-up cash flow) --
+    // matches simulateBridge's own netting exactly, so a paid-off mortgage correctly lowers the
+    // withdrawal this estimates without also being (wrongly) treated as taxable income itself.
+    const incomeAtAge = incomeStreams.filter((s) => s.startAge <= age).reduce((sum, s) => sum + s.annualAmount, 0)
+    const netWithdrawalNeed = Math.max(0, projectedSpendAt(age) - incomeAtAge)
+    // Only the ACCESSIBLE tax-deferred share of that withdrawal counts here -- a locked 401(k)
+    // can't fund this year's spend at all, so assuming the whole need is tax-deferred (as an
+    // earlier version of this did) overstated MAGI for exactly the FIRE/early-retirement case this
+    // app is built around, where tax-deferred money is routinely still locked at the chosen
+    // retirement age and the real withdrawal is coming from taxable/cash/Roth money instead.
+    const grossTaxDeferredWithdrawal = Math.round(netWithdrawalNeed * accessibleTaxDeferredShare(age, retirementAge))
+    // options.incomeStreams (pension/SS only, pre-merge) for the RAW figures MAGI needs as their
+    // own separate ordinary-income lines -- already netted out of netWithdrawalNeed above, so
+    // adding them back here (rather than re-deriving them some other way) is what keeps the total
+    // modeled income correct instead of double-subtracting them.
+    const pensionIncome = options.incomeStreams.find((s) => s.id === "pension" && s.startAge <= age)?.annualAmount ?? 0
+    const socialSecurityBenefit = options.incomeStreams.find((s) => s.id === "social-security" && s.startAge <= age)?.annualAmount ?? 0
+    return { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit }
+  }
+
+  const bridgeFindings = bridgeResults.flatMap((result) => {
+    const findings = [bridgeFinding(result, options.planToAge)]
+    if (options.filingStatus != null && options.federalTaxBrackets != null) {
+      const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(result.retirementAge, result.retirementAge)
+      const aca = options.householdSize != null && options.federalPovertyGuidelines != null ? { householdSize: options.householdSize, guidelines: options.federalPovertyGuidelines } : null
+      findings.push(magiFinding(result.retirementAge, pensionIncome, socialSecurityBenefit, grossTaxDeferredWithdrawal, options.filingStatus, options.federalTaxBrackets, aca))
+    }
+    return findings
+  })
+
+  // The ACA subsidy cliff, as a chart marker (see renderBridgeChart in app.js) rather than a text
+  // line -- unlike the MAGI/tax-bracket finding above, this is inherently a "when does this happen"
+  // fact, not a single-point-in-time one, so it belongs on the age axis. One entry per scenario,
+  // and only for a scenario that actually crosses 400% FPL somewhere between retiring and planToAge
+  // -- most don't, and a marker for "still under the cliff" would just be noise. Walks every whole
+  // year rather than only the ages accessibility can change at, since netWithdrawalNeed itself isn't
+  // monotonic either (a pension/Social Security stream starting can lower it) -- the product of the
+  // two isn't guaranteed monotonic, so there's no shortcut past checking each year in order.
+  const acaCliffCrossings: { retirementAge: number; crossesAtAge: number; pctFPL: number }[] = []
+  if (options.filingStatus != null && options.federalTaxBrackets != null && options.householdSize != null && options.federalPovertyGuidelines != null && options.federalPovertyGuidelines.subsidyCliffAt400Pct) {
+    const guideline = federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines)
+    for (const result of bridgeResults) {
+      for (let age = result.retirementAge; age <= options.planToAge; age++) {
+        const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(age, result.retirementAge)
+        const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, options.filingStatus, options.federalTaxBrackets)
+        const pctFPL = (estimate.magi / guideline) * 100
+        if (pctFPL > 400) {
+          acaCliffCrossings.push({ retirementAge: result.retirementAge, crossesAtAge: age, pctFPL: Math.round(pctFPL * 10) / 10 })
+          break
+        }
+      }
+    }
+  }
 
   // Simulated once per retirement age, same order as bridgeResults; monteCarloFindings below is
   // prose derived from these same results, not a second computation. Never lets an incomplete
@@ -381,6 +487,7 @@ export async function checkDashboard(
     ruleOf55Boosts,
     debtPayoffs,
     incomeStreams: options.incomeStreams,
+    acaCliffCrossings,
   }
 }
 

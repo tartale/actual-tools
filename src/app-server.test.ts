@@ -65,6 +65,7 @@ let configPath: string
 let irsLimitsPath: string
 let federalTaxBracketsPath: string
 let irsLifeExpectancyPath: string
+let federalPovertyGuidelinesPath: string
 let server: RunningServer | null = null
 
 beforeEach(() => {
@@ -73,6 +74,7 @@ beforeEach(() => {
   irsLimitsPath = join(dir, "irs-limits.json")
   federalTaxBracketsPath = join(dir, "federal-tax-brackets.json")
   irsLifeExpectancyPath = join(dir, "irs-life-expectancy.json")
+  federalPovertyGuidelinesPath = join(dir, "federal-poverty-guidelines.json")
 })
 
 afterEach(async () => {
@@ -89,7 +91,7 @@ async function boot(fixture: FetchFixture = {}): Promise<string> {
     await server.close()
   }
   vi.stubGlobal("fetch", mockActualFetch(fixture))
-  server = await startAppServer({ actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, uiDir: dir })
+  server = await startAppServer({ actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir: dir })
   return server.url
 }
 
@@ -400,6 +402,172 @@ describe("GET /api/retirement/check", () => {
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
     expect(body.ruleOf55Boosts).toEqual([])
+  })
+
+  const FEDERAL_TAX_BRACKETS_FIXTURE = {
+    taxYear: 2026,
+    source: "https://example.com",
+    standardDeduction: { single: 1610000, marriedFilingJointly: 3220000, headOfHousehold: 2415000 },
+    brackets: {
+      single: [{ rate: 0.1, upTo: 1240000 }, { rate: 0.12, upTo: 5040000 }, { rate: 0.22, upTo: null }],
+      marriedFilingJointly: [{ rate: 0.1, upTo: null }],
+      headOfHousehold: [{ rate: 0.1, upTo: null }],
+    },
+  }
+
+  it("adds a MAGI finding alongside the funding-status one when filing status and tax brackets are both set", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    // One funding-status finding plus one MAGI finding for the single configured retirement age.
+    expect(body.bridgeFindings).toHaveLength(2)
+    expect(body.bridgeFindings.some((f) => f.title.includes("est. MAGI"))).toBe(true)
+  })
+
+  it("estimates $0 tax-deferred withdrawal when the only portfolio account is still locked at the retirement age -- the early-retirement/FIRE case", async () => {
+    const url = await boot({
+      accounts: [{ id: "401k", name: "Fidelity 401k", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { "401k": [{ amount: 500_000_00, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    // Retiring at 51, well before a traditional-401k's own default 59 access age -- the whole
+    // portfolio is locked at that age, so the real withdrawal can't be tax-deferred at all.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [51], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.annualSpend).toBeGreaterThan(0) // a real, nonzero withdrawal need -- not a vacuous $0 test
+    const magi = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magi?.detail[0]).toContain("$0.00 tax-deferred")
+  })
+
+  const FEDERAL_POVERTY_GUIDELINES_FIXTURE = {
+    guidelineYear: 2025,
+    source: "https://example.com",
+    base: 1565000, // $15,650
+    perAdditionalPerson: 550000, // $5,500
+    subsidyCliffAt400Pct: true,
+  }
+
+  it("marks the age a scenario's MAGI crosses the ACA subsidy cliff", async () => {
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Inherited IRA", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { ira: [{ amount: 500_000_00, transfer_id: null }] },
+      // $10,000/mo = $120,000/yr -- an inherited IRA has no accessAge (always reachable) and is
+      // tax-deferred, so the whole withdrawal counts, comfortably clearing 400% of a household-of-1
+      // FPL ($62,600).
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1 }),
+    })
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.acaCliffCrossings).toHaveLength(1)
+    expect(body.acaCliffCrossings[0]).toMatchObject({ retirementAge: 65, crossesAtAge: 65 })
+    expect(body.acaCliffCrossings[0]?.pctFPL).toBeGreaterThan(400)
+  })
+
+  it("reports no cliff crossing when a scenario's MAGI stays under 400% FPL the whole way", async () => {
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Inherited IRA", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { ira: [{ amount: 500_000_00, transfer_id: null }] },
+      // $1,000/mo = $12,000/yr, well under 400% of even a household-of-1 FPL.
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -1000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1 }),
+    })
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.acaCliffCrossings).toEqual([])
+  })
+
+  it("reports no cliff crossing when household size isn't set, even with poverty guidelines available", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.acaCliffCrossings).toEqual([])
+  })
+
+  it("omits the MAGI finding when filing status isn't set, even with tax brackets available", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.bridgeFindings).toHaveLength(1)
+    expect(body.bridgeFindings.some((f) => f.title.includes("est. MAGI"))).toBe(false)
+  })
+
+  it("omits the MAGI finding when the tax-bracket file isn't available, even with filing status set", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    // No writeFileSync for federalTaxBracketsPath here -- loadFederalTaxBrackets sees a missing file.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.bridgeFindings).toHaveLength(1)
+    expect(body.bridgeFindings.some((f) => f.title.includes("est. MAGI"))).toBe(false)
   })
 
   it("runs the in-app Monte Carlo simulation once per retirement age, same order as bridgeResults", async () => {

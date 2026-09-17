@@ -45,6 +45,7 @@ import type {
 import { loadIrsLimits } from "./irs-limits.ts"
 import { FILING_STATUSES, loadFederalTaxBrackets } from "./federal-tax-brackets.ts"
 import type { FilingStatus } from "./federal-tax-brackets.ts"
+import { loadFederalPovertyGuidelines } from "./federal-poverty-guidelines.ts"
 import { loadIrsLifeExpectancy } from "./irs-life-expectancy.ts"
 import { SEPP_METHODS, seppAmount } from "./fire-sepp.ts"
 import type { SeppMethod } from "./fire-sepp.ts"
@@ -70,6 +71,7 @@ export interface AppServerOptions {
   irsLimitsPath: string
   federalTaxBracketsPath: string
   irsLifeExpectancyPath: string
+  federalPovertyGuidelinesPath: string
   uiDir: string
   // 0 (the default) asks the OS for an unused port -- see startAppServer's doc comment for why.
   port?: number
@@ -429,6 +431,8 @@ function requirePlan(fireConfig: FireConfig): {
   crossoverExpenseCategoryIds: string[] | null
   expenseAdjustmentFactor: number
   spendHistoryMonths: number
+  filingStatus: FilingStatus | null
+  householdSize: number | null
 } {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
@@ -449,6 +453,8 @@ function requirePlan(fireConfig: FireConfig): {
     crossoverExpenseCategoryIds: fireConfig.dashboard.crossoverExpenseCategoryIds,
     expenseAdjustmentFactor: expenseAdjustmentFactorWithOverride(fireConfig.dashboard),
     spendHistoryMonths: spendHistoryMonthsWithOverride(fireConfig.dashboard),
+    filingStatus: fireConfig.dashboard.filingStatus,
+    householdSize: fireConfig.dashboard.householdSize,
   }
 }
 
@@ -673,7 +679,7 @@ function applyAccountOrder(fireConfig: FireConfig, configPath: string, orderedId
 // Function to start the local companion-app server: serves the static UI, and everything under
 // /api/retirement/ that the Retirement section needs. Returns immediately once listening.
 export async function startAppServer(options: AppServerOptions): Promise<RunningServer> {
-  const { actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, uiDir } = options
+  const { actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir } = options
 
   // A fresh id per process start -- the page polls this (see app.js's hot-reload polling) and
   // reloads itself the moment it changes, so restarting the server (e.g. after an edit to server
@@ -736,6 +742,12 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             throw new Error(`filingStatus must be one of ${FILING_STATUSES.join(", ")}, or null.`)
           }
           dashboard.filingStatus = body.filingStatus as FilingStatus | null
+        }
+        if ("householdSize" in body) {
+          if (body.householdSize !== null && (typeof body.householdSize !== "number" || body.householdSize <= 0)) {
+            throw new Error("householdSize must be a positive number or null.")
+          }
+          dashboard.householdSize = body.householdSize
         }
         if ("pensionStartAge" in body) {
           if (body.pensionStartAge !== null && (typeof body.pensionStartAge !== "number" || body.pensionStartAge <= 0)) {
@@ -904,10 +916,14 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const plan = requirePlan(fireConfig)
         const rawAccounts = await fetchAllOpenAccounts(actualConfig)
         const irsLimits = loadIrsLimits(irsLimitsPath)
+        const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
+        const federalPovertyGuidelines = loadFederalPovertyGuidelines(federalPovertyGuidelinesPath)
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
         const result = await checkDashboard(actualConfig, accounts, {
           ...plan,
           fallbackInflationMean: 0.03,
+          federalTaxBrackets,
+          federalPovertyGuidelines,
         })
         sendJson(res, 200, result)
         return

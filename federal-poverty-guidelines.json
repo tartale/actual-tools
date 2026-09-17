@@ -1,0 +1,7 @@
+{
+  "guidelineYear": 2025,
+  "source": "https://aspe.hhs.gov/topics/poverty-economic-mobility/poverty-guidelines (48 contiguous states + DC) -- ACA coverage for a given year uses the PRIOR year's guidelines, so 2026 coverage uses these 2025 figures, not the 2026 ones. subsidyCliffAt400Pct: the ARPA/IRA enhanced premium tax credit (no 400% FPL cliff) expired 2025-12-31; the pre-2021 400% cliff is back under current law for 2026 -- re-verify (a real web search, not a guess) before trusting this for a later plan year.",
+  "base": 1565000,
+  "perAdditionalPerson": 550000,
+  "subsidyCliffAt400Pct": true
+}

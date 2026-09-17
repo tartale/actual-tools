@@ -26,6 +26,7 @@ COPY package.json ./
 COPY irs-limits.json ./
 COPY federal-tax-brackets.json ./
 COPY irs-life-expectancy.json ./
+COPY federal-poverty-guidelines.json ./
 COPY src/ ./src/
 
 # Written to as well as read, so it is a mounted directory rather than a baked-in file: config.json
