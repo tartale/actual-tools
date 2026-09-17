@@ -7,6 +7,8 @@ import { dirname, join } from "node:path"
 import { formatError, loadConfigFromEnv } from "./actual-helpers.ts"
 import { DEFAULT_CONFIG_PATH } from "./fire-accounts.ts"
 import { DEFAULT_IRS_LIMITS_PATH } from "./irs-limits.ts"
+import { DEFAULT_FEDERAL_TAX_BRACKETS_PATH } from "./federal-tax-brackets.ts"
+import { DEFAULT_IRS_LIFE_EXPECTANCY_PATH } from "./irs-life-expectancy.ts"
 import { startAppServer } from "./app-server.ts"
 import { renderHelp } from "./cli-format.ts"
 import type { HelpPage } from "./cli-format.ts"
@@ -17,7 +19,6 @@ import type { HelpPage } from "./cli-format.ts"
 // business logic of its own, matching the "thin CLI, tested logic elsewhere" split every other
 // executable in this repo already uses.
 
-const DEFAULT_OUTPUT_PATH = "fire-dashboard.json"
 // A fixed default, not an OS-assigned ephemeral one -- the page's own hot-reload (see
 // app-server.ts's buildId) has a browser tab poll this same server across a restart, which only
 // works if the restart lands on the same port. `./actual`'s dispatcher runs this under `node
@@ -30,7 +31,8 @@ const uiDir = join(dirname(fileURLToPath(import.meta.url)), "app-ui")
 interface Options {
   configPath: string
   irsLimitsPath: string
-  outputPath: string
+  federalTaxBracketsPath: string
+  irsLifeExpectancyPath: string
   port: number
   open: boolean
 }
@@ -39,9 +41,8 @@ const HELP_PAGE: HelpPage = {
   usage: "./actual app [OPTIONS]",
   description:
     "Launches the local companion app: a web page for configuring retirement/FIRE accounts and " +
-    "assumptions, generating the FIRE dashboard, and checking the dashboard you've already " +
-    "imported into Actual. More sections (bulk budget edits, spending analysis) are planned; " +
-    "this is the first.",
+    "assumptions, and checking them against a Bridge/Monte Carlo analysis. More sections (bulk " +
+    "budget edits, spending analysis) are planned; this is the first.",
   sections: [
     {
       label: "Options",
@@ -51,7 +52,14 @@ const HELP_PAGE: HelpPage = {
           name: "-i, --irs-limits PATH",
           description: `Path to the IRS contribution limits reference file (default: ${DEFAULT_IRS_LIMITS_PATH}). Missing is fine, just skips that context.`,
         },
-        { name: "-o, --output PATH", description: `Where the "Generate dashboard" action writes the dashboard JSON (default: ${DEFAULT_OUTPUT_PATH}).` },
+        {
+          name: "-b, --tax-brackets PATH",
+          description: `Path to the federal tax bracket reference file (default: ${DEFAULT_FEDERAL_TAX_BRACKETS_PATH}). Missing is fine, just skips the MAGI/effective-rate estimate.`,
+        },
+        {
+          name: "-l, --life-expectancy PATH",
+          description: `Path to the IRS Single Life Expectancy reference file (default: ${DEFAULT_IRS_LIFE_EXPECTANCY_PATH}). Missing is fine, just skips the 72(t) SEPP amount calculators.`,
+        },
         { name: "-p, --port N", description: `Run on this port (default: ${DEFAULT_PORT}). Pass 0 for an OS-assigned ephemeral port instead -- note this breaks the page's hot-reload across a restart, since it won't land back on the same port.` },
         { name: "--no-open", description: "Don't try to open the page in a browser automatically -- just print the URL." },
         { name: "-h, --help", description: "Show this message and exit." },
@@ -68,7 +76,8 @@ function usage(message: string): never {
 function parseArguments(argv: readonly string[]): Options {
   let configPath = DEFAULT_CONFIG_PATH
   let irsLimitsPath = DEFAULT_IRS_LIMITS_PATH
-  let outputPath = DEFAULT_OUTPUT_PATH
+  let federalTaxBracketsPath = DEFAULT_FEDERAL_TAX_BRACKETS_PATH
+  let irsLifeExpectancyPath = DEFAULT_IRS_LIFE_EXPECTANCY_PATH
   let port = DEFAULT_PORT
   let open = true
 
@@ -84,10 +93,15 @@ function parseArguments(argv: readonly string[]): Options {
       if (value === undefined || value.startsWith("-")) usage("Missing argument for --irs-limits")
       irsLimitsPath = value
       i++
-    } else if (arg === "-o" || arg === "--output") {
+    } else if (arg === "-b" || arg === "--tax-brackets") {
       const value = argv[i + 1]
-      if (value === undefined || value.startsWith("-")) usage("Missing argument for --output")
-      outputPath = value
+      if (value === undefined || value.startsWith("-")) usage("Missing argument for --tax-brackets")
+      federalTaxBracketsPath = value
+      i++
+    } else if (arg === "-l" || arg === "--life-expectancy") {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith("-")) usage("Missing argument for --life-expectancy")
+      irsLifeExpectancyPath = value
       i++
     } else if (arg === "-p" || arg === "--port") {
       const value = argv[i + 1]
@@ -105,7 +119,7 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  return { configPath, irsLimitsPath, outputPath, port, open }
+  return { configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, port, open }
 }
 
 // Function to best-effort open a URL in the default browser. Swallowed non-fatally: this is a
@@ -131,7 +145,8 @@ async function main(): Promise<void> {
     actualConfig,
     configPath: options.configPath,
     irsLimitsPath: options.irsLimitsPath,
-    outputPath: options.outputPath,
+    federalTaxBracketsPath: options.federalTaxBracketsPath,
+    irsLifeExpectancyPath: options.irsLifeExpectancyPath,
     uiDir,
     port: options.port,
   })

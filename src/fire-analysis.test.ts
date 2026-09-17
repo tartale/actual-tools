@@ -3,16 +3,13 @@ import { describe, expect, it } from "vitest"
 import {
   bridgeFinding,
   calculateMortgagePayoff,
-  detectMonteCarloWidgetSetDrift,
-  detectPotDrift,
-  detectSpendingPhaseDrift,
   monteCarloFinding,
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
 import type { BridgeAccount, BridgeResult } from "./fire-analysis.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
-import type { MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
 
 // Function to build a bridge account with inert defaults -- no growth, no contributions, no tax --
@@ -24,6 +21,7 @@ function bridgeAccount(overrides: Partial<BridgeAccount> & Pick<BridgeAccount, "
     annualContribution: 0,
     returnMean: 0,
     withdrawalTaxRate: 0,
+    earlyWithdrawalPenaltyUntilAge: null,
     ...overrides,
   }
 }
@@ -40,6 +38,10 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     customReturnStdDev: null,
     monthlyContribution: null,
     ruleOf55SeparationAge: null,
+    earlyWithdrawalPenalty: false,
+    seppMethod: null,
+    seppStartAge: null,
+    seppInterestRate: null,
     annualSalary: null,
     employerMatchRate: null,
     employerMatchCapRate: null,
@@ -175,6 +177,28 @@ describe("simulateBridge", () => {
     const result = simulateBridge([bridgeAccount({ id: "a1", balance: 1000, withdrawalTaxRate: 0.5 })], 50, 50, 100, 100, 0)
     // Funding 100 net costs 200 gross, so 1000 lasts five years rather than ten.
     expect(result.depletionAge).toBe(55)
+  })
+
+  it("adds the early-withdrawal penalty on top of the flat rate for years before its own cutoff, then drops it", () => {
+    const accounts = [bridgeAccount({ id: "a1", balance: 1_000_000, withdrawalTaxRate: 0, earlyWithdrawalPenaltyUntilAge: 52 })]
+    const result = simulateBridge(accounts, 50, 50, 53, 100, 0)
+    // Age 50->51: funding 100 net at a 10% penalty (no base rate) costs 100/0.9 gross.
+    const balanceAfterAge50 = 1_000_000 - 100 / 0.9
+    // Age 51->52: same penalty still applies (52 is the cutoff, not yet reached).
+    const balanceAfterAge51 = balanceAfterAge50 - 100 / 0.9
+    // Age 52->53: the cutoff age itself -- penalty no longer applies, plain 100 net = 100 gross.
+    const balanceAfterAge52 = balanceAfterAge51 - 100
+    expect(result.timeline.map((point) => point.accessibleBalance)).toEqual([
+      expect.closeTo(1_000_000, 5),
+      expect.closeTo(balanceAfterAge50, 5),
+      expect.closeTo(balanceAfterAge51, 5),
+      expect.closeTo(balanceAfterAge52, 5),
+    ])
+  })
+
+  it("never adds the penalty for an account with no earlyWithdrawalPenaltyUntilAge set", () => {
+    const result = simulateBridge([bridgeAccount({ id: "a1", balance: 1000, withdrawalTaxRate: 0 })], 50, 50, 100, 100, 0)
+    expect(result.timeline[1]?.accessibleBalance).toBe(900)
   })
 
   it("accumulates contributions until retirement, then stops", () => {
@@ -333,6 +357,27 @@ describe("toBridgeAccounts", () => {
     expect(built.find((b) => b.id === "a1-growth")).toMatchObject({ accessAge: 59 })
   })
 
+  it("grants full access and carries the normal accessAge as the penalty cutoff when the penalty option is accepted", () => {
+    const accounts = [account({ id: "a1", category: "retirement-tax-deferred", type: "traditional-401k", accessAge: 59, taxTreatment: "tax-deferred", allocationPreset: "equity-80", earlyWithdrawalPenalty: true })]
+    const built = toBridgeAccounts(accounts, new Map([["a1", 500]]), new Map(), 65)
+    expect(built[0]).toMatchObject({ accessAge: null, earlyWithdrawalPenaltyUntilAge: 59 })
+  })
+
+  it("leaves earlyWithdrawalPenaltyUntilAge null for an account with no accessAge to shorten", () => {
+    const accounts = [account({ id: "a1", category: "investment-taxable", type: "brokerage", accessAge: null, taxTreatment: "taxable", allocationPreset: "equity-80", earlyWithdrawalPenalty: true })]
+    const built = toBridgeAccounts(accounts, new Map([["a1", 500]]), new Map(), 65)
+    expect(built[0]).toMatchObject({ accessAge: null, earlyWithdrawalPenaltyUntilAge: null })
+  })
+
+  it("applies the penalty cutoff to a roth-ira's growth entry only, never its already-free basis entry", () => {
+    const accounts = [
+      account({ id: "a1", name: "Roth", category: "retirement-roth", type: "roth-ira", accessAge: 59, allocationPreset: "equity-80", rothBasis: 300, earlyWithdrawalPenalty: true }),
+    ]
+    const built = toBridgeAccounts(accounts, new Map([["a1", 1000]]), new Map(), 65)
+    expect(built.find((b) => b.id === "a1-basis")).toMatchObject({ accessAge: null, earlyWithdrawalPenaltyUntilAge: null })
+    expect(built.find((b) => b.id === "a1-growth")).toMatchObject({ accessAge: null, earlyWithdrawalPenaltyUntilAge: 59 })
+  })
+
   it("does not split a roth-ira with no basis entered, or any other account type", () => {
     const noBasis = toBridgeAccounts([account({ id: "a1", category: "retirement-roth", type: "roth-ira", allocationPreset: "equity-80" })], new Map(), new Map(), 65)
     expect(noBasis).toHaveLength(1)
@@ -345,155 +390,6 @@ describe("toBridgeAccounts", () => {
       65,
     )
     expect(traditional).toHaveLength(1)
-  })
-})
-
-describe("detectPotDrift", () => {
-  const workday = account({ id: "a1", name: "Workday 401k", category: "retirement-tax-deferred", accessAge: 59, ruleOf55SeparationAge: 55 })
-
-  function meta(pots: { accountId: string; accessAge: number | null }[]): MonteCarloCardMeta {
-    return { pots: pots.map((pot) => ({ id: pot.accountId, accountId: pot.accountId, accessAge: pot.accessAge })) }
-  }
-
-  it("flags a pot whose access age predates a config change", () => {
-    const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday], [60])
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.level).toBe("warn")
-    expect(findings[0]?.title).toContain("Actual has access age 59, your current config would produce access age 55")
-  })
-
-  it("stays quiet when the dashboard already matches the config", () => {
-    expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 55 }])], [workday], [60])).toEqual([])
-  })
-
-  it("flags a portfolio account with no pot at all", () => {
-    const findings = detectPotDrift([meta([])], [workday], [60])
-    expect(findings[0]?.title).toContain("has no pot in Actual's exported dashboard")
-  })
-
-  it("flags a pot whose account is no longer part of the portfolio", () => {
-    const cash = account({ id: "a2", name: "Checking", category: "cash" })
-    const findings = detectPotDrift([meta([{ accountId: "a2", accessAge: null }])], [cash], [60])
-    expect(findings[0]?.level).toBe("info")
-    expect(findings[0]?.title).toContain("no longer a portfolio account")
-  })
-
-  it("reports one finding per account even when every scenario's widget repeats the pot", () => {
-    const metas = [meta([{ accountId: "a1", accessAge: 59 }]), meta([{ accountId: "a1", accessAge: 59 }]), meta([{ accountId: "a1", accessAge: 59 }])]
-    expect(detectPotDrift(metas, [workday], [60])).toHaveLength(1)
-  })
-
-  it("ignores pots with no linked account", () => {
-    const orphan: MonteCarloCardMeta = { pots: [{ id: "p1", accountId: null, accessAge: 59 }] }
-    expect(detectPotDrift([orphan], [], [60])).toEqual([])
-  })
-
-  it("expects a different access age per retirement-age scenario, not one flat value", () => {
-    // Retiring at 52 doesn't qualify for the Rule of 55 boost (see effectiveAccessAge); retiring at
-    // 58 does -- so a plan comparing both ages should expect EITHER 59 (the 52 scenario's widget)
-    // or 55 (the 58 scenario's widget) on this account's pot, not just one.
-    expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 59 }])], [workday], [52, 58])).toEqual([])
-    expect(detectPotDrift([meta([{ accountId: "a1", accessAge: 55 }])], [workday], [52, 58])).toEqual([])
-    const findings = detectPotDrift([meta([{ accountId: "a1", accessAge: 50 }])], [workday], [52, 58])
-    expect(findings[0]?.title).toContain("Actual has access age 50, your current config would produce access age 59/55")
-  })
-})
-
-describe("detectSpendingPhaseDrift", () => {
-  function freshWidget(name: string, spendingPhases: unknown, contributions: unknown = []) {
-    return { meta: { name, spendingPhases, contributions } }
-  }
-  function liveMeta(name: string, spendingPhases: unknown, contributions: unknown = []): MonteCarloCardMeta {
-    return { name, spendingPhases, contributions } as MonteCarloCardMeta
-  }
-
-  it("stays quiet when the live widget already matches what generate would produce", () => {
-    const phases = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 100000 }]
-    const findings = detectSpendingPhaseDrift([freshWidget("Monte Carlo", phases)], [liveMeta("Monte Carlo", phases)])
-    expect(findings).toEqual([])
-  })
-
-  it("flags spending drift when the live widget's phases no longer match a fresh generate", () => {
-    const fresh = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 150000 }]
-    const stale = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 100000 }]
-    const findings = detectSpendingPhaseDrift([freshWidget("Monte Carlo", fresh)], [liveMeta("Monte Carlo", stale)])
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.title).toContain("Monte Carlo")
-    expect(findings[0]?.title).toContain("spending")
-  })
-
-  it("flags contribution drift separately from spending drift", () => {
-    const phases = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 100000 }]
-    const freshContributions = [{ id: "contribution-a1", annualAmount: 600000 }]
-    const staleContributions = [{ id: "contribution-a1", annualAmount: 500000 }]
-    const findings = detectSpendingPhaseDrift(
-      [freshWidget("Monte Carlo", phases, freshContributions)],
-      [liveMeta("Monte Carlo", phases, staleContributions)],
-    )
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.title).toContain("contributions")
-  })
-
-  it("matches widgets by name, so one stale scenario doesn't flag another", () => {
-    const phases55 = [{ id: "retirement-spending", fromAge: 55, annualWithdrawal: 100000 }]
-    const phases59Fresh = [{ id: "retirement-spending", fromAge: 59, annualWithdrawal: 150000 }]
-    const phases59Stale = [{ id: "retirement-spending", fromAge: 59, annualWithdrawal: 90000 }]
-    const findings = detectSpendingPhaseDrift(
-      [freshWidget("Monte Carlo — Retire at 55", phases55), freshWidget("Monte Carlo — Retire at 59", phases59Fresh)],
-      [liveMeta("Monte Carlo — Retire at 55", phases55), liveMeta("Monte Carlo — Retire at 59", phases59Stale)],
-    )
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.title).toContain("Retire at 59")
-  })
-
-  it("skips a scenario with nothing live yet, rather than flagging it as drift", () => {
-    const findings = detectSpendingPhaseDrift([freshWidget("Monte Carlo — Retire at 62", [{ annualWithdrawal: 100000 }])], [])
-    expect(findings).toEqual([])
-  })
-})
-
-describe("detectMonteCarloWidgetSetDrift", () => {
-  function freshWidget(name: string) {
-    return { meta: { name } }
-  }
-  function liveMeta(name: string): MonteCarloCardMeta {
-    return { name }
-  }
-
-  it("stays quiet when every configured scenario already has a live widget", () => {
-    const findings = detectMonteCarloWidgetSetDrift([freshWidget("Monte Carlo — Retire at 55")], [liveMeta("Monte Carlo — Retire at 55")])
-    expect(findings).toEqual([])
-  })
-
-  it("reproduces the real bug: adding retirement ages renames the ORIGINAL scenario's own expected widget too", () => {
-    // buildMonteCarloWidgets names a widget bare "Monte Carlo" with exactly one configured age, and
-    // "Monte Carlo — Retire at N" once there's more than one -- so a dashboard generated back when
-    // there was a single age matches NONE of the freshly expected names the moment a second age is
-    // added, not just the new one. detectSpendingPhaseDrift's own by-name match (deliberately) has
-    // nothing to say about any of this; this is the check that has to catch it.
-    const findings = detectMonteCarloWidgetSetDrift(
-      [freshWidget("Monte Carlo — Retire at 50"), freshWidget("Monte Carlo — Retire at 51"), freshWidget("Monte Carlo — Retire at 52")],
-      [liveMeta("Monte Carlo")],
-    )
-    expect(findings).toHaveLength(4) // 3 missing fresh names + the one orphaned live name
-    expect(findings.filter((f) => f.level === "warn")).toHaveLength(3)
-    expect(findings.filter((f) => f.level === "warn").map((f) => f.title)).toEqual([
-      'Actual has no Monte Carlo widget named "Monte Carlo — Retire at 50" yet.',
-      'Actual has no Monte Carlo widget named "Monte Carlo — Retire at 51" yet.',
-      'Actual has no Monte Carlo widget named "Monte Carlo — Retire at 52" yet.',
-    ])
-    const orphan = findings.find((f) => f.level === "info")
-    expect(orphan?.title).toBe('"Monte Carlo" is in Actual but no longer matches a configured retirement age.')
-  })
-
-  it("flags only the ages that actually changed, not every scenario, when one age is swapped for another", () => {
-    const findings = detectMonteCarloWidgetSetDrift(
-      [freshWidget("Monte Carlo — Retire at 55"), freshWidget("Monte Carlo — Retire at 60")],
-      [liveMeta("Monte Carlo — Retire at 55"), liveMeta("Monte Carlo — Retire at 58")],
-    )
-    expect(findings).toHaveLength(2)
-    expect(findings.find((f) => f.level === "warn")?.title).toContain("Retire at 60")
-    expect(findings.find((f) => f.level === "info")?.title).toContain("Retire at 58")
   })
 })
 

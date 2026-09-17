@@ -7,7 +7,7 @@ import { startAppServer } from "./app-server.ts"
 import type { RunningServer, StateResponse } from "./app-server.ts"
 import type { ActualConfig } from "./actual-helpers.ts"
 import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
-import type { CheckResult, GenerateResult } from "./fire-generate.ts"
+import type { CheckResult } from "./fire-generate.ts"
 
 interface ErrorBody {
   error: string
@@ -63,12 +63,16 @@ function mockActualFetch(fixture: FetchFixture) {
 let dir: string
 let configPath: string
 let irsLimitsPath: string
+let federalTaxBracketsPath: string
+let irsLifeExpectancyPath: string
 let server: RunningServer | null = null
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "app-server-test-"))
   configPath = join(dir, "config.json")
   irsLimitsPath = join(dir, "irs-limits.json")
+  federalTaxBracketsPath = join(dir, "federal-tax-brackets.json")
+  irsLifeExpectancyPath = join(dir, "irs-life-expectancy.json")
 })
 
 afterEach(async () => {
@@ -85,7 +89,7 @@ async function boot(fixture: FetchFixture = {}): Promise<string> {
     await server.close()
   }
   vi.stubGlobal("fetch", mockActualFetch(fixture))
-  server = await startAppServer({ actualConfig, configPath, irsLimitsPath, outputPath: join(dir, "fire-dashboard.json"), uiDir: dir })
+  server = await startAppServer({ actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, uiDir: dir })
   return server.url
 }
 
@@ -276,6 +280,38 @@ describe("PATCH /api/retirement/accounts/:id", () => {
     expect(body.accounts[0]?.monthlyContribution).toBe(Math.round(2450000 / 12))
   })
 
+  it("computes a SEPP account's own distribution amount once a method, start age, and the life-expectancy table are all available", async () => {
+    // A single-entry table -- lifeExpectancyFactor clamps to whatever's at the end of the array
+    // regardless of age, so this fixture doesn't need to be a real, full IRS table to exercise the
+    // computation end to end; it only needs one known, controllable factor.
+    writeFileSync(irsLifeExpectancyPath, JSON.stringify({ tableRevisionYear: 2022, source: "test", factorByAge: [36.2] }))
+    const url = await boot({
+      accounts: [{ id: "401k", name: "401k", offbudget: true, closed: false }],
+      transactionsByAccount: { "401k": [{ amount: 100000000, transfer_id: null }] }, // $1,000,000
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1976-01-01", retirementAges: [55] }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k" }) })
+    // seppStartAge below any realistic current age -- projectAccountBalance's own loop (currentAge
+    // to targetAge) never runs, leaving the balance exactly $1,000,000 rather than growing it, so
+    // the expected amount stays a plain, exact division.
+    const res = await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ seppMethod: "rmd", seppStartAge: 1 }) })
+    const body = await readJson<StateResponse>(res)
+    // $1,000,000 / 36.2 = $27,624.31
+    expect(body.accounts[0]?.seppAnnualAmount).toBe(2762431)
+  })
+
+  it("leaves a SEPP account's distribution amount null until a method and start age are both set", async () => {
+    writeFileSync(irsLifeExpectancyPath, JSON.stringify({ tableRevisionYear: 2022, source: "test", factorByAge: [36.2] }))
+    const url = await boot({
+      accounts: [{ id: "401k", name: "401k", offbudget: true, closed: false }],
+      transactionsByAccount: { "401k": [{ amount: 100000000, transfer_id: null }] },
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1976-01-01", retirementAges: [55] }) })
+    const res = await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", seppMethod: "rmd" }) })
+    const body = await readJson<StateResponse>(res)
+    expect(body.accounts[0]?.seppAnnualAmount).toBeNull()
+  })
+
   it("prunes an override whose account has since closed", async () => {
     const firstUrl = await boot({ accounts: [{ id: "a1", name: "Checking", offbudget: false, closed: false }] })
     await fetch(`${firstUrl}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "cash" }) })
@@ -289,221 +325,8 @@ describe("PATCH /api/retirement/accounts/:id", () => {
   })
 })
 
-describe("POST /api/retirement/generate", () => {
-  it("errors clearly when the plan isn't configured yet", async () => {
-    const url = await boot()
-    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
-    expect(res.status).toBe(400)
-    const body = await readJson<ErrorBody>(res)
-    expect(body.error).toContain("birth date")
-  })
-
-  it("writes the dashboard file and returns a structured result once accounts and a plan exist", async () => {
-    const url = await boot({
-      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
-      categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
-      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
-      monthCategories: [],
-    })
-    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90 }) })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
-
-    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
-    expect(res.status).toBe(200)
-    const body = await readJson<GenerateResult>(res)
-    expect(body.portfolioAccountCount).toBe(1)
-    expect(body.portfolioTotal).toBe(500000)
-    expect(body.widgetTypes).toEqual(["net-worth-card", "monte-carlo-card"])
-    expect(body.spendBasis).toBeNull() // no Plan-section selection yet -- used the plain fallback
-  })
-
-  it("ignores a live crossover widget's own category selection entirely -- spend never reads back from Actual", async () => {
-    // "cat-a" is the live widget's own (narrower) selection; with no Plan-section selection of its
-    // own, spend must fall back to EVERY category (cat-a + cat-b), not read the live widget's
-    // narrower one -- this app no longer looks at Actual's own crossover widget for spend at all.
-    const url = await boot({
-      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
-      categoryGroups: [
-        {
-          id: "g1",
-          name: "Group",
-          is_income: false,
-          hidden: false,
-          categories: [
-            { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" },
-            { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1" },
-          ],
-        },
-      ],
-      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
-      monthCategories: [
-        { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false },
-        { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -100000, balance: 0, carryover: false },
-      ],
-      dashboardRows: [
-        {
-          id: "page1",
-          name: "FIRE",
-          dashboard_page_id: "page1",
-          type: "crossover-card",
-          x: 0,
-          y: 2,
-          width: 12,
-          height: 4,
-          meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-a"], incomeAccountIds: [] },
-        },
-      ],
-    })
-    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90 }) })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
-
-    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
-    expect(res.status).toBe(200)
-    const body = await readJson<GenerateResult>(res)
-    expect(body.expenseCategoryCount).toBe(2)
-    expect(body.annualSpend).toBe(1320000) // every category, not just the live widget's cat-a: (10000 + 100000) x 12
-    expect(body.spendBasis).toBeNull() // no Plan-section selection -- the plain "every category" default, no basis text
-  })
-
-  it("prefers the Plan section's own expense-category selection over the live crossover widget's", async () => {
-    // The whole point of the Plan section's own picker: once set, it's authoritative, so narrowing
-    // categories never again requires opening Actual -- even when a crossover widget with its own
-    // (different) selection is already live.
-    const url = await boot({
-      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
-      categoryGroups: [
-        {
-          id: "g1",
-          name: "Group",
-          is_income: false,
-          hidden: false,
-          categories: [
-            { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" },
-            { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1" },
-          ],
-        },
-      ],
-      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
-      monthCategories: [
-        { id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false },
-        { id: "cat-b", name: "Once-a-year trip", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -100000, balance: 0, carryover: false },
-      ],
-      dashboardRows: [
-        {
-          id: "page1",
-          name: "FIRE",
-          dashboard_page_id: "page1",
-          type: "crossover-card",
-          x: 0,
-          y: 2,
-          width: 12,
-          height: 4,
-          meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-a"], incomeAccountIds: [] },
-        },
-      ],
-    })
-    await fetch(`${url}api/retirement/plan`, {
-      method: "PATCH",
-      body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90, crossoverExpenseCategoryIds: ["cat-b"] }),
-    })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
-
-    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
-    expect(res.status).toBe(200)
-    const body = await readJson<GenerateResult>(res)
-    expect(body.annualSpend).toBe(1200000) // 100000 x 12 -- cat-b, not the live widget's cat-a
-    expect(body.spendBasis).toContain("Plan section selection")
-  })
-
-  it("applies a pinned crossoverExpenseAdjustmentFactor to the Plan section's own local-selection spend", async () => {
-    const url = await boot({
-      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
-      categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
-      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
-      monthCategories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false }],
-      dashboardRows: [],
-    })
-    await fetch(`${url}api/retirement/plan`, {
-      method: "PATCH",
-      body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90, crossoverExpenseCategoryIds: ["cat-a"], crossoverExpenseAdjustmentFactor: 0.85 }),
-    })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
-
-    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
-    expect(res.status).toBe(200)
-    const body = await readJson<GenerateResult>(res)
-    expect(body.annualSpend).toBe(102000) // 10000 x 12 x 0.85
-    expect(body.spendBasis).toContain("× 85% target income")
-  })
-
-  it("applies a pinned crossoverSpendHistoryMonths to the Plan section's own local-selection spend", async () => {
-    const url = await boot({
-      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
-      categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
-      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
-      monthCategories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false }],
-      dashboardRows: [],
-    })
-    await fetch(`${url}api/retirement/plan`, {
-      method: "PATCH",
-      body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90, crossoverExpenseCategoryIds: ["cat-a"], crossoverSpendHistoryMonths: 6 }),
-    })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
-
-    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
-    expect(res.status).toBe(200)
-    const body = await readJson<GenerateResult>(res)
-    expect(body.spendBasis).toContain("over 6 months")
-  })
-
-  it("ignores a live crossover widget's own Target Income % -- only the Plan section's own pinned value applies", async () => {
-    // The live widget's own expenseAdjustmentFactor (0.9, "Target Income (% of expenses)" in
-    // Actual's own crossover UI) must have zero effect here: this app reads that setting only from
-    // its own Plan section (crossoverExpenseAdjustmentFactor, see the pinned-factor test above),
-    // never back from Actual. With nothing pinned, spend is the plain trailing average, unscaled.
-    const url = await boot({
-      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
-      categoryGroups: [{ id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1" }] }],
-      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
-      monthCategories: [{ id: "cat-a", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false }],
-      dashboardRows: [
-        {
-          id: "page1",
-          name: "FIRE",
-          dashboard_page_id: "page1",
-          type: "crossover-card",
-          x: 0,
-          y: 2,
-          width: 12,
-          height: 4,
-          meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-a"], incomeAccountIds: [], expenseAdjustmentFactor: 0.9 },
-        },
-      ],
-    })
-    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90 }) })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
-
-    const res = await fetch(`${url}api/retirement/generate`, { method: "POST" })
-    expect(res.status).toBe(200)
-    const body = await readJson<GenerateResult>(res)
-    expect(body.annualSpend).toBe(120000) // 10000 x 12, unscaled -- the live widget's 0.9 is ignored
-    expect(body.spendBasis).toBeNull()
-  })
-})
-
 describe("GET /api/retirement/check", () => {
-  it("has no stale findings when the dashboard hasn't been imported yet -- optional, not something to flag", async () => {
-    const url = await boot({ accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }], dashboardRows: [] })
-    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1980-01-01", retirementAges: [55], planToAge: 90 }) })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
-
-    const res = await fetch(`${url}api/retirement/check`)
-    expect(res.status).toBe(200)
-    const body = await readJson<CheckResult>(res)
-    expect(body.staleFindings).toEqual([])
-  })
-
-  it("reports the same portfolio total, Rule of 55 boosts, and debt payoffs Generate's own result carries", async () => {
+  it("reports the plan's own portfolio total, Rule of 55 boosts, and debt payoffs", async () => {
     const url = await boot({
       accounts: [
         { id: "a1", name: "Brokerage", offbudget: true, closed: false },
@@ -544,6 +367,39 @@ describe("GET /api/retirement/check", () => {
     expect(body.debtPayoffs).toHaveLength(1)
     expect(body.debtPayoffs[0]).toMatchObject({ accountName: "Mortgage", monthlyAmount: 100000 })
     expect(typeof body.debtPayoffs[0]?.payoffAge).toBe("number")
+  })
+
+  it("does not report an early-withdrawal-penalty account as a Rule of 55 boost", async () => {
+    const url = await boot({
+      accounts: [{ id: "roth", name: "E*Trade Roth IRA", offbudget: true, closed: false }],
+      transactionsByAccount: { roth: [{ amount: 10000000, transfer_id: null }] }, // $100,000
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    // effectiveAccessAge changes here too (to null, same as a Rule of 55 boost would produce), but
+    // it's a different reported figure entirely -- a chosen posture, not an employment exception --
+    // and belongs in neither ruleOf55Boosts nor a "Rule of 55, age null" tile.
+    await fetch(`${url}api/retirement/accounts/roth`, { method: "PATCH", body: JSON.stringify({ type: "roth-ira", earlyWithdrawalPenalty: true }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.ruleOf55Boosts).toEqual([])
+  })
+
+  it("does not report a SEPP-electing account as a Rule of 55 boost either", async () => {
+    const url = await boot({
+      accounts: [{ id: "401k", name: "Fidelity 401k", offbudget: true, closed: false }],
+      transactionsByAccount: { "401k": [{ amount: 10000000, transfer_id: null }] }, // $100,000
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", seppMethod: "rmd", seppStartAge: 50 }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.ruleOf55Boosts).toEqual([])
   })
 
   it("runs the in-app Monte Carlo simulation once per retirement age, same order as bridgeResults", async () => {
@@ -616,40 +472,6 @@ describe("GET /api/retirement/check", () => {
     const body = await readJson<CheckResult>(res)
     expect(body.annualSpend).toBe(1200000) // 100000 x 12 -- cat-b, not the live widget's cat-a
     expect(body.spendBasis).toContain("Plan section selection")
-  })
-
-  it("flags a retirement age added since the dashboard was last generated, even though every account already has a live pot", async () => {
-    // The real bug: buildMonteCarloWidgets names a widget bare "Monte Carlo" with exactly one
-    // configured age, and "Monte Carlo -- Retire at N" once there's more than one -- so a live
-    // dashboard generated back when there was a single age matches NONE of the freshly expected
-    // names the moment a second age is added. detectPotDrift alone never catches this: the account
-    // already has a live pot (from the one existing widget), so nothing there looks wrong either.
-    const url = await boot({
-      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
-      transactionsByAccount: { a1: [{ amount: 500000, transfer_id: null }] },
-      dashboardRows: [
-        {
-          id: "w1",
-          dashboard_page_id: "page1",
-          type: "monte-carlo-card",
-          x: 0,
-          y: 0,
-          width: 12,
-          height: 6,
-          meta: { name: "Monte Carlo", pots: [{ accountId: "a1", accessAge: null }] },
-        },
-      ],
-    })
-    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [50, 51], planToAge: 90 }) })
-    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
-
-    const res = await fetch(`${url}api/retirement/check`)
-    expect(res.status).toBe(200)
-    const body = await readJson<CheckResult>(res)
-    const titles = body.staleFindings.map((f) => f.title)
-    expect(titles).toContain('Actual has no Monte Carlo widget named "Monte Carlo — Retire at 50" yet.')
-    expect(titles).toContain('Actual has no Monte Carlo widget named "Monte Carlo — Retire at 51" yet.')
-    expect(titles).toContain('"Monte Carlo" is in Actual but no longer matches a configured retirement age.')
   })
 })
 

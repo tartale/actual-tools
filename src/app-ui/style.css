@@ -33,6 +33,17 @@
   --info-soft: color-mix(in srgb, #66b5fa 16%, transparent);
   --radius-sm: 4px;
   --radius-md: 6px;
+  /* .topbar's real rendered height (10px padding top/bottom + its content) -- measured, not
+     guessed, so the sticky offsets below that need to clear it (.retirement-toolbar, the Analysis
+     column's own sticky panel) stay in sync with it in one place rather than each hand-copying the
+     same magic number. */
+  --topbar-height: 54px;
+  /* .retirement-toolbar's real rendered height, unlike --topbar-height above, isn't a constant --
+     its own content (the Portfolio/Projected Expenditures/Rule-of-55/debt-payoff tiles) grows once a check result
+     lands, so it's kept live instead of hand-measured: a ResizeObserver on #retirementToolbar (see
+     the bottom of app.js) writes it here on every size change. The 0px fallback is only ever seen
+     for the one frame before that observer's first callback fires. */
+  --retirement-toolbar-height: 0px;
 }
 
 * { box-sizing: border-box; }
@@ -136,7 +147,16 @@ body.privacy input[data-field="ruleOf55SeparationAge"]:focus { filter: none; }
 body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); accent-color: var(--ink-faint); }
 
 /* --- Topbar --- */
-.topbar { background: var(--sidebar-bg); padding: 10px 24px; display: flex; align-items: center; gap: 28px; }
+/* Pinned at all viewport widths, not just the wide split layout -- it's the page's own identity/nav,
+   not something tied to any one page's layout. z-index above ordinary page content (and the
+   per-column toolbars below, which sit right underneath it) but below the modal backdrop (30) and
+   the help-icon tooltip (40), so those still layer above it when open. */
+/* will-change promotes this to its own compositor layer -- without it, some browsers repaint a
+   sticky element's background a frame or two behind the content scrolling underneath during a
+   fast scroll gesture (a real, if brief, glimpse of that content through the "gap" before the
+   sticky element's own paint catches up), even though the two are correctly stacked and opaque at
+   any settled scroll position. */
+.topbar { position: sticky; top: 0; z-index: 25; background: var(--sidebar-bg); padding: 10px 24px; display: flex; align-items: center; gap: 28px; will-change: transform; }
 .wordmark { font-weight: 700; font-size: 18px; letter-spacing: 0.3px; color: var(--ink-strong); display: flex; align-items: baseline; gap: 8px; }
 .wordmark .tag { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent-selected); border: 1px solid var(--sidebar-hover); padding: 1px 5px; border-radius: var(--radius-sm); }
 /* Inline next to the wordmark now (not a second line below it) -- a "·" leader separates it,
@@ -163,12 +183,16 @@ main:has(#page-retirement.active) { max-width: none; }
 
 /* auto-fit rather than a fixed 4 columns -- Portfolio is the only tile always present; Spend and
    any Rule of 55/debt-payoff tiles (see renderSummaryStats in app.js) are added once
-   /api/retirement/check resolves, and that's a variable count, not always 4. */
-.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 20px; }
+   /api/retirement/check resolves, and that's a variable count, not always 4. No border/background
+   of its own -- it sits directly inside .retirement-toolbar's own bordered panel (its only
+   consumer), so tiles read as part of that one panel rather than a second nested box; the 1px
+   gaps still divide tiles from each other via the same background-shows-through-the-gap trick,
+   just in the subtler --line-soft rather than a full panel border. */
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line-soft); flex: 1 1 260px; }
 .summary[hidden] { display: none; }
-.summary .tile { background: var(--surface); padding: 11px 14px; }
+.summary .tile { background: var(--surface); padding: 4px 14px; }
 .summary .tile .label { font-size: 10px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); }
-.summary .tile .value { font-size: 17px; font-weight: 600; margin-top: 2px; color: var(--ink-strong); }
+.summary .tile .value { font-size: 15px; font-weight: 600; margin-top: 1px; color: var(--ink-strong); }
 .summary .tile .tile-note { font-size: 12px; font-weight: 400; color: var(--ink-faint); }
 
 /* Same bordered-box treatment as Budget's own single .card, wrapping the two columns together as
@@ -178,21 +202,196 @@ main:has(#page-retirement.active) { max-width: none; }
 .retirement-split { background: var(--surface); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 20px; }
 
 /* Wide viewports only (see the media query below) -- .retirement-inputs (Plan through Accounts)
-   scrolls normally in the left column; .retirement-live (tiles/Stale/Analysis, everything the
-   live recalculation touches) is the right column, stretched to the same row height as the left
-   by grid's own default align-items:stretch (deliberately not overridden to `start`) so
+   scrolls normally in the left column; .retirement-live (the Analysis card, everything the live
+   recalculation draws) is the right column, stretched to the same row height as the left by
+   grid's own default align-items:stretch (deliberately not overridden to `start`) so
    .retirement-live-sticky has real room to stick within as the page scrolls -- without that extra
    height, "sticky" would have nothing to stick against and behave like static positioning. */
 @media (min-width: 1150px) {
   .retirement-split { display: grid; grid-template-columns: minmax(340px, 2fr) minmax(620px, 3fr); gap: 24px; }
-  .retirement-live-sticky { position: sticky; top: 16px; }
+  /* Pinned below .retirement-toolbar above (see its own top/height, offset by the same
+     --retirement-toolbar-height) and laid out as a flex column so its own content -- not a
+     scrollbar -- shrinks to actually fit: the Analysis card's chart(s) absorb whatever's left.
+     Every level between here and the chart SVGs needs its own flex/min-height:0 -- a plain block
+     child ignores its ancestor's flex sizing, and a flex child's default min-height:auto refuses
+     to shrink below its content's natural size, either of which would silently undo this the
+     moment one link in the chain is missing. overflow:hidden is only a backstop for an extreme
+     case (a very short window with a lot of finding text) -- the flex sizing below is what
+     actually makes the common case fit with no clipping at all. */
+  .retirement-live-sticky {
+    position: sticky;
+    top: calc(var(--topbar-height) + 16px + var(--retirement-toolbar-height));
+    height: calc(100vh - var(--topbar-height) - 32px - var(--retirement-toolbar-height));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    /* See .topbar's own comment on will-change -- same fix, same reasoning. */
+    will-change: transform;
+  }
+  /* Refresh/Expand all/Collapse all and the Portfolio/Projected Expenditures tiles, merged into one panel that
+     pins the same way, right below the topbar, instead of scrolling away with the page beneath
+     it. Being ONE sticky element (rather than the two separately-positioned ones this used to be
+     -- a per-column toolbar and a per-column tile row, each needing its own offset kept in exact
+     agreement with the other's) removes that whole class of alignment bug by construction: there's
+     only one offset to get right. --retirement-toolbar-height (see :root and the ResizeObserver in
+     app.js) is this panel's own live-measured height, fed back into .retirement-live-sticky's own
+     top/height above so the two never overlap once both are stuck, even as this panel's tile row
+     grows once a check result lands. */
+  .retirement-toolbar {
+    position: sticky;
+    top: calc(var(--topbar-height) + 16px);
+    z-index: 15;
+    /* margin doesn't stick with a stuck sticky element -- it's just blank space at the panel's
+       ORIGINAL (pre-scroll) position, so it only ever separates it from what's right below it
+       there. Once actually stuck, whatever card content scrolls up to meet it does so with no
+       buffer at all, since nothing reserves that space at the panel's NEW, fixed on-screen spot.
+       padding does travel with it (it's part of the same opaque box), which is what keeps a
+       consistent gap at every scroll position, not just the first one. */
+    margin-bottom: 0;
+    padding-bottom: 12px;
+    /* See .topbar's own comment on will-change -- same paint-lag-during-fast-scroll risk here,
+       compounded by this element's own ::before doing extra work to cover the gap above it. */
+    will-change: transform;
+  }
+  /* The 16px offset above necessarily leaves that same strip uncovered by the panel's own box
+     once it's stuck -- exactly wide enough for a card's field row to slide through as it scrolls
+     underneath. This pseudo-element papers over just that strip, absolutely positioned so it adds
+     nothing to the panel's own layout height (unlike padding, so it can't cause the same
+     pre-scroll misalignment padding did). */
+  .retirement-toolbar::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    /* 4px taller than the 16px gap actually is, starting that much higher -- --topbar-height is a
+       hand-measured constant (54px) but the real rendered topbar comes in at 53.5px, a rounding
+       mismatch that leaves a sub-pixel sliver uncovered right at the seam otherwise. Overlapping a
+       few extra pixels into the topbar's own (also opaque) region costs nothing visually and
+       absorbs that mismatch, plus any similar rounding on a different browser/zoom. */
+    top: -20px;
+    height: 20px;
+    background: var(--surface);
+  }
+  .retirement-live-sticky > .card[data-section="analysis"] {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .retirement-live-sticky > .card[data-section="analysis"] > .card-fold:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .retirement-live-sticky #checkResult {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .retirement-live-sticky .findings-group {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    /* Without this, content taller than this group's own flex-allocated share overflows visibly
+       downward into the next group's space (a sibling box doesn't clip another) instead of being
+       contained -- the exact overlap a very short window produces without it. */
+    overflow: hidden;
+  }
+  /* A floor, not a fixed size -- shrinks to share the space evenly when both Bridge and Monte
+     Carlo findings-groups are present, down to this minimum before anything else (the finding
+     text below it) gives way instead. Also a flex column of its own: the SVG is the one flexible
+     child (flex:1, so it's what actually absorbs the resizing), while the legend/style-key rows
+     below it (bridge-legend, bridge-style-key) stay flex:none so they always keep their own
+     natural height instead of being squeezed to zero by the SVG's height:100% -- which is what
+     pushed them out of the chart's own box entirely and left them overlapping the finding text
+     below.
+  */
+  .retirement-live-sticky .bridge-chart {
+    flex: 1 1 0;
+    min-height: 160px;
+    display: flex;
+    flex-direction: column;
+  }
+  .retirement-live-sticky .bridge-chart-svg {
+    flex: 1;
+    min-height: 0;
+  }
+  /* The loading skeleton (renderChartSkeleton) wraps its own SVG in one extra layer the real
+     chart doesn't have (chart-svg-wrap, so the loading overlay/spinner has something to
+     absolutely-position itself against) -- flex:1 on the SVG alone does nothing unless ITS OWN
+     parent is also a flex container passing the space down, so without this the skeleton reverts
+     to the SVG's intrinsic aspect-ratio height instead of the fitted size, and swapping it for the
+     real chart once results land shifts the whole layout. */
+  .retirement-live-sticky .chart-svg-wrap {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .retirement-live-sticky .bridge-legend,
+  .retirement-live-sticky .bridge-style-key {
+    flex: none;
+  }
+  /* The finding text below each chart never shrinks -- it's already as small as it reads, so a
+     tight window takes the space from the chart above (its own flex-shrink), not from here. */
+  .retirement-live-sticky .findings-group .finding {
+    flex: none;
+  }
 }
 
-/* One per column. retirement-inputs: Refresh (despite recalculating, its real job is pulling in
-   whatever changed on the Actual side -- a new transaction, a category edit made outside this app
-   -- so it belongs with the inputs, not the results it feeds) alongside Expand/Collapse all.
-   retirement-live: Export to Dashboard, the one action that's actually about the live results. */
-.column-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+/* Refresh (despite recalculating, its real job is pulling in whatever changed on the Actual side --
+   a new transaction, a category edit made outside this app) alongside Expand/Collapse all, plus the
+   Portfolio/Projected Expenditures tiles -- one panel spanning both columns, above .retirement-split, so there's a
+   single sticky element to pin below the topbar (see the media query above) instead of one per
+   column. Wraps at narrow widths rather than squeezing the buttons or the tile grid. */
+.retirement-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 4px 16px;
+  margin-bottom: 18px;
+}
+.retirement-toolbar-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+/* A plain gap reads as "two separate groups floating near each other"; a hairline between them
+   reads as "one panel with two sections" -- see [[loading-panel-matches-loaded-size]]. Applied to
+   both the loading and loaded state of what follows the buttons, so the seam is in the same place
+   either way rather than appearing only once real tiles land. */
+.retirement-toolbar .top-loading,
+.retirement-toolbar .summary {
+  border-left: 1px solid var(--line-soft);
+  padding-left: 16px;
+}
+/* Nested in the panel above rather than standing alone, so it needs neither its own border nor
+   .panel-loading's usual big centered-column treatment (right for a whole empty card, wildly
+   oversized next to a row of buttons) -- a compact inline spinner+text row instead, left-aligned
+   the same as the tiles that replace it, so nothing jumps sideways when the real ones land.
+   min-height is #summaryTiles' own real rendered height (one line of label + one of value, at
+   this padding) -- hand-measured like --topbar-height, for the same reason: matching the loaded
+   panel's size means Refresh/Expand/Collapse don't shift vertically the moment the real tiles
+   swap in. See [[loading-panel-matches-loaded-size]]. */
+.retirement-toolbar .top-loading {
+  flex: 1 1 260px;
+  min-width: 260px;
+  min-height: 46.5px;
+  margin-bottom: 0;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+}
 /* The caret + <h2> group, so .card-head's own space-between still has exactly two children -- this
    group on the left, whatever hint/button a card already had on the right, untouched. */
 .card-head-title { display: flex; align-items: center; gap: 8px; }
@@ -206,9 +405,14 @@ main:has(#page-retirement.active) { max-width: none; }
 .card-head { padding: 12px 16px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; justify-content: space-between; }
 .card-head h2 { font-size: 15px; font-weight: 500; margin: 0; color: var(--ink-strong); }
 .card-head .hint { font-size: 11.5px; color: var(--ink-faint); }
+/* Tighter than a plain .card-head -- every pixel reclaimed here goes straight to the Bridge/Monte
+   Carlo charts below (see .bridge-chart's own flex:1), the one thing on this page a person is
+   actually looking at, unlike the label above it. Scoped to the Analysis card specifically, not
+   every card's head -- the Plan-through-Accounts cards keep their own, unrelated spacing. */
+.retirement-live-sticky .card-head { padding: 8px 16px; }
 .card-body { padding: 16px; }
 
-.plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.plan-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .plan-grid .field.full { grid-column: 1 / -1; margin-top: 4px; }
 .field label { display: block; font-size: 11px; font-weight: 500; color: var(--ink-soft); margin-bottom: 5px; }
 .field input[type="text"], .field input[type="date"], .field input[type="number"], select {
@@ -250,7 +454,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
   grid-template-columns: repeat(4, 1fr);
   gap: 12px 18px;
   padding: 12px;
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--card-border);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
 }
@@ -267,7 +471,12 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 
 .reorder-hint { padding: 0 16px 10px; }
 .accounts { display: flex; flex-direction: column; }
-.account-row { border-bottom: 1px solid var(--line-soft); padding: 14px 16px; display: grid; grid-template-columns: 260px 1fr; gap: 24px; align-items: start; }
+/* A stacked header (name/balance/note) over the full-width fields grid below it, not a permanent
+   side-by-side split -- a fixed-width identity column next to the fields left whatever vertical
+   space the (usually much shorter) identity block didn't need sitting empty beside the fields
+   rather than available to them, and the fields themselves were narrower than the card actually
+   allowed. */
+.account-row { border-bottom: 1px solid var(--line-soft); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .account-row:last-child { border-bottom: none; }
 .account-row.reorderable.dragging { opacity: 0.4; }
 .acct-id { display: flex; gap: 8px; align-items: flex-start; }
@@ -279,7 +488,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 
 .acct-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 .acct-fields .field.full { grid-column: 1 / -1; }
-.acct-fields .field.hidden { display: none; }
+.acct-fields .field.hidden, .acct-fields .employer-block.hidden { display: none; }
 /* Own display:grid needs its own [hidden] override -- there is no global [hidden]{display:none}
    rule in this app (see .bridge-crosshair's own doc comment for the bug that taught us that). */
 .acct-fields[hidden] { display: none; }
@@ -328,7 +537,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .help-popover p + p { margin-top: 8px; }
 #expenseCategoryPicker {
   max-height: 340px; overflow-y: auto; padding: 4px 10px;
-  border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--surface-2);
+  border: 1px solid var(--card-border); border-radius: var(--radius-sm); background: var(--surface-2);
 }
 .category-picker-group { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
 .category-picker-group:last-child { border-bottom: none; }
@@ -390,13 +599,17 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 /* Results sit directly under the row that produced them -- below the category table they'd be a
    screen away from the button that was just clicked, which reads as "nothing happened". Capped so
    a long preview scrolls in place instead of pushing the table off the page. */
-.action-result:not(:empty) { margin-top: 14px; max-height: 320px; overflow-y: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); }
+.action-result:not(:empty) { margin-top: 14px; max-height: 320px; overflow-y: auto; border: 1px solid var(--card-border); border-radius: var(--radius-sm); }
 .btn {
   font: inherit; font-weight: 500; font-size: 13px; color: var(--accent-ink); background: var(--accent);
   border: none; border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer; transition: background-color 0.15s, box-shadow 0.25s;
 }
 .btn:hover { background: var(--accent-hover); box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.3); }
-.btn.secondary { background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); }
+/* 1px smaller top/bottom padding than plain .btn -- offsets the 1px border on each edge below, so
+   a secondary button ends up exactly the same rendered height as a plain one instead of 2px
+   taller, which reads as misaligned wherever the two sit side by side (e.g. Refresh/Expand
+   all/Collapse all next to Export to Dashboard). */
+.btn.secondary { background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); padding: 4px 10px; }
 /* Muted and inert, without the "no entry" cursor -- a disabled control here means "not yet",
    which is a prompt to go pick something, not a refusal worth flagging under the pointer. Listed
    after .btn.secondary (equal specificity, so source order decides) and naming it explicitly, so a
@@ -405,14 +618,12 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .btn:disabled, .btn.secondary:disabled { background: var(--surface-2); color: var(--ink-faint); border: none; cursor: default; }
 .btn:disabled:hover, .btn.secondary:disabled:hover { background: var(--surface-2); box-shadow: none; }
 
-.gen-result { padding-top: 12px; margin-top: 4px; border-top: 1px solid var(--line-soft); }
-.gen-result[hidden] { display: none; }
 .line { font-size: 12.5px; margin-bottom: 5px; }
 .line .num { color: var(--accent-selected); font-weight: 500; }
 
 .findings-group + .findings-group { border-top: 1px solid var(--line-soft); }
-.findings-group .group-label { padding: 11px 16px 4px; font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
-.finding { padding: 8px 16px 13px; display: grid; grid-template-columns: 60px 1fr; gap: 12px; align-items: start; }
+.findings-group .group-label { padding: 7px 16px 3px; font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
+.finding { padding: 5px 16px 8px; display: grid; grid-template-columns: 60px 1fr; gap: 12px; align-items: start; }
 .chip { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: var(--radius-sm); text-align: center; white-space: nowrap; text-transform: capitalize; }
 .chip.fail { color: var(--fail); background: var(--fail-soft); }
 .chip.warn { color: var(--warn); background: var(--warn-soft); }
@@ -430,10 +641,6 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    with no theme toggle, so there is no second mode for a --series-N variable to swap under. */
 .bridge-chart { position: relative; margin: 4px 16px 2px; }
 .bridge-chart-svg { width: 100%; height: auto; display: block; }
-/* Click-to-zoom affordance -- see addChartZoom in app.js. Hidden until the chart itself is
-   hovered so it doesn't compete with the crosshair/tooltip for attention at rest. */
-.chart-zoom-btn { position: absolute; top: 0; right: 0; opacity: 0; transition: opacity 0.15s; }
-.bridge-chart:hover .chart-zoom-btn, .chart-zoom-btn:focus-visible { opacity: 1; }
 /* Wraps just the svg (not the legend below it) in renderChartSkeleton, so the loading overlay's
    inset:0 lines up with the plot area itself regardless of whether a legend renders under it. */
 .chart-svg-wrap { position: relative; }
@@ -466,6 +673,11 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    either of those two other marker types. */
 .bridge-income-line { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
 .bridge-income-label { font-size: 8.5px; fill: var(--ok); }
+/* Two+ of the three marker types above landing on the exact same age (e.g. a pension starting the
+   same year a mortgage happens to be paid off) share this one neutral line instead of drawing one
+   fully-overlapping <line> per type -- see the dedup in renderBridgeChart's `markerLines`. Each
+   marker keeps its own colored LABEL regardless (still one per row; only the line is shared). */
+.bridge-shared-line { stroke: var(--ink-soft); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
 /* Painted over any chart line a marker label's own vertical line runs behind -- see the doc comment
    above renderBridgeChart's `markerLines`. */
 .bridge-label-halo { fill: var(--surface); }
@@ -511,7 +723,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    until STATE has loaded AND that first check has resolved (see the shared reveal gate in app.js),
    then hidden for good; a field edit's own re-check updates the tiles/Stale in place afterward
    without re-showing this, unlike Analysis, which re-shows its own spinner on every check. */
-.top-loading { min-height: 84px; border: 1px solid var(--line-soft); border-radius: var(--radius-md); margin-bottom: 20px; }
+.top-loading { min-height: 84px; border: 1px solid var(--card-border); border-radius: var(--radius-md); margin-bottom: 20px; }
 .top-loading[hidden] { display: none; }
 .panel-loading {
   display: flex;
@@ -548,19 +760,30 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .top-error .error-retry { flex: none; }
 
 
-/* Export to Dashboard modal -- this app's only true modal dialog (everything else is an inline
-   card or a small anchored dropdown like .bt-menu), so its chrome is defined fresh here rather
-   than reusing .card, which assumes it's laid out in normal document flow, not centered over a
-   backdrop. */
+/* The chart-zoom dialog -- this app's only true modal (everything else is an inline card or a small
+   anchored dropdown like .bt-menu), so its chrome is defined fresh here rather than reusing .card,
+   which assumes it's laid out in normal document flow, not centered over a backdrop. Both the
+   backdrop's fade and the panel's own scale animate open/closed together (see openChartZoom/
+   closeChartZoom in app.js, which toggle the .open class and wait for this transition before
+   actually detaching things on close) -- disabled for prefers-reduced-motion below. */
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 30;
   display: flex; align-items: center; justify-content: center; padding: 24px;
+  opacity: 0;
+  transition: opacity 0.16s ease;
 }
+.modal-backdrop.open { opacity: 1; }
 .modal-backdrop[hidden] { display: none; }
 .modal {
   position: relative; background: var(--surface); border: 1px solid var(--card-border);
   border-radius: var(--radius-md); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 20px 24px;
+  transform: scale(0.96);
+  transition: transform 0.16s ease;
+}
+.modal-backdrop.open .modal { transform: scale(1); }
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop, .modal { transition: none; }
 }
 .modal h2 { font-size: 16px; font-weight: 600; margin: 0 0 10px; color: var(--ink-strong); }
 .modal p { font-size: 12.5px; color: var(--ink-soft); margin: 8px 0; }
@@ -569,10 +792,39 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .modal .btn { margin-top: 4px; }
 .modal-close { position: absolute; top: 12px; right: 12px; width: 24px; height: 24px; border: none; background: transparent; color: var(--ink-faint); font-size: 18px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .modal-close:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
-/* Wide enough that a zoomed chart (viewBox 640x240, width:100%) renders meaningfully larger than
-   it does at its normal in-page size, not just in a bigger box around the same rendered size. */
-.modal-chart { max-width: 1100px; width: min(94vw, 1100px); }
-.modal-chart #chartZoomBody .bridge-chart { margin: 4px 0 2px; }
+/* As big as the viewport reasonably allows -- both charts need to fit within the height budget
+   below with no scrolling in the common case, so width alone (the only thing the in-page chart's
+   own sizing ever had to answer to) isn't enough; see the height-driven sizing chain beneath this
+   rule, which mirrors the one .retirement-live-sticky already uses on the Analysis card (every
+   level between the modal and the chart SVGs needs its own flex/min-height:0, same reasoning). */
+.modal-chart {
+  max-width: 1400px; width: min(96vw, 1400px);
+  max-height: 92vh;
+  display: flex; flex-direction: column;
+}
+#chartZoomBody { display: flex; flex-direction: column; gap: 16px; flex: 1; min-height: 0; }
+/* Both charts stack in one dialog now (see openChartZoom in app.js) -- a divider between sections
+   rather than between individual charts, since each section already carries its own group-label.
+   flex:1 splits the available height evenly between however many charts are actually open (usually
+   both, but the Bridge/Monte Carlo groups can each be absent on their own -- see renderCheckResult). */
+.chart-zoom-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.chart-zoom-section + .chart-zoom-section { margin-top: 0; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.modal-chart #chartZoomBody .bridge-chart { margin: 4px 0 2px; cursor: default; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; }
+/* aspect-ratio (not object-fit:contain, and not the in-page width:100%;height:auto -- see the base
+   .bridge-chart-svg rule) so the SVG element's own box is EXACTLY its visible content, at whichever
+   of width or height is the tighter constraint here (unlike the in-page chart, height is now just
+   as fixed a budget as width is). object-fit:contain looked identical but does its resizing by
+   letterboxing the content inside a box that keeps the flex-allocated (wrong) aspect ratio --
+   wireBridgeTooltip/wireMonteCarloTooltip read the mouse position against the SVG's own
+   getBoundingClientRect(), so that leftover letterboxed margin inside the element's box silently
+   shifted every hover age off from the cursor's real position. align-items:center on the parent
+   (above) centers this box when its aspect-ratio makes it narrower than the available width. */
+.modal-chart #chartZoomBody .bridge-chart-svg { flex: 1; min-height: 0; max-width: 100%; max-height: 100%; width: auto; height: auto; aspect-ratio: 640 / 240; }
+.modal-chart #chartZoomBody .bridge-legend,
+.modal-chart #chartZoomBody .bridge-style-key { flex: none; }
+/* A chart still in its normal in-page spot (not already zoomed into the modal) invites the click
+   that opens it -- see addChartZoom in app.js. */
+.chart-zoomable { cursor: zoom-in; }
 
 /* Budget table -- styled to read like Actual's own budget page: a group row you can fold (caret to
    the left of its checkbox/name, matching Actual's own placement) showing that group's own
@@ -593,7 +845,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    own max-width mid-roll -- the card's own buttons got pushed off the right edge for the length of
    the animation. Inline-size containment sizes this box from its container instead, while leaving
    the block axis free to grow with the rows as before. */
-.budget-table { position: relative; margin-top: 8px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); overflow: hidden; contain: inline-size; }
+.budget-table { position: relative; margin-top: 8px; border: 1px solid var(--card-border); border-radius: var(--radius-sm); overflow: hidden; contain: inline-size; }
 .budget-table-el { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 12px; }
 .budget-table-el th, .budget-table-el td { padding: 7px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .budget-table-el thead th { background: var(--surface-2); color: var(--ink-soft); font-weight: 500; text-align: right; border-bottom: 1px solid var(--line-soft); }
@@ -746,7 +998,6 @@ label.bt-group-check-label { display: inline-flex; align-items: center; gap: 8px
 @media (max-width: 860px) {
   .topbar { overflow-x: auto; }
   .summary, .plan-grid, .acct-fields, .income-grid { grid-template-columns: 1fr 1fr; }
-  .account-row { grid-template-columns: 1fr; }
   main { padding: 0 18px 18px; }
   .page.active, .top-error:not([hidden]) { padding-top: 18px; }
 }

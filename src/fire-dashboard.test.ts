@@ -2,23 +2,18 @@ import { describe, expect, it } from "vitest"
 
 import {
   ALLOCATION_PRESET_RETURNS,
-  buildFireDashboard,
   buildMonteCarloWidget,
-  buildMonteCarloWidgets,
-  buildNetWorthWidget,
   buildPot,
   buildSpendingPhases,
   effectiveAccessAge,
   expenseAdjustmentFactorWithOverride,
-  mergeGeneratedDashboard,
   monteCarloAssumptionsWithOverrides,
-  pinnedMonteCarloFields,
   portfolioAccountIds,
   retirementIncomeStreams,
   spendHistoryMonthsWithOverride,
   withdrawalTaxRateFor,
 } from "./fire-dashboard.ts"
-import type { ExistingDashboard, MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
+import type { MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { ClassifiedAccount, DashboardConfig } from "./fire-accounts.ts"
 import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
 
@@ -35,6 +30,10 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     customReturnStdDev: null,
     monthlyContribution: null,
     ruleOf55SeparationAge: null,
+    earlyWithdrawalPenalty: false,
+    seppMethod: null,
+    seppStartAge: null,
+    seppInterestRate: null,
     annualSalary: null,
     employerMatchRate: null,
     employerMatchCapRate: null,
@@ -86,29 +85,6 @@ describe("portfolioAccountIds", () => {
 
   it("preserves order and returns an empty array for no accounts", () => {
     expect(portfolioAccountIds([])).toEqual([])
-  })
-})
-
-describe("buildNetWorthWidget", () => {
-  it("has no account/category filter and spans the full page width", () => {
-    const widget = buildNetWorthWidget(0, 0)
-    expect(widget).toEqual({
-      type: "net-worth-card",
-      x: 0,
-      y: 0,
-      width: 12,
-      height: 2,
-      meta: { name: "Net Worth", mode: "trend" },
-    })
-  })
-})
-
-describe("buildFireDashboard", () => {
-  it("assembles just the net-worth widget, full-width on row 0", () => {
-    const dashboard = buildFireDashboard()
-    expect(dashboard.version).toBe(1)
-    expect(dashboard.widgets.map((widget) => widget.type)).toEqual(["net-worth-card"])
-    expect(dashboard.widgets[0]).toMatchObject({ x: 0, y: 0, width: 12 })
   })
 })
 
@@ -203,24 +179,24 @@ describe("withdrawalTaxRateFor", () => {
 
 describe("effectiveAccessAge", () => {
   it("returns the plain accessAge when there's no separation age", () => {
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null }, 65)).toBe(59)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: null }, 65)).toBe(59)
   })
 
   it("overrides to the separation age when it qualifies (55+), is earlier, and is at or before this scenario's retirement age", () => {
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55 }, 55)).toBe(55)
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55 }, 60)).toBe(55)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: null }, 55)).toBe(55)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: null }, 60)).toBe(55)
   })
 
   it("has no effect when the separation age is below 55", () => {
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 50 }, 65)).toBe(59)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 50, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: null }, 65)).toBe(59)
   })
 
   it("takes the earlier of the two when the separation age is above the existing accessAge", () => {
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 62 }, 65)).toBe(59)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 62, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: null }, 65)).toBe(59)
   })
 
   it("uses the separation age directly when accessAge is null", () => {
-    expect(effectiveAccessAge({ accessAge: null, ruleOf55SeparationAge: 56 }, 65)).toBe(56)
+    expect(effectiveAccessAge({ accessAge: null, ruleOf55SeparationAge: 56, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: null }, 65)).toBe(56)
   })
 
   it("does not apply the boost when this scenario retires before the account's own separation age", () => {
@@ -228,8 +204,30 @@ describe("effectiveAccessAge", () => {
     // is a contradiction -- this app models "retired" as "no longer working anywhere" -- so the
     // normal accessAge stands for this scenario; a later scenario (e.g. retiring at 55 or 58) still
     // gets the boost, since the two ages don't contradict there.
-    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55 }, 52)).toBe(59)
-    expect(effectiveAccessAge({ accessAge: null, ruleOf55SeparationAge: 56 }, 54)).toBe(null)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: null }, 52)).toBe(59)
+    expect(effectiveAccessAge({ accessAge: null, ruleOf55SeparationAge: 56, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: null }, 54)).toBe(null)
+  })
+
+  it("grants unconditional access when the early-withdrawal-penalty option is accepted", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null, earlyWithdrawalPenalty: true, seppMethod: null, seppStartAge: null }, 65)).toBe(null)
+  })
+
+  it("takes priority over Rule of 55, since it's strictly more permissive", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55, earlyWithdrawalPenalty: true, seppMethod: null, seppStartAge: null }, 65)).toBe(null)
+  })
+
+  it("grants early access at the SEPP start age when a method is elected", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null, earlyWithdrawalPenalty: false, seppMethod: "rmd", seppStartAge: 50 }, 65)).toBe(50)
+  })
+
+  it("ignores a SEPP start age with no method elected alongside it, or vice versa", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null, earlyWithdrawalPenalty: false, seppMethod: null, seppStartAge: 50 }, 65)).toBe(59)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: null, earlyWithdrawalPenalty: false, seppMethod: "rmd", seppStartAge: null }, 65)).toBe(59)
+  })
+
+  it("takes the earlier of Rule of 55 and a SEPP election when both qualify", () => {
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 55, earlyWithdrawalPenalty: false, seppMethod: "rmd", seppStartAge: 50 }, 65)).toBe(50)
+    expect(effectiveAccessAge({ accessAge: 59, ruleOf55SeparationAge: 56, earlyWithdrawalPenalty: false, seppMethod: "rmd", seppStartAge: 60 }, 65)).toBe(56)
   })
 })
 
@@ -343,41 +341,6 @@ describe("monteCarloAssumptionsWithOverrides", () => {
   })
 })
 
-describe("pinnedMonteCarloFields", () => {
-  it("returns an empty set when nothing is configured", () => {
-    expect(pinnedMonteCarloFields(DEFAULT_DASHBOARD_CONFIG)).toEqual(new Set())
-  })
-
-  it("names the MonteCarloCardMeta field for each dashboard field that's actually set", () => {
-    const pinned = pinnedMonteCarloFields({
-      ...DEFAULT_DASHBOARD_CONFIG,
-      monteCarloWithdrawalStrategy: "sequential",
-      monteCarloSimulationCount: 10000,
-    })
-    expect(pinned).toEqual(new Set(["withdrawalStrategy", "simulationCount"]))
-  })
-
-  it("pins taxModel the same way as every other Simulation setting", () => {
-    expect(pinnedMonteCarloFields({ ...DEFAULT_DASHBOARD_CONFIG, monteCarloTaxModel: "bands" })).toEqual(new Set(["taxModel"]))
-  })
-
-  it("pins withdrawalRule and taxBands as whole values, same mechanism as the flat scalars", () => {
-    const dashboard: DashboardConfig = {
-      ...DEFAULT_DASHBOARD_CONFIG,
-      monteCarloWithdrawalRule: { type: "guardrails", prosperityTriggerPct: 0.2 },
-      monteCarloTaxBands: [{ id: "b1", from: 0, rate: 0.1 }],
-    }
-    expect(pinnedMonteCarloFields(dashboard)).toEqual(new Set(["withdrawalRule", "taxBands"]))
-    expect(monteCarloAssumptionsWithOverrides(dashboard).withdrawalRule).toEqual({ type: "guardrails", prosperityTriggerPct: 0.2 })
-    expect(monteCarloAssumptionsWithOverrides(dashboard).taxBands).toEqual([{ id: "b1", from: 0, rate: 0.1 }])
-  })
-
-  it("pins an empty taxBands array (a real, non-null pinned value) the same as a populated one", () => {
-    const dashboard: DashboardConfig = { ...DEFAULT_DASHBOARD_CONFIG, monteCarloTaxBands: [] }
-    expect(pinnedMonteCarloFields(dashboard)).toEqual(new Set(["taxBands"]))
-    expect(monteCarloAssumptionsWithOverrides(dashboard).taxBands).toEqual([])
-  })
-})
 
 describe("expenseAdjustmentFactorWithOverride", () => {
   it("falls back to the plain default (1.0) when nothing is pinned", () => {
@@ -467,260 +430,3 @@ describe("buildMonteCarloWidget", () => {
   })
 })
 
-describe("buildMonteCarloWidgets", () => {
-  const portfolioAccount = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" })
-
-  it("builds one widget with the plain default name for a single retirement age", () => {
-    const widgets = buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [55], 90, 500000, MONTE_CARLO_ASSUMPTIONS)
-    expect(widgets).toHaveLength(1)
-    expect(widgets[0]?.meta?.name).toBe("Monte Carlo")
-    expect(widgets[0]).toMatchObject({ x: 0, y: 6 })
-  })
-
-  it("stacks one uniquely-named widget per retirement age, in order", () => {
-    const widgets = buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [55, 60, 65], 90, 500000, MONTE_CARLO_ASSUMPTIONS)
-    expect(widgets).toHaveLength(3)
-    expect(widgets.map((widget) => widget.meta?.name)).toEqual([
-      "Monte Carlo — Retire at 55",
-      "Monte Carlo — Retire at 60",
-      "Monte Carlo — Retire at 65",
-    ])
-    // stacked vertically on the same column, each below the last, none overlapping
-    expect(widgets.map((widget) => widget.y)).toEqual([6, 10, 14])
-    expect(widgets.every((widget) => widget.x === 0)).toBe(true)
-  })
-
-  it("gives each widget its own retirement age's spending phases", () => {
-    const widgets = buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [45, 60], 90, 500000, MONTE_CARLO_ASSUMPTIONS)
-    expect(widgets[0]?.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 45, 500000))
-    expect(widgets[1]?.meta?.spendingPhases).toEqual(buildSpendingPhases(45, 60, 500000))
-  })
-})
-
-describe("mergeGeneratedDashboard", () => {
-  const portfolioAccount = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80" })
-
-  it("returns the generated dashboard unchanged when there's no existing file", () => {
-    const generated = buildFireDashboard()
-    expect(mergeGeneratedDashboard(generated, null)).toEqual(generated)
-  })
-
-  it("preserves a net-worth-card customization outright -- it has no owned fields", () => {
-    const generated = buildFireDashboard()
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [{ type: "net-worth-card", x: 0, y: 0, width: 12, height: 2, meta: { name: "My Net Worth", mode: "stacked" } }],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    expect(merged.widgets[0]?.meta).toEqual({ name: "My Net Worth", mode: "stacked" })
-  })
-
-  it("drops a stale crossover-card widget from a dashboard exported before it stopped being generated", () => {
-    // See FireWidgetType's own doc comment -- crossover-card is still a recognized, OWNED type
-    // purely so a leftover one from an old export is cleanly dropped here, not preserved forever
-    // as unrelated "foreign" content.
-    const generated = buildFireDashboard()
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [{ type: "crossover-card", x: 0, y: 2, width: 12, height: 4, meta: { name: "FIRE Crossover", expenseCategoryIds: ["cat-1"], incomeAccountIds: ["a1"] } }],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    expect(merged.widgets.map((widget) => widget.type)).toEqual(["net-worth-card"])
-  })
-
-  it("prefers a pinned withdrawalRule over the existing widget's own hand-tuned rule", () => {
-    const generated = {
-      version: 1 as const,
-      widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000, { ...MONTE_CARLO_ASSUMPTIONS, withdrawalRule: { type: "guardrails", prosperityTriggerPct: 0.2 } }),
-    }
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: {
-            name: "Monte Carlo",
-            pots: [],
-            spendingPhases: [],
-            currentAge: 40,
-            targetAge: 90,
-            withdrawalRule: { type: "floor-ceiling", floorPct: 0.03, ceilingPct: 0.06 }, // hand-tuned inside Actual
-          },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing, new Set(["withdrawalRule"]))
-    const meta = merged.widgets[0]?.meta as Record<string, unknown>
-    expect(meta.withdrawalRule).toEqual({ type: "guardrails", prosperityTriggerPct: 0.2 })
-  })
-
-  it("preserves the existing widget's own withdrawalRule when nothing is pinned", () => {
-    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000, MONTE_CARLO_ASSUMPTIONS) }
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: { name: "Monte Carlo", pots: [], spendingPhases: [], currentAge: 40, targetAge: 90, withdrawalRule: { type: "floor-ceiling", floorPct: 0.03, ceilingPct: 0.06 } },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    const meta = merged.widgets[0]?.meta as Record<string, unknown>
-    expect(meta.withdrawalRule).toEqual({ type: "floor-ceiling", floorPct: 0.03, ceilingPct: 0.06 })
-  })
-
-  it("refreshes a pot's account-derived fields but preserves an extra fee field", () => {
-    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000, MONTE_CARLO_ASSUMPTIONS) }
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: {
-            name: "Monte Carlo",
-            pots: [{ id: "a1", accountId: "a1", allocationPreset: "equity-40", annualFeeRate: 0.001 }],
-            spendingPhases: [],
-            currentAge: 40,
-            targetAge: 90,
-            withdrawalStrategy: "sequential",
-            returnModel: "historical-bootstrap",
-          },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    const meta = merged.widgets[0]?.meta as Record<string, unknown>
-    const pot = (meta.pots as Record<string, unknown>[])[0] as Record<string, unknown>
-    expect(pot.allocationPreset).toBe("equity-80") // refreshed from config.json, not the stale existing value
-    expect(pot.annualFeeRate).toBe(0.001) // extra field preserved
-    expect(meta).toMatchObject({ currentAge: 45, targetAge: 100, withdrawalStrategy: "sequential", returnModel: "historical-bootstrap" })
-  })
-
-  it("refreshes an account's contribution from real data but preserves an extra hand-added one", () => {
-    const contributingAccount = account({ id: "a1", category: "investment-taxable", allocationPreset: "equity-80", monthlyContribution: 50000 })
-    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [contributingAccount], 45, [60], 100, 500000, MONTE_CARLO_ASSUMPTIONS) }
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: {
-            name: "Monte Carlo",
-            pots: [],
-            spendingPhases: [],
-            contributions: [
-              { id: "contribution-a1", potId: "a1", annualAmount: 999 }, // stale -- must be refreshed
-              { id: "contribution-extra", potId: "other-pot", annualAmount: 12000 }, // hand-added -- must survive
-            ],
-          },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    const meta = merged.widgets[0]?.meta as Record<string, unknown>
-    const contributions = meta.contributions as { id: string; annualAmount: number }[]
-    expect(contributions).toHaveLength(2)
-    expect(contributions.find((c) => c.id === "contribution-a1")?.annualAmount).toBe(600000) // refreshed: 50000 x 12
-    expect(contributions.find((c) => c.id === "contribution-extra")?.annualAmount).toBe(12000) // preserved
-  })
-
-  it("keeps an extra hand-added spending phase but refreshes the owned ones", () => {
-    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000, MONTE_CARLO_ASSUMPTIONS) }
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: {
-            name: "Monte Carlo",
-            pots: [],
-            spendingPhases: [
-              { id: "pre-retirement", name: "Pre-retirement", fromAge: null, annualWithdrawal: 999 },
-              { id: "downsize", name: "Downsize the house", fromAge: 75, annualWithdrawal: 300000 },
-            ],
-            currentAge: 45,
-            targetAge: 100,
-          },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    const meta = merged.widgets[0]?.meta as Record<string, unknown>
-    const phases = meta.spendingPhases as { id: string; annualWithdrawal: number }[]
-    expect(phases.map((phase) => phase.id)).toEqual(["pre-retirement", "retirement-spending", "downsize"])
-    expect(phases[0]?.annualWithdrawal).toBe(0) // owned id refreshed, not the stale 999
-  })
-
-  it("forces a pinned Monte Carlo field to the generated value, but still preserves an unpinned one", () => {
-    const generated = {
-      version: 1 as const,
-      widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60], 100, 500000, { ...MONTE_CARLO_ASSUMPTIONS, withdrawalStrategy: "sequential", simulationCount: 10000 }),
-    }
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        {
-          type: "monte-carlo-card",
-          x: 0,
-          y: 6,
-          width: 12,
-          height: 4,
-          meta: { name: "Monte Carlo", pots: [], spendingPhases: [], withdrawalStrategy: "proportional", returnModel: "historical-bootstrap" },
-        },
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing, new Set(["withdrawalStrategy", "simulationCount"]))
-    const meta = merged.widgets[0]?.meta as Record<string, unknown>
-    expect(meta.withdrawalStrategy).toBe("sequential") // pinned -- generated wins over the stale live value
-    expect(meta.simulationCount).toBe(10000) // pinned -- generated wins even though existing never set it
-    expect(meta.returnModel).toBe("historical-bootstrap") // unpinned -- existing still wins, same as before
-  })
-
-  it("drops a monte-carlo-card whose retirement age is no longer requested", () => {
-    // both fixtures request 2+ ages, so the "Monte Carlo — Retire at N" naming (see
-    // buildMonteCarloWidgets) is identical for the ages that carry over between them
-    const generated = { version: 1 as const, widgets: buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [60, 65], 100, 500000, MONTE_CARLO_ASSUMPTIONS) }
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [
-        ...(buildMonteCarloWidgets(0, 6, [portfolioAccount], 45, [53, 60, 65], 100, 500000, MONTE_CARLO_ASSUMPTIONS) as unknown as ExistingDashboard["widgets"]),
-      ],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    expect(merged.widgets.map((widget) => (widget.meta as { name?: string } | null)?.name)).toEqual([
-      "Monte Carlo — Retire at 60",
-      "Monte Carlo — Retire at 65",
-    ])
-  })
-
-  it("carries through untouched a widget of a type it never generates", () => {
-    const generated = buildFireDashboard()
-    const existing: ExistingDashboard = {
-      version: 1,
-      widgets: [{ type: "custom-note-card", x: 0, y: 20, width: 12, height: 2, meta: { text: "hand-added" } }],
-    }
-    const merged = mergeGeneratedDashboard(generated, existing)
-    expect(merged.widgets).toContainEqual({ type: "custom-note-card", x: 0, y: 20, width: 12, height: 2, meta: { text: "hand-added" } })
-  })
-})

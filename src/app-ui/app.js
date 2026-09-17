@@ -239,11 +239,13 @@ function renderPlan() {
   const birthInput = document.getElementById("birthDate")
   const agesInput = document.getElementById("retireAges")
   const planInput = document.getElementById("planToAge")
+  const filingStatusInput = document.getElementById("filingStatus")
   // Only overwrite a field the user isn't actively editing -- avoids clobbering keystrokes if a
   // response from one field's PATCH arrives while another is still focused.
   if (document.activeElement !== birthInput) birthInput.value = STATE.dashboard.birthDate ?? ""
   if (document.activeElement !== agesInput) agesInput.value = STATE.dashboard.retirementAges.join(", ")
   if (document.activeElement !== planInput) planInput.value = STATE.dashboard.planToAge
+  if (document.activeElement !== filingStatusInput) filingStatusInput.value = STATE.dashboard.filingStatus ?? ""
   document.getElementById("ageDerived").textContent = STATE.currentAge ?? "—"
 }
 
@@ -615,12 +617,17 @@ function renderAccounts() {
       .join("")
     const allocationLabel = account.allocationPreset != null ? (STATE.allocationPresets.find((preset) => preset.value === account.allocationPreset)?.label ?? account.allocationPreset) : ""
 
-    const accessNote = account.accessAge === null
-      ? account.type === "inherited-ira"
-        ? "No age restriction (IRC §72(t)(2)(A)(iv))"
-        : "Always accessible"
-      : `Accessible at ${account.accessAge}`
+    const accessNote = account.earlyWithdrawalPenalty && account.accessAge !== null
+      ? `Accessible now — 10% penalty before age ${account.accessAge}`
+      : account.accessAge === null
+        ? account.type === "inherited-ira"
+          ? "No age restriction (IRC §72(t)(2)(A)(iv))"
+          : "Always accessible"
+        : `Accessible at ${account.accessAge}`
     const ruleOf55Note = account.ruleOf55SeparationAge ? ` — Rule of 55 at <span class="money">${account.ruleOf55SeparationAge}</span>` : ""
+    const seppNote = account.seppMethod != null && account.seppStartAge != null
+      ? ` — SEPP (${account.seppMethod === "rmd" ? "RMD" : "amortization"}) from <span class="money">${account.seppStartAge}</span>`
+      : ""
 
     const showContribution = typeInfo.contributionAllowed
     const contributionValue = formatMoneyInputValue(account.monthlyContribution)
@@ -653,7 +660,7 @@ function renderAccounts() {
         <div class="acct-id-text">
           <div class="name">${escapeHtml(account.name)}</div>
           <div class="balance">${moneySpan(account.balance)}</div>
-          <div class="cat-note">${accessNote}${ruleOf55Note}</div>
+          <div class="cat-note">${accessNote}${ruleOf55Note}${seppNote}</div>
         </div>
       </div>
       <div class="acct-fields" ${accountFolded ? "hidden" : ""}>
@@ -670,7 +677,7 @@ function renderAccounts() {
           <div class="input-affix suffix-percent">
             <input type="number" step="0.1" data-field="customReturnMean" value="${account.customReturnMean != null ? account.customReturnMean * 100 : (account.defaultReturnMean != null ? Math.round(account.defaultReturnMean * 1000) / 10 : "")}" placeholder="e.g. 6">
           </div>
-          <div class="derived">Defaults to the ${escapeHtml(allocationLabel)} preset — override just this account if its real return differs</div>
+          <div class="derived">Defaults to ${escapeHtml(allocationLabel)}</div>
         </div>
         <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
           <label>Volatility</label>
@@ -683,6 +690,30 @@ function renderAccounts() {
           <div class="input-affix suffix-percent">
             <input type="number" min="0" step="0.5" data-field="customWithdrawalTaxRate" value="${account.customWithdrawalTaxRate != null ? account.customWithdrawalTaxRate * 100 : ""}" placeholder="auto (${Math.round(account.defaultWithdrawalTaxRate * 100)}%)">
           </div>
+        </div>
+        <div class="field full ${typeInfo.isPortfolio && account.accessAge !== null ? "" : "hidden"}">
+          <label class="checkbox-label"><input type="checkbox" data-field="earlyWithdrawalPenalty" ${account.earlyWithdrawalPenalty ? "checked" : ""}> Accept the 10% early withdrawal penalty for full access now, instead of waiting for age ${account.accessAge}<button type="button" class="help-icon" data-help="IRC §72(t): an early distribution from a qualified retirement plan owes an extra 10% on top of ordinary income tax. Enabling this makes the account fully accessible right away in the Bridge check, at that extra cost for any year before its normal access age.">?</button></label>
+        </div>
+        <div class="employer-block ${account.seppMethod ? "" : "inactive"} ${typeInfo.isPortfolio && account.accessAge !== null ? "" : "hidden"}">
+          <div class="field full">
+            <label>72(t) SEPP election<button type="button" class="help-icon" data-help="Substantially Equal Periodic Payments -- an IRS-approved way to take penalty-free early distributions before your normal access age, in exchange for a MANDATORY annual amount the app computes for you (it must continue for the longer of 5 years or until you reach 59½, or the penalty applies retroactively to everything already taken).&#10;&#10;RMD method: this year's balance ÷ this year's own IRS life-expectancy factor -- recalculated every year, so it moves with the market.&#10;&#10;Fixed amortization: a level payment, calculated once at the start from your balance, life expectancy, and a chosen interest rate -- like a mortgage payment, it never changes afterward.">?</button></label>
+            <select data-field="seppMethod">
+              <option value="" ${account.seppMethod == null ? "selected" : ""}>Not electing</option>
+              <option value="rmd" ${account.seppMethod === "rmd" ? "selected" : ""}>RMD method</option>
+              <option value="amortization" ${account.seppMethod === "amortization" ? "selected" : ""}>Fixed amortization</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Start age</label>
+            <input type="number" min="1" data-field="seppStartAge" value="${account.seppStartAge ?? ""}" ${account.seppMethod ? "" : "disabled"}>
+          </div>
+          <div class="field ${account.seppMethod === "amortization" ? "" : "hidden"}">
+            <label>Interest rate</label>
+            <div class="input-affix suffix-percent">
+              <input type="number" min="0" step="0.1" data-field="seppInterestRate" value="${account.seppInterestRate != null ? account.seppInterestRate * 100 : ""}" ${account.seppMethod === "amortization" ? "" : "disabled"}>
+            </div>
+          </div>
+          ${account.seppAnnualAmount != null ? `<div class="derived">≈ ${moneySpan(account.seppAnnualAmount)}/yr mandatory once started</div>` : ""}
         </div>
         <div class="field ${showContribution ? "" : "hidden"}">
           <label>Monthly contribution</label>
@@ -814,6 +845,33 @@ function renderAccounts() {
       attachMoneyFormatting(contribInput)
       contribInput.addEventListener("moneycommit", (e) => {
         runExclusive(() => patchAccount(account.id, { monthlyContribution: parseMoneyInputCents(e.target.value) }))
+      })
+    }
+    const earlyPenaltyCheckbox = row.querySelector("[data-field='earlyWithdrawalPenalty']")
+    if (earlyPenaltyCheckbox) {
+      earlyPenaltyCheckbox.addEventListener("change", (e) => {
+        runExclusive(() => patchAccount(account.id, { earlyWithdrawalPenalty: e.target.checked }))
+      })
+    }
+    const seppMethodSelect = row.querySelector("[data-field='seppMethod']")
+    if (seppMethodSelect) {
+      seppMethodSelect.addEventListener("change", (e) => {
+        const method = e.target.value === "" ? null : e.target.value
+        runExclusive(() => patchAccount(account.id, { seppMethod: method, seppStartAge: method === null ? null : (account.seppStartAge ?? 55) }))
+      })
+    }
+    const seppStartAgeInput = row.querySelector("input[data-field='seppStartAge']")
+    if (seppStartAgeInput) {
+      seppStartAgeInput.addEventListener("change", (e) => {
+        const age = e.target.value === "" ? null : parseFloat(e.target.value)
+        runExclusive(() => patchAccount(account.id, { seppStartAge: age === null || age <= 0 ? null : age }))
+      })
+    }
+    const seppInterestRateInput = row.querySelector("input[data-field='seppInterestRate']")
+    if (seppInterestRateInput) {
+      seppInterestRateInput.addEventListener("change", (e) => {
+        const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+        runExclusive(() => patchAccount(account.id, { seppInterestRate: pct === null ? null : pct / 100 }))
       })
     }
     const ruleActiveCheckbox = row.querySelector("[data-field='ruleOf55Active']")
@@ -1196,13 +1254,32 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     const haloLeft = anchor === "start" ? x + dx : anchor === "end" ? x + dx - labelWidth : x + dx - halfLabelWidth
     return { x, labelY, className, name, shownAmount, anchor, dx, labelWidth, haloLeft }
   })
+  // One line per DISTINCT age, not one per marker -- two marker types landing on the exact same
+  // age (e.g. a pension starting the same year a mortgage happens to be paid off) would otherwise
+  // draw two fully-overlapping <line> elements at the identical x, and the later one would just
+  // paint over the earlier one entirely, silently hiding it (its label still shows, in its own
+  // row, since labels never collide the same way -- only the line looked "missing"). When more
+  // than one marker type shares an age, the line falls back to a neutral shared style rather than
+  // picking one type's color arbitrarily, since it no longer represents just that one thing.
+  const markersByAge = new Map()
+  markers.forEach((m) => {
+    if (!markersByAge.has(m.age)) markersByAge.set(m.age, [])
+    markersByAge.get(m.age).push(m)
+  })
+  const sharedAgeLines = [...markersByAge.entries()]
+    .map(([age, atAge]) => {
+      const className = new Set(atAge.map((m) => m.className)).size === 1 ? atAge[0]?.className : "shared"
+      const x = scaleX(age)
+      return `<line x1="${x.toFixed(1)}" y1="${margin.top}" x2="${x.toFixed(1)}" y2="${height - margin.bottom}" class="bridge-${className}-line" />`
+    })
+    .join("")
   // Every marker's own vertical guide line runs the FULL plot height, so a marker whose x lands
   // under an earlier row's (wider) label would otherwise pierce it -- painting every line, THEN
   // every halo, THEN every label (rather than looping once and emitting each marker's own
   // line+halo+text together) means a label's halo covers ANY marker's line behind it, not just the
   // one it shares a row with.
   const markerLines =
-    positionedMarkers.map(({ x, className }) => `<line x1="${x.toFixed(1)}" y1="${margin.top}" x2="${x.toFixed(1)}" y2="${height - margin.bottom}" class="bridge-${className}-line" />`).join("") +
+    sharedAgeLines +
     positionedMarkers
       .map(({ labelY, haloLeft, labelWidth }) => `<rect x="${haloLeft.toFixed(1)}" y="${(labelY - 8).toFixed(1)}" width="${labelWidth.toFixed(1)}" height="11" class="bridge-label-halo" />`)
       .join("") +
@@ -1315,11 +1392,18 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
   return addChartZoom(wrap, "Bridge burndown chart")
 }
 
-// Function to wire the chart's hover layer: a crosshair that snaps to the nearest whole age (every
-// series has an exact point at every age it covers -- see simulateBridge's timeline -- so there is
-// never a value to interpolate), and one tooltip row per series that still has data at that age.
-// Every figure it shows is also in the prose finding below the chart, so this enhances rather than
-// gates -- there is no keyboard-equivalent hover here, which is fine precisely because of that.
+// Function to show/hide an SVG element via the `hidden` ATTRIBUTE directly, not the `.hidden` IDL
+// property -- confirmed live that setting `.hidden` on an SVGElement (unlike an HTMLElement) does
+// not reliably remove the attribute in this browser, so the CSS `[hidden] { display: none }` rule
+// it's meant to drive kept matching regardless of the property's own value. This silently broke the
+// bridge/Monte Carlo crosshair specifically (a plain <div> tooltip alongside it uses .hidden fine,
+// since that one really is an HTMLElement): the crosshair line could never actually show, on either
+// chart, so the tooltip's reported age had nothing on screen confirming which exact x it snapped to.
+function setSvgHidden(el, hidden) {
+  if (hidden) el.setAttribute("hidden", "")
+  else el.removeAttribute("hidden")
+}
+
 // Function to wire the chart's hover layer: a crosshair that snaps to the nearest whole age (every
 // series has an exact point at every age it covers -- see simulateBridge's timeline -- so there is
 // never a value to interpolate), and one tooltip row per series that still has data at that age.
@@ -1345,11 +1429,11 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
     const rows = scenarios.map(({ result }, index) => ({ result, index, point: byAge[index].get(age) })).filter((row) => row.point)
     if (rows.length === 0) {
       tooltip.hidden = true
-      crosshair.hidden = true
+      setSvgHidden(crosshair, true)
       return
     }
 
-    crosshair.hidden = false
+    setSvgHidden(crosshair, false)
     crosshair.setAttribute("x1", scale.scaleX(age).toFixed(1))
     crosshair.setAttribute("x2", scale.scaleX(age).toFixed(1))
 
@@ -1415,7 +1499,7 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
   hit.addEventListener("pointermove", move)
   hit.addEventListener("pointerleave", () => {
     tooltip.hidden = true
-    crosshair.hidden = true
+    setSvgHidden(crosshair, true)
   })
 }
 
@@ -1620,11 +1704,11 @@ function wireMonteCarloTooltip(wrap, series, scale) {
     const rows = series.map(({ result }, index) => ({ result, index, point: byAge[index].get(age) })).filter((row) => row.point)
     if (rows.length === 0) {
       tooltip.hidden = true
-      crosshair.hidden = true
+      setSvgHidden(crosshair, true)
       return
     }
 
-    crosshair.hidden = false
+    setSvgHidden(crosshair, false)
     crosshair.setAttribute("x1", scale.scaleX(age).toFixed(1))
     crosshair.setAttribute("x2", scale.scaleX(age).toFixed(1))
 
@@ -1663,7 +1747,7 @@ function wireMonteCarloTooltip(wrap, series, scale) {
   hit.addEventListener("pointermove", move)
   hit.addEventListener("pointerleave", () => {
     tooltip.hidden = true
-    crosshair.hidden = true
+    setSvgHidden(crosshair, true)
   })
 }
 
@@ -1679,16 +1763,14 @@ function renderFinding(finding) {
 }
 
 // Function to add the Spend/Rule of 55/debt-payoff tiles to the summary row once
-// /api/retirement/check resolves -- the same at-a-glance figures Generate's own result reports,
-// minus the download-specific lines (the file name, the import steps) that belong only to the act
-// of generating, and minus the prose ("from your own crossover widget's selection...") in favor of
-// plain label/number tiles matching Portfolio's own. Removes and replaces any tiles a previous call
-// added, rather than appending onto them, so a Refresh (or an auto re-check) doesn't pile up stale
-// copies alongside fresh ones.
+// /api/retirement/check resolves -- plain label/number tiles matching Portfolio's own, rather than
+// prose ("from your own crossover widget's selection..."). Removes and replaces any tiles a
+// previous call added, rather than appending onto them, so a Refresh (or an auto re-check) doesn't
+// pile up stale copies alongside fresh ones.
 function renderSummaryStats(result) {
   const container = document.getElementById("summaryTiles")
   container.querySelectorAll(".tile-dynamic").forEach((el) => el.remove())
-  const tiles = [{ label: "Spend", value: `${moneySpan(result.annualSpend)}/yr` }]
+  const tiles = [{ label: "Projected Expenditures", value: `${moneySpan(result.annualSpend)}/yr` }]
   result.ruleOf55Boosts.forEach((b) => {
     tiles.push({ label: escapeHtml(b.accountName), value: `Rule of 55, age <span class="num money">${b.to}</span>` })
   })
@@ -1701,25 +1783,6 @@ function renderSummaryStats(result) {
     div.innerHTML = `<div class="label">${t.label}</div><div class="value num">${t.value}</div>`
     container.appendChild(div)
   })
-}
-
-// Function to render the Stale findings-group -- whether the dashboard actually imported into
-// Actual (or the tiles above, on this page) has fallen out of sync with what re-checking right now
-// finds is exactly the reason this sits at the very top of the page, rather than off in Analysis
-// next to the unrelated Bridge simulation, or buried under a card someone could leave collapsed.
-function renderStaleResult(findings) {
-  const container = document.getElementById("staleResult")
-  container.innerHTML = ""
-  // Hidden, not just empty -- nothing stale is the ordinary, expected state, not something worth a
-  // visible-but-blank card.
-  container.hidden = findings.length === 0
-  if (findings.length === 0) {
-    return
-  }
-  const group = document.createElement("div")
-  group.className = "findings-group"
-  findings.forEach((f) => group.appendChild(renderFinding(f)))
-  container.appendChild(group)
 }
 
 // Fallback for the rare case a check fires before STATE itself has loaded (see renderLoadingSkeleton) --
@@ -1967,7 +2030,6 @@ async function runCheck() {
     const result = await api("/api/retirement/check")
     if (requestId !== checkRequestId) return
     renderSummaryStats(result)
-    renderStaleResult(result.staleFindings)
     firstCheckDone = true
     revealTopSectionIfReady()
     lastCheckResult = result
@@ -1996,40 +2058,6 @@ function scheduleRecheck() {
   }, 500)
 }
 
-function downloadFile(filename, content, mimeType) {
-  const blob = new Blob([content], { type: mimeType })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement("a")
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
-}
-
-async function runGenerate() {
-  const btn = document.getElementById("generateBtn")
-  const result = document.getElementById("genResult")
-  btn.disabled = true
-  try {
-    const r = await api("/api/retirement/generate", { method: "POST" })
-    const filename = r.outputPath.split("/").pop()
-    downloadFile(filename, r.dashboardJson, "application/json")
-    // Portfolio total, spend, Rule of 55 boosts and debt payoffs are the same figures the summary
-    // tiles above already show -- see renderSummaryStats -- so this result only states what's
-    // actually new: the file this run produced. Import instructions live in the modal body above
-    // this button, not repeated here.
-    result.innerHTML = `<div class="line">Downloaded <span class="num">${escapeHtml(filename)}</span>.${r.mergeSource === "live" ? " Preserved the settings currently on your imported FIRE dashboard." : r.mergeSource === "local" ? " Preserved customizations from the last file you downloaded." : ""}</div>`
-    result.hidden = false
-  } catch (error) {
-    result.innerHTML = `<div class="line">${escapeHtml(error.message)}</div>`
-    result.hidden = false
-  } finally {
-    btn.disabled = false
-  }
-}
-
 document.getElementById("birthDate").addEventListener("change", (e) => runExclusive(() => patchPlan({ birthDate: e.target.value || null }, "savedBirth")))
 document.getElementById("retireAges").addEventListener("change", (e) => {
   try {
@@ -2040,6 +2068,7 @@ document.getElementById("retireAges").addEventListener("change", (e) => {
   }
 })
 document.getElementById("planToAge").addEventListener("change", (e) => runExclusive(() => patchPlan({ planToAge: parseFloat(e.target.value) }, "savedPlan")))
+document.getElementById("filingStatus").addEventListener("change", (e) => runExclusive(() => patchPlan({ filingStatus: e.target.value === "" ? null : e.target.value }, "savedFilingStatus")))
 
 document.getElementById("pensionStartAge").addEventListener("change", (e) => {
   const age = e.target.value === "" ? null : parseFloat(e.target.value)
@@ -2180,33 +2209,73 @@ document.getElementById("addTaxBandBtn").addEventListener("click", () => {
   const next = [...(STATE.dashboard.monteCarloTaxBands ?? []), { id: nextTaxBandId() }]
   runExclusive(() => patchPlan({ monteCarloTaxBands: next }, "savedSimSettings"))
 })
-document.getElementById("generateBtn").addEventListener("click", runGenerate)
 document.getElementById("refreshBtn").addEventListener("click", refreshAll)
 
 // --- Chart zoom ---
 //
-// Reparents the chart's own DOM node into the modal (not a clone/re-render), so its tooltip/hover
-// wiring -- set up once at render time in wireBridgeTooltip/wireMonteCarloTooltip -- keeps working
-// unchanged; that wiring's own coordinate math already normalizes by the SVG's rendered
-// getBoundingClientRect() width rather than assuming its in-page size, so the chart draws larger
-// in the modal for free, no separate "zoomed" rendering path needed.
-let zoomedChart = null
-let zoomedChartHome = null // { parent, nextSibling } -- where to put it back on close
-function openChartZoom(chartWrap, title) {
-  if (zoomedChart === chartWrap) return // already zoomed in on this one
-  zoomedChart = chartWrap
-  zoomedChartHome = { parent: chartWrap.parentNode, nextSibling: chartWrap.nextSibling }
-  document.getElementById("chartZoomTitle").textContent = title
-  document.getElementById("chartZoomBody").appendChild(chartWrap)
-  document.getElementById("chartZoomBackdrop").hidden = false
+// Reparents both charts' own DOM nodes into the modal at once (not a clone/re-render, and not just
+// whichever one was clicked), so their tooltip/hover wiring -- set up once at render time in
+// wireBridgeTooltip/wireMonteCarloTooltip -- keeps working unchanged; that wiring's own coordinate
+// math already normalizes by the SVG's rendered getBoundingClientRect() width rather than assuming
+// its in-page size, so both charts draw larger in the modal for free, no separate "zoomed"
+// rendering path needed. Triggered by a click anywhere on either chart (see addChartZoom), not just
+// its own zoom button.
+let zoomedCharts = [] // [{ node, home: { parent, nextSibling } }] -- where each goes back on close
+function openChartZoom() {
+  if (zoomedCharts.length > 0) return // already open
+  // Each chart's own group-label ("Bridge · mean returns, 3% inflation") lives on a sibling in
+  // #checkResult, not inside the chart wrap itself -- cloned as plain text into the modal (rather
+  // than reparenting the real label) so the underlying page's own copy is untouched and doesn't
+  // need restoring on close.
+  const charts = [...document.querySelectorAll("#checkResult .findings-group")]
+    .map((group) => ({ chart: group.querySelector(".bridge-chart"), label: group.querySelector(".group-label")?.textContent ?? "" }))
+    .filter((entry) => entry.chart)
+  if (charts.length === 0) return
+  zoomedCharts = charts.map(({ chart }) => ({ node: chart, home: { parent: chart.parentNode, nextSibling: chart.nextSibling } }))
+  const body = document.getElementById("chartZoomBody")
+  body.innerHTML = ""
+  charts.forEach(({ chart, label }) => {
+    const section = document.createElement("div")
+    section.className = "chart-zoom-section"
+    if (label) {
+      const heading = document.createElement("div")
+      heading.className = "group-label"
+      heading.textContent = label
+      section.appendChild(heading)
+    }
+    section.appendChild(chart)
+    body.appendChild(section)
+  })
+  const backdrop = document.getElementById("chartZoomBackdrop")
+  backdrop.hidden = false
+  // Read a layout property first to force the browser to commit `hidden: false` before the class
+  // that starts the transition is added -- without it, both changes can land in the same paint and
+  // the modal would just appear instantly instead of animating in.
+  void backdrop.offsetHeight
+  backdrop.classList.add("open")
 }
 function closeChartZoom() {
-  if (zoomedChart && zoomedChartHome) {
-    zoomedChartHome.parent.insertBefore(zoomedChart, zoomedChartHome.nextSibling)
+  if (zoomedCharts.length === 0) return
+  const backdrop = document.getElementById("chartZoomBackdrop")
+  const restore = () => {
+    zoomedCharts.forEach(({ node, home }) => home.parent.insertBefore(node, home.nextSibling))
+    zoomedCharts = []
+    document.getElementById("chartZoomBody").innerHTML = ""
+    backdrop.hidden = true
   }
-  zoomedChart = null
-  zoomedChartHome = null
-  document.getElementById("chartZoomBackdrop").hidden = true
+  backdrop.classList.remove("open")
+  if (prefersReducedMotion()) {
+    restore()
+    return
+  }
+  // Charts must stay in the (still-visible-but-fading-out) modal until the close transition
+  // actually finishes -- restoring them immediately would visibly snap the modal's own content
+  // back to the page mid-fade instead of the whole panel fading out as one piece.
+  backdrop.addEventListener("transitionend", function onEnd(e) {
+    if (e.target !== backdrop) return
+    backdrop.removeEventListener("transitionend", onEnd)
+    restore()
+  })
 }
 document.getElementById("chartZoomClose").addEventListener("click", closeChartZoom)
 document.getElementById("chartZoomBackdrop").addEventListener("click", (e) => {
@@ -2216,38 +2285,19 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !document.getElementById("chartZoomBackdrop").hidden) closeChartZoom()
 })
 
-// Function to add the zoom button to a freshly rendered chart -- shared by
-// renderBridgeChart/renderMonteCarloChart, since both return the same .bridge-chart wrapper
-// shape. Mutates and returns the same `wrap` so a caller can chain it straight into `return`.
-function addChartZoom(wrap, title) {
-  const btn = document.createElement("button")
-  btn.type = "button"
-  btn.className = "icon-btn chart-zoom-btn"
-  btn.title = "Zoom in"
-  btn.setAttribute("aria-label", "Zoom in")
-  btn.innerHTML =
-    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>'
-  btn.addEventListener("click", () => openChartZoom(wrap, title))
-  wrap.appendChild(btn)
+document.getElementById("chartZoomOpenBtn").addEventListener("click", () => openChartZoom())
+
+// Function to make a freshly rendered chart clickable-anywhere-to-zoom -- shared by
+// renderBridgeChart/renderMonteCarloChart, since both return the same .bridge-chart wrapper shape.
+// The zoom entry point itself is the one pinned button in the Analysis card-head
+// (#chartZoomOpenBtn) rather than a button on each chart -- this just makes the chart's own body a
+// second way in. Mutates and returns the same `wrap` so a caller can chain it straight into
+// `return`.
+function addChartZoom(wrap) {
+  wrap.classList.add("chart-zoomable")
+  wrap.addEventListener("click", () => openChartZoom())
   return wrap
 }
-
-// --- Export to Dashboard modal ---
-
-function openExportModal() {
-  document.getElementById("exportModalBackdrop").hidden = false
-}
-function closeExportModal() {
-  document.getElementById("exportModalBackdrop").hidden = true
-}
-document.getElementById("exportDashboardBtn").addEventListener("click", openExportModal)
-document.getElementById("exportModalClose").addEventListener("click", closeExportModal)
-document.getElementById("exportModalBackdrop").addEventListener("click", (e) => {
-  if (e.target === e.currentTarget) closeExportModal()
-})
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !document.getElementById("exportModalBackdrop").hidden) closeExportModal()
-})
 
 // --- Help popovers (the "?" beside a field label) ---
 //
@@ -2294,18 +2344,15 @@ document.addEventListener("keydown", (e) => {
 // --- Retirement page: foldable sections (was a Configure/Analyze tab bar) ---
 
 // The foldable cards, in document order, each identified by its own data-section value. The
-// summary tiles and Stale (see #summaryTiles/#staleResult in index.html) sit above these, always
-// visible, not foldable -- they're "what's true right now," not a setting someone would want to
-// tuck away. Simulation settings and Retirement income default collapsed (set once, rarely
-// revisited); the rest default open. DEFAULT_COLLAPSED_SECTIONS is what a first-ever visit (no
-// cookie yet) applies; after that, saveSectionFolds keeps the cookie authoritative for every reload.
-const RETIREMENT_SECTIONS = ["plan", "spend-configuration", "simulation-settings", "retirement-income", "accounts", "analysis"]
-// The retirement-inputs column's own sections -- what Expand all/Collapse all (now living in that
-// column's own toolbar, not the page-head) actually toggle. Deliberately excludes "analysis": it
-// sits in the other (retirement-live) column, already has its own single fold toggle right there,
-// and the whole point of that column is staying visible while the inputs column is worked on --
-// having an inputs-column button reach over and hide the chart would cut against that.
-const INPUT_SECTIONS = RETIREMENT_SECTIONS.filter((name) => name !== "analysis")
+// summary tiles (see #summaryTiles in index.html) sit above these, always visible, not foldable --
+// they're "what's true right now," not a setting someone would want to tuck away. Analysis (the
+// other column) isn't in this list either, for the same reason -- it's the one thing on this page
+// someone's actually looking at, not a setting to tuck away, so it has no fold toggle at all any
+// more (just the always-visible zoom button, see #chartZoomOpenBtn). Simulation settings and
+// Retirement income default collapsed (set once, rarely revisited); the rest default open.
+// DEFAULT_COLLAPSED_SECTIONS is what a first-ever visit (no cookie yet) applies; after that,
+// saveSectionFolds keeps the cookie authoritative for every reload.
+const RETIREMENT_SECTIONS = ["plan", "spend-configuration", "simulation-settings", "retirement-income", "accounts"]
 const DEFAULT_COLLAPSED_SECTIONS = ["simulation-settings", "retirement-income"]
 
 // Function to fold or unfold one section -- shared by an individual card's own toggle and
@@ -2357,11 +2404,11 @@ document.querySelectorAll(".card-fold-toggle").forEach((toggle) => {
   })
 })
 document.getElementById("expandAllBtn").addEventListener("click", () => {
-  INPUT_SECTIONS.forEach((name) => setSectionFolded(name, false))
+  RETIREMENT_SECTIONS.forEach((name) => setSectionFolded(name, false))
   saveSectionFolds()
 })
 document.getElementById("collapseAllBtn").addEventListener("click", () => {
-  INPUT_SECTIONS.forEach((name) => setSectionFolded(name, true))
+  RETIREMENT_SECTIONS.forEach((name) => setSectionFolded(name, true))
   saveSectionFolds()
 })
 
@@ -3265,19 +3312,11 @@ function setCookie(name, value) {
 
 // Privacy mode -- an Actual-style eye toggle that blurs dollar figures (anything wrapped in
 // moneySpan) and a handful of other identifying fields (birth date, pension/Social Security
-// timing, ...) called out individually in style.css's own privacy rules. Export to Dashboard is
-// disabled outright rather than blurred while active -- its own download carries every one of
-// those real figures regardless of what's currently blurred on screen, so this is the one action
-// privacy mode can't just soften.
+// timing, ...) called out individually in style.css's own privacy rules.
 function applyPrivacyMode(active) {
   document.body.classList.toggle("privacy", active)
   const btn = document.getElementById("privacyToggle")
   if (btn) btn.setAttribute("aria-pressed", String(active))
-  const exportBtn = document.getElementById("exportDashboardBtn")
-  if (exportBtn) {
-    exportBtn.disabled = active
-    exportBtn.title = active ? "Disabled in privacy mode" : ""
-  }
   // Chart axis/marker/depletes-at text is mask-swapped at render time (see moneyMaskText), not
   // CSS-blurred, so an already-drawn chart needs an actual re-render to pick up the new privacy
   // state -- unlike the CSS-blur figures elsewhere on the page, which react to body.privacy on
@@ -3298,6 +3337,20 @@ try {
   applyPrivacyMode(getCookie("privacyMode") === "1")
 } catch {
   applyPrivacyMode(false)
+}
+
+// .retirement-live-sticky's own top/height (see style.css) has to leave exactly enough room for
+// .retirement-toolbar above it, but that panel's height isn't a constant the way the topbar's is --
+// its tile row grows once a check result adds Spend/Rule-of-55/debt-payoff tiles. A ResizeObserver
+// keeps --retirement-toolbar-height in sync with whatever the panel actually renders at, on every
+// cause (a check result landing, a window resize, a font swap), rather than this file having to
+// know every call site that might change that height and re-measure after each one by hand.
+const retirementToolbarEl = document.getElementById("retirementToolbar")
+if (retirementToolbarEl) {
+  new ResizeObserver((entries) => {
+    const height = entries[0].borderBoxSize?.[0]?.blockSize ?? entries[0].contentRect.height
+    document.documentElement.style.setProperty("--retirement-toolbar-height", `${Math.ceil(height)}px`)
+  }).observe(retirementToolbarEl)
 }
 
 loadState()

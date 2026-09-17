@@ -43,15 +43,19 @@ import type {
   MonteCarloWithdrawalStrategy,
 } from "./fire-accounts.ts"
 import { loadIrsLimits } from "./irs-limits.ts"
-import { calculateMortgagePayoff } from "./fire-analysis.ts"
+import { FILING_STATUSES, loadFederalTaxBrackets } from "./federal-tax-brackets.ts"
+import type { FilingStatus } from "./federal-tax-brackets.ts"
+import { loadIrsLifeExpectancy } from "./irs-life-expectancy.ts"
+import { SEPP_METHODS, seppAmount } from "./fire-sepp.ts"
+import type { SeppMethod } from "./fire-sepp.ts"
+import { calculateMortgagePayoff, projectAccountBalance, toBridgeAccounts } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
-import { checkDashboard, generateDashboard } from "./fire-generate.ts"
+import { checkDashboard } from "./fire-generate.ts"
 import {
   ALLOCATION_PRESET_RETURNS,
   WITHDRAWAL_TAX_RATES,
   expenseAdjustmentFactorWithOverride,
   monteCarloAssumptionsWithOverrides,
-  pinnedMonteCarloFields,
   retirementIncomeStreams,
   spendHistoryMonthsWithOverride,
 } from "./fire-dashboard.ts"
@@ -64,7 +68,8 @@ export interface AppServerOptions {
   actualConfig: ActualConfig
   configPath: string
   irsLimitsPath: string
-  outputPath: string
+  federalTaxBracketsPath: string
+  irsLifeExpectancyPath: string
   uiDir: string
   // 0 (the default) asks the OS for an unused port -- see startAppServer's doc comment for why.
   port?: number
@@ -127,6 +132,19 @@ interface AccountState {
   monthlyContribution: number | null
   monthlyContributionIsMax: boolean
   ruleOf55SeparationAge: number | null
+  // See ClassifiedAccount's doc comment. Only meaningful for a type with a non-null accessAge --
+  // the client only shows the option then, same gating as ruleOf55SeparationAge's own
+  // ruleOf55Eligible check.
+  earlyWithdrawalPenalty: boolean
+  // See ClassifiedAccount's doc comment. seppAnnualAmount is the actually computed distribution
+  // (see fire-sepp.ts's seppAmount) for whichever method is selected, projected against the
+  // account's own balance at seppStartAge -- null whenever a method/start age isn't fully set, or
+  // the inputs it needs (current age, a configured retirement age, the vendored life-expectancy
+  // table) aren't available yet, same "can't compute it yet" reasoning as employerContribution.
+  seppMethod: SeppMethod | null
+  seppStartAge: number | null
+  seppInterestRate: number | null
+  seppAnnualAmount: number | null
   limitLines: string[]
   // Employer-plan types only; null fields mean "not entered yet," not zero.
   annualSalary: number | null
@@ -180,6 +198,8 @@ interface StateResponse {
   dashboard: FireConfig["dashboard"]
   currentAge: number | null
   irsLimitsAvailable: boolean
+  federalTaxBracketsAvailable: boolean
+  irsLifeExpectancyAvailable: boolean
   accountTypes: Record<AccountType, AccountTypeInfo>
   allocationPresets: { value: MonteCarloAllocationPreset; label: string }[]
   accounts: AccountState[]
@@ -192,12 +212,21 @@ async function buildState(
   actualConfig: ActualConfig,
   configPath: string,
   irsLimitsPath: string,
+  federalTaxBracketsPath: string,
+  irsLifeExpectancyPath: string,
   balanceMode: "fresh" | "cached",
 ): Promise<StateResponse> {
   const { config: fireConfig } = loadFireConfig(configPath)
   const irsLimits = loadIrsLimits(irsLimitsPath)
+  const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
+  const irsLifeExpectancy = loadIrsLifeExpectancy(irsLifeExpectancyPath)
   const birthDate = fireConfig.dashboard.birthDate
   const currentAge = birthDate === null ? null : ageFromBirthDate(birthDate)
+  // SEPP amounts are reported against the latest configured retirement age, same convention as
+  // ruleOf55Boosts (fire-generate.ts) -- effectiveAccessAge only gets easier to satisfy as
+  // retirementAge grows, so an account's own projected balance at its SEPP start age doesn't
+  // depend on which scenario is asking.
+  const latestRetirementAge = fireConfig.dashboard.retirementAges.length > 0 ? Math.max(...fireConfig.dashboard.retirementAges) : null
 
   const rawAccounts = await fetchAllOpenAccounts(actualConfig)
   const classified = classifyAccounts(rawAccounts, fireConfig, birthDate, irsLimits)
@@ -217,6 +246,30 @@ async function buildState(
         : null
     const mortgagePayoffAge = mortgagePayoff && !("error" in mortgagePayoff) && currentAge !== null ? currentAge + Math.round(mortgagePayoff.monthsRemaining / 12) : null
     const presetReturns = account.allocationPreset != null ? ALLOCATION_PRESET_RETURNS[account.allocationPreset] : null
+    // The actual distribution amount a SEPP election computes to -- the account's own balance,
+    // projected forward (same reasoning as ruleOf55Boosts: what will actually be there BY the
+    // start age, not what's in it today) to seppStartAge, run through whichever method is
+    // selected. Null whenever the election isn't fully set, or an input it needs isn't available
+    // yet (no birth date, no retirement age configured, the vendored table missing).
+    const seppAnnualAmount =
+      account.seppMethod != null && account.seppStartAge != null && currentAge !== null && latestRetirementAge !== null && irsLifeExpectancy !== null
+        ? seppAmount(
+            account.seppMethod,
+            projectAccountBalance(
+              toBridgeAccounts(
+                [account],
+                new Map([[account.id, balanceById.get(account.id) ?? 0]]),
+                new Map([[account.id, (account.monthlyContribution ?? 0) * 12]]),
+                latestRetirementAge,
+              ),
+              currentAge,
+              account.seppStartAge,
+            ),
+            account.seppStartAge,
+            account.seppInterestRate,
+            irsLifeExpectancy,
+          )
+        : null
     return {
       id: account.id,
       name: account.name,
@@ -235,6 +288,11 @@ async function buildState(
       monthlyContribution: account.monthlyContribution,
       monthlyContributionIsMax: override?.monthlyContribution === "max",
       ruleOf55SeparationAge: account.ruleOf55SeparationAge,
+      earlyWithdrawalPenalty: account.earlyWithdrawalPenalty,
+      seppMethod: account.seppMethod,
+      seppStartAge: account.seppStartAge,
+      seppInterestRate: account.seppInterestRate,
+      seppAnnualAmount,
       limitLines: contributionLimitLines(account.type, irsLimits, account.hsaCoverage ?? "self"),
       annualSalary: account.annualSalary,
       employerMatchRate: account.employerMatchRate,
@@ -283,6 +341,8 @@ async function buildState(
     dashboard: fireConfig.dashboard,
     currentAge,
     irsLimitsAvailable: irsLimits !== null,
+    federalTaxBracketsAvailable: federalTaxBrackets !== null,
+    irsLifeExpectancyAvailable: irsLifeExpectancy !== null,
     accountTypes,
     allocationPresets: MONTE_CARLO_ALLOCATION_PRESETS.map((value) => ({ value, label: MONTE_CARLO_ALLOCATION_PRESET_LABELS[value] })),
     accounts,
@@ -366,7 +426,6 @@ function requirePlan(fireConfig: FireConfig): {
   planToAge: number
   incomeStreams: ReturnType<typeof retirementIncomeStreams>
   monteCarloAssumptions: ReturnType<typeof monteCarloAssumptionsWithOverrides>
-  pinnedMonteCarloFields: ReturnType<typeof pinnedMonteCarloFields>
   crossoverExpenseCategoryIds: string[] | null
   expenseAdjustmentFactor: number
   spendHistoryMonths: number
@@ -387,7 +446,6 @@ function requirePlan(fireConfig: FireConfig): {
     planToAge: fireConfig.dashboard.planToAge,
     incomeStreams: retirementIncomeStreams(fireConfig.dashboard),
     monteCarloAssumptions: monteCarloAssumptionsWithOverrides(fireConfig.dashboard),
-    pinnedMonteCarloFields: pinnedMonteCarloFields(fireConfig.dashboard),
     crossoverExpenseCategoryIds: fireConfig.dashboard.crossoverExpenseCategoryIds,
     expenseAdjustmentFactor: expenseAdjustmentFactorWithOverride(fireConfig.dashboard),
     spendHistoryMonths: spendHistoryMonthsWithOverride(fireConfig.dashboard),
@@ -474,17 +532,61 @@ function applyAccountPatch(
       throw new Error(`ruleOf55SeparationAge must be a positive number or null.`)
     }
   }
+  if ("earlyWithdrawalPenalty" in patch) {
+    const value = patch.earlyWithdrawalPenalty
+    if (typeof value !== "boolean") {
+      throw new Error(`earlyWithdrawalPenalty must be a boolean.`)
+    }
+    if (value) {
+      next.earlyWithdrawalPenalty = true
+    } else {
+      delete next.earlyWithdrawalPenalty
+    }
+  }
+  if ("seppMethod" in patch) {
+    const value = patch.seppMethod
+    if (value !== null && !SEPP_METHODS.includes(value as SeppMethod)) {
+      throw new Error(`seppMethod must be one of ${SEPP_METHODS.join(", ")}, or null.`)
+    }
+    next.seppMethod = value as SeppMethod | null
+  }
+  if ("seppStartAge" in patch) {
+    const value = patch.seppStartAge
+    if (value === null) {
+      next.seppStartAge = null
+    } else if (typeof value === "number" && value > 0) {
+      next.seppStartAge = value
+    } else {
+      throw new Error(`seppStartAge must be a positive number or null.`)
+    }
+  }
+  if ("seppInterestRate" in patch) {
+    const value = patch.seppInterestRate
+    if (value === null) {
+      next.seppInterestRate = null
+    } else if (typeof value === "number" && value >= 0) {
+      next.seppInterestRate = value
+    } else {
+      throw new Error(`seppInterestRate must be a non-negative number or null.`)
+    }
+  }
 
   // Function to apply one "a positive number, or null to clear it" field -- the shape shared by
-  // every optional numeric field below.
-  const applyPositiveOrNull = (field: keyof FireAccountOverride, label: string): void => {
+  // every optional numeric field below. zeroBehavior handles the one real fork in what "0" ought
+  // to mean: for most of these fields a literal 0 is indistinguishable from "not entered" (a $0
+  // extra principal IS no extra principal), so typing 0 to clear a field -- a natural thing to do,
+  // and the exact gap that used to reject it outright -- clears it the same as an empty field
+  // would. mortgageBalanceAsOf is the one exception: a $0 balance is a real, meaningful, DIFFERENT
+  // fact from "not entered" (the mortgage is paid off, not that no one ever recorded a balance),
+  // so it opts into "allow" to store the literal 0 instead of clearing it.
+  const applyPositiveOrNull = (field: keyof FireAccountOverride, label: string, zeroBehavior: "clear" | "allow" = "clear"): void => {
     if (!(field in patch)) {
       return
     }
     const value = patch[field]
-    if (value === null) {
+    if (value === null || (value === 0 && zeroBehavior === "clear")) {
       delete next[field]
-    } else if (typeof value === "number" && value > 0) {
+    } else if (typeof value === "number" && (value > 0 || (value === 0 && zeroBehavior === "allow"))) {
       ;(next as unknown as Record<string, unknown>)[field] = value
     } else {
       throw new Error(`${label} must be a positive number or null.`)
@@ -494,7 +596,7 @@ function applyAccountPatch(
   applyPositiveOrNull("employerMatchRate", "employerMatchRate")
   applyPositiveOrNull("employerMatchCapRate", "employerMatchCapRate")
   applyPositiveOrNull("mortgageMonthlyPayment", "mortgageMonthlyPayment")
-  applyPositiveOrNull("mortgageBalanceAsOf", "mortgageBalanceAsOf")
+  applyPositiveOrNull("mortgageBalanceAsOf", "mortgageBalanceAsOf", "allow")
   applyPositiveOrNull("mortgageExtraPrincipal", "mortgageExtraPrincipal")
   applyPositiveOrNull("rothBasis", "rothBasis")
 
@@ -571,7 +673,7 @@ function applyAccountOrder(fireConfig: FireConfig, configPath: string, orderedId
 // Function to start the local companion-app server: serves the static UI, and everything under
 // /api/retirement/ that the Retirement section needs. Returns immediately once listening.
 export async function startAppServer(options: AppServerOptions): Promise<RunningServer> {
-  const { actualConfig, configPath, irsLimitsPath, outputPath, uiDir } = options
+  const { actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, uiDir } = options
 
   // A fresh id per process start -- the page polls this (see app.js's hot-reload polling) and
   // reloads itself the moment it changes, so restarting the server (e.g. after an edit to server
@@ -603,7 +705,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       }
 
       if (req.method === "GET" && path === "/api/retirement/state") {
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "fresh"))
+        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "fresh"))
         return
       }
 
@@ -628,6 +730,12 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             throw new Error("planToAge must be a positive number.")
           }
           dashboard.planToAge = body.planToAge
+        }
+        if ("filingStatus" in body) {
+          if (body.filingStatus !== null && !FILING_STATUSES.includes(body.filingStatus as FilingStatus)) {
+            throw new Error(`filingStatus must be one of ${FILING_STATUSES.join(", ")}, or null.`)
+          }
+          dashboard.filingStatus = body.filingStatus as FilingStatus | null
         }
         if ("pensionStartAge" in body) {
           if (body.pensionStartAge !== null && (typeof body.pensionStartAge !== "number" || body.pensionStartAge <= 0)) {
@@ -748,7 +856,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           dashboard.monteCarloTaxBands = bands as MonteCarloTaxBandMeta[] | null
         }
         writeFireConfig(configPath, { ...fireConfig, dashboard })
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))
+        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
@@ -761,7 +869,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const { config: fireConfig } = loadFireConfig(configPath)
         const rawAccounts = await fetchAllOpenAccounts(actualConfig)
         applyAccountOrder(fireConfig, configPath, body.orderedIds as string[], rawAccounts)
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))
+        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
@@ -787,18 +895,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         if (prunedAccounts.length !== reloaded.accounts.length) {
           writeFireConfig(configPath, { ...reloaded, accounts: prunedAccounts })
         }
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, "cached"))
-        return
-      }
-
-      if (req.method === "POST" && path === "/api/retirement/generate") {
-        const { config: fireConfig } = loadFireConfig(configPath)
-        const plan = requirePlan(fireConfig)
-        const rawAccounts = await fetchAllOpenAccounts(actualConfig)
-        const irsLimits = loadIrsLimits(irsLimitsPath)
-        const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
-        const result = await generateDashboard(actualConfig, accounts, { outputPath, ...plan })
-        sendJson(res, 200, result)
+        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
