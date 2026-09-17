@@ -452,7 +452,7 @@ describe("GET /api/retirement/check", () => {
     const body = await readJson<CheckResult>(res)
     expect(body.annualSpend).toBeGreaterThan(0) // a real, nonzero withdrawal need -- not a vacuous $0 test
     const magi = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
-    expect(magi?.detail[0]).toContain("$0.00 estimated from tax-deferred withdrawals")
+    expect(magi?.detail[0]).toContain("$0.00 tax-deferred")
   })
 
   it("omits the MAGI finding when filing status isn't set, even with tax brackets available", async () => {

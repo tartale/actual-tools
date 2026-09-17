@@ -399,8 +399,8 @@ export function magiFinding(
     level: "info",
     title: `age ${retirementAge} -- est. MAGI ${formatUsd(estimate.magi)} puts you in the ${marginalPct}% federal bracket (${effectivePct}% effective).`,
     detail: [
-      `${formatUsd(grossTaxDeferredWithdrawal)} estimated from tax-deferred withdrawals (only the share of your ACCESSIBLE balance at this age that's tax-deferred -- still-locked accounts don't count), ${formatUsd(pensionIncome)} pension, ${formatUsd(estimate.taxableSocialSecurity)} of taxable Social Security -- taxable income ${formatUsd(estimate.taxableIncome)} after the standard deduction.`,
-      "A simplified estimate, not a line from Form 1040 -- doesn't gross the withdrawal up for the tax itself, and uses today's account balances rather than projecting them forward to this age, so treat this as an approximation, not an exact number.",
+      `${formatUsd(grossTaxDeferredWithdrawal)} tax-deferred, ${formatUsd(pensionIncome)} pension, ${formatUsd(estimate.taxableSocialSecurity)} taxable Social Security -- taxable income ${formatUsd(estimate.taxableIncome)} after the standard deduction.`,
+      "A rough estimate, not a line from Form 1040: excludes still-locked accounts, doesn't gross up for the tax itself.",
     ],
   }
 }
