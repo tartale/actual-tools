@@ -34,7 +34,7 @@ COPY src/ ./src/
 # the app's own login form) is written on login and deleted on logout. See compose.yaml.
 VOLUME ["/app/data"]
 
-EXPOSE 4247
+EXPOSE 4276
 
 # Binds every interface because the point of running it here is to reach it from another device --
 # and there is no authentication, so the network it is published on is the whole of the security

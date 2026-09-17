@@ -20,9 +20,9 @@ services:
       context: .
     # The published port is settable so a second instance (or a port already spoken for) doesn't
     # need this file edited; `./actual service start -p N` sets it. Inside the container it is always
-    # 4247, which is what the image's own CMD and healthcheck use.
+    # 4276, which is what the image's own CMD and healthcheck use.
     ports:
-      - "${AB_PORT:-4247}:4247"
+      - "${AB_PORT:-4276}:4276"
     # config.json lives here and is rewritten on every edit in the app, so it is a mounted directory
     # rather than a baked-in file. A directory, not a single-file bind mount: those break the moment
     # a writer replaces the file rather than writing through it, which is a trap worth avoiding even
@@ -62,7 +62,7 @@ services:
         - CMD
         - node
         - -e
-        - "require('node:http').get('http://127.0.0.1:4247/api/dev/build-id', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+        - "require('node:http').get('http://127.0.0.1:4276/api/dev/build-id', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
       interval: 30s
       timeout: 10s
       start_period: 10s
