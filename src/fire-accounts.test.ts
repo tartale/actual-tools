@@ -141,6 +141,20 @@ describe("classifyAccounts", () => {
     expect(result).toMatchObject({ type: "brokerage", category: "investment-taxable", taxTreatment: "taxable", source: "override" })
   })
 
+  it("resolves earlyWithdrawalPenalty from the override, defaulting to false when absent", () => {
+    const accounts = [
+      { id: "acct-1", name: "401k", offbudget: true },
+      { id: "acct-2", name: "IRA", offbudget: true },
+    ]
+    const cfg = { accounts: [{ match: "acct-1", type: "traditional-401k", earlyWithdrawalPenalty: true }, { match: "acct-2", type: "traditional-ira" }] } as Pick<
+      FireConfig,
+      "accounts"
+    >
+    const [withPenalty, withoutPenalty] = classifyAccounts(accounts, cfg)
+    expect(withPenalty).toMatchObject({ earlyWithdrawalPenalty: true })
+    expect(withoutPenalty).toMatchObject({ earlyWithdrawalPenalty: false })
+  })
+
   it("falls back to the heuristic when there's no override", () => {
     const accounts = [{ id: "acct-1", name: "E*Trade Roth IRA", offbudget: true }]
     const [result] = classifyAccounts(accounts, { accounts: [] })
@@ -502,6 +516,18 @@ describe("loadFireConfig", () => {
     expect(() => loadFireConfig("/fake/path")).toThrow('ruleOf55SeparationAge for "x" must be a positive number')
   })
 
+  it("throws on a non-boolean earlyWithdrawalPenalty", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", type: "traditional-401k", earlyWithdrawalPenalty: "yes" }] }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
+    expect(() => loadFireConfig("/fake/path")).toThrow('earlyWithdrawalPenalty for "x" must be a boolean')
+  })
+
+  it("accepts a true earlyWithdrawalPenalty", () => {
+    const validConfig = fireConfig([{ match: "x", type: "traditional-401k", earlyWithdrawalPenalty: true }])
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
+    expect(loadFireConfig("/fake/path")).toEqual({ config: validConfig, found: true })
+  })
+
   it("accepts a null ruleOf55SeparationAge", () => {
     const validConfig = fireConfig([{ match: "x", type: "traditional-401k", ruleOf55SeparationAge: null }])
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
@@ -630,6 +656,10 @@ describe("loadClassifiedAccounts", () => {
         customReturnStdDev: null,
         monthlyContribution: null,
         ruleOf55SeparationAge: null,
+        earlyWithdrawalPenalty: false,
+        seppMethod: null,
+        seppStartAge: null,
+        seppInterestRate: null,
         annualSalary: null,
         employerMatchRate: null,
         employerMatchCapRate: null,
@@ -872,6 +902,10 @@ describe("portfolioAccounts", () => {
       customReturnStdDev: null,
       monthlyContribution: null,
       ruleOf55SeparationAge: null,
+      earlyWithdrawalPenalty: false,
+      seppMethod: null,
+      seppStartAge: null,
+      seppInterestRate: null,
       annualSalary: null,
       employerMatchRate: null,
       employerMatchCapRate: null,

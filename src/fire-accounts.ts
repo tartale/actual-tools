@@ -2,6 +2,10 @@ import { readFileSync, writeFileSync } from "node:fs"
 
 import { ageFromBirthDate, fetchAllOpenAccounts, formatUsd } from "./actual-helpers.ts"
 import type { Account, ActualConfig } from "./actual-helpers.ts"
+import { FILING_STATUSES } from "./federal-tax-brackets.ts"
+import type { FilingStatus } from "./federal-tax-brackets.ts"
+import { SEPP_METHODS } from "./fire-sepp.ts"
+import type { SeppMethod } from "./fire-sepp.ts"
 import { DEFAULT_IRS_LIMITS_PATH, loadIrsLimits } from "./irs-limits.ts"
 import type { IrsLimits } from "./irs-limits.ts"
 
@@ -336,6 +340,21 @@ export interface ClassifiedAccount {
   // mere presence asserts "this is a real, currently-held 401(k)/403(b)" -- only ever meaningful
   // when the account's type has ruleOf55Eligible: true. See fire-dashboard.ts's effectiveAccessAge.
   ruleOf55SeparationAge: number | null
+  // Accepts the plain IRC Sec. 72(t) 10% additional tax on an early distribution in exchange for
+  // full, unconditional access to this account starting now, instead of waiting for accessAge.
+  // Only meaningful for a type that actually has a lock (accessAge non-null) -- see
+  // fire-dashboard.ts's effectiveAccessAge/EARLY_WITHDRAWAL_PENALTY_RATE for how the penalty itself
+  // is applied (only for years before the account's own normal accessAge; the flat rate stands
+  // again once that age is reached, same as if this were never set).
+  earlyWithdrawalPenalty: boolean
+  // A 72(t) Substantially Equal Periodic Payments election -- null means not electing one. Grants
+  // early access starting seppStartAge, same mechanism as ruleOf55SeparationAge (see
+  // fire-dashboard.ts's effectiveAccessAge), but ALSO prices a real mandatory annual distribution
+  // (see fire-sepp.ts's seppAmount) rather than just opening the account up. seppInterestRate is
+  // only meaningful for the amortization method -- the RMD method has no rate input of its own.
+  seppMethod: SeppMethod | null
+  seppStartAge: number | null
+  seppInterestRate: number | null
   // Employer-match inputs -- see FireAccountOverride's doc comment. Pass-through fields, not
   // resolved to anything here; employerContributionSummary does the actual math once an account's
   // resolved monthlyContribution is known.
@@ -396,6 +415,13 @@ export interface FireAccountOverride {
   // crosses the 50/60-63 age-tier boundaries, rather than going stale the moment it's set.
   monthlyContribution?: number | "max"
   ruleOf55SeparationAge?: number | null
+  // See ClassifiedAccount's doc comment. Absent (not `false`) means "not accepted," same sparse
+  // convention as every other optional override.
+  earlyWithdrawalPenalty?: boolean
+  // See ClassifiedAccount's doc comment.
+  seppMethod?: SeppMethod | null
+  seppStartAge?: number | null
+  seppInterestRate?: number | null
   // Only meaningful for the two employer-plan types (traditional-401k/roth-401k) -- used together
   // to estimate the employer's own contribution against the combined IRC Sec. 415(c) "annual
   // additions" limit (employee + employer together), a separate, much larger ceiling than the
@@ -442,6 +468,11 @@ export interface DashboardConfig {
   birthDate: string | null
   retirementAges: number[]
   planToAge: number
+  // Drives the standard deduction and bracket thresholds for the MAGI/effective-tax-rate estimate
+  // (see federal-tax-brackets.ts) -- null until entered, same "not set yet" convention as birthDate,
+  // and the estimate simply doesn't run without it (falls back to the flat WITHDRAWAL_TAX_RATES
+  // estimate, same as today).
+  filingStatus: FilingStatus | null
   // Cents/mo, null until entered. A pension with no start age (or vice versa) isn't applied --
   // see retirementIncomeStreams in fire-dashboard.ts.
   pensionStartAge: number | null
@@ -511,6 +542,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   birthDate: null,
   retirementAges: [],
   planToAge: DEFAULT_PLAN_TO_AGE,
+  filingStatus: null,
   pensionStartAge: null,
   pensionMonthlyAmount: null,
   socialSecurityClaimingAge: null,
@@ -906,6 +938,10 @@ export function classifyAccounts(
         customWithdrawalTaxRate: override.customWithdrawalTaxRate ?? null,
         monthlyContribution: resolvedContributions.get(override.match) ?? null,
         ruleOf55SeparationAge: override.ruleOf55SeparationAge ?? null,
+        earlyWithdrawalPenalty: override.earlyWithdrawalPenalty ?? false,
+        seppMethod: override.seppMethod ?? null,
+        seppStartAge: override.seppStartAge ?? null,
+        seppInterestRate: override.seppInterestRate ?? null,
         annualSalary: override.annualSalary ?? null,
         employerMatchRate: override.employerMatchRate ?? null,
         employerMatchCapRate: override.employerMatchCapRate ?? null,
@@ -931,6 +967,10 @@ export function classifyAccounts(
         customWithdrawalTaxRate: null,
         monthlyContribution: null,
         ruleOf55SeparationAge: null,
+        earlyWithdrawalPenalty: false,
+        seppMethod: null,
+        seppStartAge: null,
+        seppInterestRate: null,
         annualSalary: null,
         employerMatchRate: null,
         employerMatchCapRate: null,
@@ -954,6 +994,10 @@ export function classifyAccounts(
       customWithdrawalTaxRate: null,
       monthlyContribution: null,
       ruleOf55SeparationAge: null,
+      earlyWithdrawalPenalty: false,
+      seppMethod: null,
+      seppStartAge: null,
+      seppInterestRate: null,
       annualSalary: null,
       employerMatchRate: null,
       employerMatchCapRate: null,
@@ -1061,6 +1105,18 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     if (override.ruleOf55SeparationAge != null && (typeof override.ruleOf55SeparationAge !== "number" || override.ruleOf55SeparationAge <= 0)) {
       throw new Error(`Invalid config in ${path}: ruleOf55SeparationAge for "${override.match}" must be a positive number.`)
     }
+    if (override.earlyWithdrawalPenalty != null && typeof override.earlyWithdrawalPenalty !== "boolean") {
+      throw new Error(`Invalid config in ${path}: earlyWithdrawalPenalty for "${override.match}" must be a boolean.`)
+    }
+    if (override.seppMethod != null && !SEPP_METHODS.includes(override.seppMethod)) {
+      throw new Error(`Invalid config in ${path}: seppMethod for "${override.match}" must be one of ${SEPP_METHODS.join(", ")}, or null.`)
+    }
+    if (override.seppStartAge != null && (typeof override.seppStartAge !== "number" || override.seppStartAge <= 0)) {
+      throw new Error(`Invalid config in ${path}: seppStartAge for "${override.match}" must be a positive number.`)
+    }
+    if (override.seppInterestRate != null && (typeof override.seppInterestRate !== "number" || override.seppInterestRate < 0)) {
+      throw new Error(`Invalid config in ${path}: seppInterestRate for "${override.match}" must be a non-negative number.`)
+    }
     if (override.withdrawalOrder != null && (typeof override.withdrawalOrder !== "number" || !Number.isInteger(override.withdrawalOrder) || override.withdrawalOrder < 0)) {
       throw new Error(`Invalid config in ${path}: withdrawalOrder for "${override.match}" must be a non-negative integer.`)
     }
@@ -1079,6 +1135,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   }
   if (dashboardSource.planToAge !== undefined && (typeof dashboardSource.planToAge !== "number" || dashboardSource.planToAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.planToAge must be a positive number.`)
+  }
+  if (dashboardSource.filingStatus != null && !FILING_STATUSES.includes(dashboardSource.filingStatus)) {
+    throw new Error(`Invalid config in ${path}: dashboard.filingStatus must be one of ${FILING_STATUSES.join(", ")}, or null.`)
   }
   if (dashboardSource.pensionStartAge != null && (typeof dashboardSource.pensionStartAge !== "number" || dashboardSource.pensionStartAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.pensionStartAge must be a positive number.`)
@@ -1171,6 +1230,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       birthDate: dashboardSource.birthDate ?? DEFAULT_DASHBOARD_CONFIG.birthDate,
       retirementAges: dashboardSource.retirementAges ?? DEFAULT_DASHBOARD_CONFIG.retirementAges,
       planToAge: dashboardSource.planToAge ?? DEFAULT_DASHBOARD_CONFIG.planToAge,
+      filingStatus: dashboardSource.filingStatus ?? DEFAULT_DASHBOARD_CONFIG.filingStatus,
       pensionStartAge: dashboardSource.pensionStartAge ?? DEFAULT_DASHBOARD_CONFIG.pensionStartAge,
       pensionMonthlyAmount: dashboardSource.pensionMonthlyAmount ?? DEFAULT_DASHBOARD_CONFIG.pensionMonthlyAmount,
       socialSecurityClaimingAge: dashboardSource.socialSecurityClaimingAge ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityClaimingAge,
