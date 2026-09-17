@@ -30,7 +30,8 @@ COPY federal-poverty-guidelines.json ./
 COPY src/ ./src/
 
 # Written to as well as read, so it is a mounted directory rather than a baked-in file: config.json
-# is rewritten on every edit in the app. See compose.yaml.
+# is rewritten on every edit in the app, and session.json (the Actual credentials entered through
+# the app's own login form) is written on login and deleted on logout. See compose.yaml.
 VOLUME ["/app/data"]
 
 EXPOSE 4247
@@ -38,4 +39,4 @@ EXPOSE 4247
 # Binds every interface because the point of running it here is to reach it from another device --
 # and there is no authentication, so the network it is published on is the whole of the security
 # boundary. compose.yaml says the same thing at greater length.
-CMD ["node", "src/app.ts", "--no-open", "--config", "/app/data/config.json"]
+CMD ["node", "src/app.ts", "--no-open", "--config", "/app/data/config.json", "--session", "/app/data/session.json"]

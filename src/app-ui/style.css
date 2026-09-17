@@ -422,7 +422,7 @@ main:has(#page-retirement.active) { max-width: none; }
 .plan-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .plan-grid .field.full { grid-column: 1 / -1; margin-top: 4px; }
 .field label { display: block; font-size: 11px; font-weight: 500; color: var(--ink-soft); margin-bottom: 5px; }
-.field input[type="text"], .field input[type="date"], .field input[type="number"], select {
+.field input[type="text"], .field input[type="date"], .field input[type="number"], .field input[type="password"], select {
   width: 100%; font: inherit; font-size: 13px; padding: 5px; border: 1px solid var(--line);
   border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink);
 }
@@ -805,6 +805,10 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .modal .btn { margin-top: 4px; }
 .modal-close { position: absolute; top: 12px; right: 12px; width: 24px; height: 24px; border: none; background: transparent; color: var(--ink-faint); font-size: 18px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .modal-close:hover { color: var(--ink-strong); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+/* #loginBackdrop's own fields -- stacked, not .plan-grid's 4-column grid (there's no row of
+   related fields to align here), so spacing comes from this flex gap rather than a grid gap. */
+.modal-login form { display: flex; flex-direction: column; gap: 12px; }
+.modal-login .btn { align-self: flex-start; }
 /* As big as the viewport reasonably allows -- both charts need to fit within the height budget
    below with no scrolling in the common case, so width alone (the only thing the in-page chart's
    own sizing ever had to answer to) isn't enough; see the height-driven sizing chain beneath this

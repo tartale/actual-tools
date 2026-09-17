@@ -9,6 +9,7 @@ import type { Browser, Page } from "playwright"
 import { startAppServer } from "../app-server.ts"
 import type { RunningServer } from "../app-server.ts"
 import type { ActualConfig } from "../actual-helpers.ts"
+import { writeActualSession } from "../actual-session.ts"
 
 // Browser-driven tests for the Budget section's picker -- the behaviour route tests can't reach:
 // whether the header menu actually opens, whether hidden categories really appear when toggled,
@@ -119,8 +120,10 @@ afterEach(async () => {
 async function openBudgetPage(): Promise<{ page: Page; errors: string[] }> {
   vi.stubGlobal("fetch", mockActualFetch())
   writeFileSync(join(dir, "irs-limits.json"), "{}")
+  const sessionPath = join(dir, "session.json")
+  writeActualSession(sessionPath, actualConfig)
   server = await startAppServer({
-    actualConfig,
+    sessionPath,
     configPath: join(dir, "config.json"),
     irsLimitsPath: join(dir, "irs-limits.json"),
     federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),

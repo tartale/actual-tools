@@ -3422,29 +3422,100 @@ if (retirementToolbarEl) {
   }).observe(retirementToolbarEl)
 }
 
-loadState()
-loadExpenseCategoryOptions()
-
+// --- Login/logout ---
+//
+// Both the Retirement and Budget pages need Actual credentials before their own first fetch, so
+// this gate runs once at startup, ahead of either page's own bootstrap, rather than each page
+// checking for itself. /api/session never echoes a saved api key back (see app-server.ts), so the
+// login form always starts blank -- there's no "already filled in" state for it to restore.
 // Restores whichever section was last chosen (per-browser cookie, same restart-survives-a-port-
 // change rationale as every other small preference here -- see getCookie/setCookie's own doc
-// comment), falling back to Budget. Runs down here, after every const the section's own loaders
-// touch is initialized -- calling it up beside the nav wiring would hit PICKER while it
-// was still in its temporal dead zone. Applying it rather than trusting the HTML's default markup
-// is also what makes Budget's data load on a restored section, not just on a manual click.
-// Same reasoning for the action: applied rather than trusted from the markup, so the heading,
-// the amount box and the button pair can never disagree with whichever option the page happens to
-// open on.
-applySelectedAction()
-
-applySectionFolds()
-
-try {
-  const savedSection = getCookie("activeSection")
-  const knownSections = [...document.querySelectorAll(".section-item[data-section]")].map((i) => i.dataset.section)
-  activateSection(knownSections.includes(savedSection) ? savedSection : "budget")
-} catch {
-  activateSection("budget")
+// comment), falling back to Budget. Applying it rather than trusting the HTML's default markup is
+// also what makes Budget's data load on a restored section, not just on a manual click. Same
+// reasoning for the action: applied rather than trusted from the markup, so the heading, the
+// amount box and the button pair can never disagree with whichever option the page happens to open
+// on. All of this waits for startApp (i.e. a confirmed login) rather than running unconditionally
+// at script load, since activateSection's own Budget/Retirement branches immediately fetch real
+// data (loadPickerTable/runCheck) -- before login that fetch can only fail.
+function startApp() {
+  loadState()
+  loadExpenseCategoryOptions()
+  applySelectedAction()
+  applySectionFolds()
+  try {
+    const savedSection = getCookie("activeSection")
+    const knownSections = [...document.querySelectorAll(".section-item[data-section]")].map((i) => i.dataset.section)
+    activateSection(knownSections.includes(savedSection) ? savedSection : "budget")
+  } catch {
+    activateSection("budget")
+  }
 }
+// Same show/hide dance as openChartZoom/closeChartZoom -- .modal-backdrop starts at opacity:0 even
+// once un-hidden, and needs a forced layout read between clearing `hidden` and adding `.open` so
+// the two changes don't land in the same paint (which would skip the fade-in transition entirely).
+function showLoginModal() {
+  const backdrop = document.getElementById("loginBackdrop")
+  backdrop.hidden = false
+  void backdrop.offsetHeight
+  backdrop.classList.add("open")
+}
+function hideLoginModal() {
+  document.getElementById("loginBackdrop").classList.remove("open")
+  document.getElementById("loginBackdrop").hidden = true
+}
+async function checkSession() {
+  try {
+    const status = await api("/api/session")
+    if (status.loggedIn) {
+      startApp()
+    } else {
+      showLoginModal()
+    }
+  } catch (error) {
+    // The session check itself failed (server unreachable, etc.) -- same retry-banner fallback the
+    // rest of the page uses for a failed fetch, rather than a blank screen with no way forward.
+    showError(error.message, () => checkSession())
+  }
+}
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault()
+  const errorEl = document.getElementById("loginError")
+  errorEl.hidden = true
+  const submitBtn = document.getElementById("loginSubmitBtn")
+  submitBtn.disabled = true
+  submitBtn.textContent = "Logging in…"
+  try {
+    await api("/api/session", {
+      method: "POST",
+      body: JSON.stringify({
+        baseUrl: document.getElementById("loginBaseUrl").value.trim(),
+        budgetId: document.getElementById("loginBudgetId").value.trim(),
+        apiKey: document.getElementById("loginApiKey").value.trim(),
+      }),
+    })
+    hideLoginModal()
+    startApp()
+  } catch (error) {
+    errorEl.textContent = error.message
+    errorEl.hidden = false
+  } finally {
+    submitBtn.disabled = false
+    submitBtn.textContent = "Log in"
+  }
+})
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  try {
+    await api("/api/session", { method: "DELETE" })
+  } catch {
+    // Nothing sensible to show here -- reload regardless, which re-checks the session and lands on
+    // the login modal either way (logged out for real, or the DELETE itself failed and a stale
+    // session is still on disk, in which case the next real request surfaces whatever's actually
+    // wrong).
+  }
+  location.reload()
+})
+
+checkSession()
 
 // Hot-reload: poll the server's per-process build id (see startAppServer in app-server.ts) and
 // reload the page the moment it changes -- static files (app.js/style.css/index.html) are already

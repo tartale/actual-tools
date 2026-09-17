@@ -5,7 +5,8 @@ instance, talking to its REST API wrapper.
 
 ## Configuration
 
-All tools read the same environment variables:
+The CLI tools below (`budget set-values`, `budget anomalies`,
+`transactions match-uncleared`) read the same environment variables:
 
 | Variable         | Description                                                     |
 | ---------------- | ---------------------------------------------------------------- |
@@ -13,6 +14,11 @@ All tools read the same environment variables:
 | `AB_BUDGET_ID`   | Budget (sync) ID                                                |
 | `AB_API_KEY`     | API key, sent as the `x-api-key` header                        |
 | `DRY_RUN`        | `true` to report changes without writing them                  |
+
+The companion app (`./actual service`, aka Runway) doesn't use these --
+it logs in through its own UI instead, storing what you enter in
+`session.json` alongside `config.json`. See "`./actual service` /
+`./actual build image`" below.
 
 ## `./actual`
 
@@ -191,9 +197,10 @@ bite:
   the host's own absolute path in that case.
 - **`AB_HOST_ALIAS`** — a container on the bridge network often can't
   reach the host's LAN address even though it resolves; requests just hang
-  and surface as a bare `fetch failed`. Set this to the hostname in
-  `AB_BASE_URL` and compose maps it to `host-gateway`, which routes back
-  through the bridge. Not needed if Actual is reachable by plain IP.
+  and surface as a bare `fetch failed`. Set this to the hostname in the
+  server URL you log in with, and compose maps it to `host-gateway`, which
+  routes back through the bridge. Not needed if Actual is reachable by
+  plain IP.
 
 Both belong in `.envrc`. The image itself installs nothing: this repo has
 no runtime dependencies and Node runs the TypeScript directly, so the image
@@ -204,6 +211,9 @@ was.
 
 - `-f`, `--config PATH` — path to the config file to read from and write
   (default: `config.json`).
+- `-s`, `--session PATH` — path to store the Actual credentials entered
+  through the app's own login form (default: `session.json`). Missing is
+  fine — the app just starts logged out.
 - `-i`, `--irs-limits PATH` — path to the IRS contribution limits reference
   file (default: `irs-limits.json`). Missing is fine, just skips that
   context.
@@ -224,17 +234,25 @@ its URL:
 Runway is running at http://localhost:4247/
 Also reachable from another device on your network at:
   http://192.168.1.23:4247/
-(no login is required -- only share these on a network you trust)
+(the app itself doesn't require its own login -- only share these on a network you trust)
 Press Ctrl+C to stop.
 ```
 
+The first time you open it (nothing in `session.json` yet), it asks for
+your Actual server's URL, budget (sync) ID, and API key — all three found
+under Settings → Show advanced settings in Actual itself. It validates
+them against Actual before saving, so a typo surfaces immediately rather
+than on the first real page load. **Log out** (the icon next to the
+privacy toggle) clears them again.
+
 Binding every interface means the page also works from another device on
 the same network — e.g. running this on a home server and pulling it up
-on your phone or laptop's browser. **There is no authentication at all**,
-so anyone who can reach one of the printed network addresses can read
-your accounts and edit `config.json`; fine on a trusted home LAN, not
-something to expose past it (e.g. port-forwarded to the internet) without
-adding real auth first.
+on your phone or laptop's browser. **There is no authentication protecting
+the app itself**, so anyone who can reach one of the printed network
+addresses can open it, log in with their own Actual credentials (or use
+whichever are already saved), and read your accounts/edit `config.json`;
+fine on a trusted home LAN, not something to expose past it (e.g.
+port-forwarded to the internet) without adding real auth first.
 
 Everything the page does reads and writes `config.json` directly and
 autosaves on every change — there's no separate "save" step, and no

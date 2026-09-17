@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { startAppServer } from "./app-server.ts"
 import type { RunningServer, StateResponse } from "./app-server.ts"
 import type { ActualConfig } from "./actual-helpers.ts"
+import { loadActualSession, writeActualSession } from "./actual-session.ts"
 import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
 import type { CheckResult } from "./fire-generate.ts"
 
@@ -62,6 +63,7 @@ function mockActualFetch(fixture: FetchFixture) {
 
 let dir: string
 let configPath: string
+let sessionPath: string
 let irsLimitsPath: string
 let federalTaxBracketsPath: string
 let irsLifeExpectancyPath: string
@@ -71,6 +73,7 @@ let server: RunningServer | null = null
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "app-server-test-"))
   configPath = join(dir, "config.json")
+  sessionPath = join(dir, "session.json")
   irsLimitsPath = join(dir, "irs-limits.json")
   federalTaxBracketsPath = join(dir, "federal-tax-brackets.json")
   irsLifeExpectancyPath = join(dir, "irs-life-expectancy.json")
@@ -85,13 +88,20 @@ afterEach(async () => {
 })
 
 // Re-booting (a fixture change mid-test, e.g. simulating an account closing between two edits)
-// closes any server already running first, so afterEach only ever has one to clean up.
-async function boot(fixture: FetchFixture = {}): Promise<string> {
+// closes any server already running first, so afterEach only ever has one to clean up. Pre-seeds
+// the session file with the fixture actualConfig by default -- every existing test here predates
+// login/logout and assumes an already-logged-in server, same as when actualConfig was a required
+// startup option; the session-specific tests below pass `loggedIn: false` to start logged out
+// instead.
+async function boot(fixture: FetchFixture = {}, options: { loggedIn?: boolean } = {}): Promise<string> {
   if (server) {
     await server.close()
   }
   vi.stubGlobal("fetch", mockActualFetch(fixture))
-  server = await startAppServer({ actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir: dir })
+  if (options.loggedIn ?? true) {
+    writeActualSession(sessionPath, actualConfig)
+  }
+  server = await startAppServer({ sessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir: dir })
   return server.url
 }
 
@@ -751,6 +761,71 @@ describe("POST /api/budget/anomalies", () => {
     const url = await boot()
     const res = await fetch(`${url}api/budget/anomalies`, { method: "POST", body: JSON.stringify({ categories: [], startMonth: "2026-01" }) })
     expect(res.status).toBe(400)
+  })
+})
+
+describe("/api/session", () => {
+  it("reports logged out when no session has ever been saved", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/session`)
+    expect(res.status).toBe(200)
+    expect(await readJson<{ loggedIn: boolean }>(res)).toEqual({ loggedIn: false })
+  })
+
+  it("reports the logged-in server/budget but never the api key", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/session`)
+    const body = await readJson<{ loggedIn: boolean; baseUrl: string; budgetId: string }>(res)
+    expect(body).toEqual({ loggedIn: true, baseUrl: actualConfig.baseUrl, budgetId: actualConfig.budgetId })
+    expect(JSON.stringify(body)).not.toContain(actualConfig.apiKey)
+  })
+
+  it("logs in, persists the session, and lets a follow-up route that needs it succeed", async () => {
+    const url = await boot({ accounts: [] }, { loggedIn: false })
+    const res = await fetch(`${url}api/session`, {
+      method: "POST",
+      body: JSON.stringify(actualConfig),
+    })
+    expect(res.status).toBe(200)
+    expect(await readJson<{ loggedIn: boolean }>(res)).toEqual({ loggedIn: true, baseUrl: actualConfig.baseUrl, budgetId: actualConfig.budgetId })
+    expect(loadActualSession(sessionPath)).toEqual(actualConfig)
+
+    const stateRes = await fetch(`${url}api/retirement/state`)
+    expect(stateRes.status).toBe(200)
+  })
+
+  it("rejects a login with a blank field before ever calling Actual", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/session`, {
+      method: "POST",
+      body: JSON.stringify({ baseUrl: actualConfig.baseUrl, budgetId: "", apiKey: actualConfig.apiKey }),
+    })
+    expect(res.status).toBe(400)
+    expect(loadActualSession(sessionPath)).toBeNull()
+  })
+
+  it("rejects a login whose credentials don't actually work, and saves nothing", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/session`, {
+      method: "POST",
+      // .invalid is reserved (RFC 2606) to never resolve -- exercises the real "Actual didn't
+      // answer" failure path with no extra mock needed.
+      body: JSON.stringify({ baseUrl: "https://actual-wrong.test.invalid/v1", budgetId: "budget-1", apiKey: "secret-key" }),
+    })
+    expect(res.status).toBe(400)
+    expect(loadActualSession(sessionPath)).toBeNull()
+  })
+
+  it("logs out: clears the persisted session and any route that needs it stops working", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/session`, { method: "DELETE" })
+    expect(res.status).toBe(200)
+    expect(await readJson<{ loggedIn: boolean }>(res)).toEqual({ loggedIn: false })
+    expect(loadActualSession(sessionPath)).toBeNull()
+
+    const stateRes = await fetch(`${url}api/retirement/state`)
+    expect(stateRes.status).toBe(400)
+    expect((await readJson<ErrorBody>(stateRes)).error).toContain("Not logged in")
   })
 })
 

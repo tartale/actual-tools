@@ -9,6 +9,7 @@ import type { Browser, Page } from "playwright"
 import { startAppServer } from "../app-server.ts"
 import type { RunningServer } from "../app-server.ts"
 import type { ActualConfig } from "../actual-helpers.ts"
+import { writeActualSession } from "../actual-session.ts"
 
 // Browser-driven tests for the bridge burndown chart on the Retirement page's Analysis card. Route tests
 // already cover simulateBridge's own math (fire-analysis.test.ts) and that /api/retirement/check
@@ -105,8 +106,10 @@ afterEach(async () => {
 // not folded by default, so runCheck's own result (fired once on landing) is already visible.
 async function openRetirementPage(retirementAges: number[]): Promise<{ page: Page; errors: string[] }> {
   vi.stubGlobal("fetch", mockActualFetch())
+  const sessionPath = join(dir, "session.json")
+  writeActualSession(sessionPath, actualConfig)
   server = await startAppServer({
-    actualConfig,
+    sessionPath,
     configPath: join(dir, "config.json"),
     irsLimitsPath: join(dir, "irs-limits.json"),
     federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),
@@ -266,7 +269,9 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
 
   it("shows no chart, and no page error, when a portfolio has nothing to bridge", async () => {
     vi.stubGlobal("fetch", mockActualFetch())
-    server = await startAppServer({ actualConfig, configPath: join(dir, "config.json"), irsLimitsPath: join(dir, "irs-limits.json"), federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"), irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"), federalPovertyGuidelinesPath: join(dir, "federal-poverty-guidelines.json"), uiDir: UI_DIR })
+    const sessionPath = join(dir, "session.json")
+    writeActualSession(sessionPath, actualConfig)
+    server = await startAppServer({ sessionPath, configPath: join(dir, "config.json"), irsLimitsPath: join(dir, "irs-limits.json"), federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"), irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"), federalPovertyGuidelinesPath: join(dir, "federal-poverty-guidelines.json"), uiDir: UI_DIR })
     await fetch(`${server.url}api/retirement/plan`, {
       method: "PATCH",
       body: JSON.stringify({ birthDate: birthDateForAge(50), retirementAges: [50], planToAge: 100 }),

@@ -7,6 +7,7 @@ import { extname, join } from "node:path"
 
 import { ACTIONS, ageFromBirthDate, fetchAccountBalance, fetchAllOpenAccounts, fetchCategoryGroups, formatError, isAction, parseDollarAmount, validateMonthFormat } from "./actual-helpers.ts"
 import type { Action, ActualConfig } from "./actual-helpers.ts"
+import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
 import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import {
   ACCOUNT_TYPES,
@@ -66,7 +67,10 @@ import {
 // /api/transactions/... section (see the companion-app north star) is a new prefix, not a rewrite.
 
 export interface AppServerOptions {
-  actualConfig: ActualConfig
+  // Where to load/persist the Actual REST credentials entered through the app's own login form
+  // (see /api/session below) -- replaces a required actualConfig option; the server now starts
+  // fine with nothing logged in yet, same as a missing config.json is fine.
+  sessionPath: string
   configPath: string
   irsLimitsPath: string
   federalTaxBracketsPath: string
@@ -82,8 +86,9 @@ export interface RunningServer {
   // One http://<lan-ip>:<port>/ entry per non-internal network interface -- populated because the
   // server binds every interface (0.0.0.0), not just loopback, so it's reachable from another
   // device on the same network (e.g. viewing the page from a phone or laptop while this runs on a
-  // home server). There is no authentication at all, so anyone who can reach one of these
-  // addresses can read your accounts and edit config.json -- fine on a trusted home LAN, not
+  // home server). There is no authentication protecting the APP itself -- anyone who can reach one
+  // of these addresses can open it, log in with their own Actual credentials (or use whichever
+  // are already saved), and read your accounts/edit config.json -- fine on a trusted home LAN, not
   // something to expose past it (e.g. via port forwarding) without adding real auth first.
   networkUrls: string[]
   close: () => Promise<void>
@@ -679,7 +684,22 @@ function applyAccountOrder(fireConfig: FireConfig, configPath: string, orderedId
 // Function to start the local companion-app server: serves the static UI, and everything under
 // /api/retirement/ that the Retirement section needs. Returns immediately once listening.
 export async function startAppServer(options: AppServerOptions): Promise<RunningServer> {
-  const { actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir } = options
+  const { sessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir } = options
+
+  // Mutable, unlike every other *Path option above: login/logout (see /api/session below) change
+  // this at runtime, so route handlers below always read the CURRENT value via requireActualConfig
+  // rather than a value captured once at server start.
+  let actualConfig: ActualConfig | null = loadActualSession(sessionPath)
+
+  // Function to get the current Actual credentials or throw a clearly-tagged "not logged in" error
+  // -- every route below that talks to Actual calls this first, instead of assuming actualConfig
+  // is always present the way it could when it was a required startup option.
+  function requireActualConfig(): ActualConfig {
+    if (actualConfig === null) {
+      throw new Error("Not logged in to Actual yet.")
+    }
+    return actualConfig
+  }
 
   // A fresh id per process start -- the page polls this (see app.js's hot-reload polling) and
   // reloads itself the moment it changes, so restarting the server (e.g. after an edit to server
@@ -710,8 +730,38 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         return
       }
 
+      // Never echoes apiKey back -- the client has no legitimate use for reading it again once
+      // it's been entered, so there's no reason to put it back on the wire.
+      if (req.method === "GET" && path === "/api/session") {
+        sendJson(res, 200, actualConfig === null ? { loggedIn: false } : { loggedIn: true, baseUrl: actualConfig.baseUrl, budgetId: actualConfig.budgetId })
+        return
+      }
+      if (req.method === "POST" && path === "/api/session") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : ""
+        const budgetId = typeof body.budgetId === "string" ? body.budgetId.trim() : ""
+        const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+        if (!baseUrl || !budgetId || !apiKey) {
+          throw new Error("baseUrl, budgetId, and apiKey are all required.")
+        }
+        const candidate: ActualConfig = { baseUrl, budgetId, apiKey }
+        // Proves the three actually work TOGETHER (a typo'd budgetId against a valid server/key
+        // fails here, not on the first real page load after login) before persisting anything.
+        await fetchAllOpenAccounts(candidate)
+        writeActualSession(sessionPath, candidate)
+        actualConfig = candidate
+        sendJson(res, 200, { loggedIn: true, baseUrl, budgetId })
+        return
+      }
+      if (req.method === "DELETE" && path === "/api/session") {
+        clearActualSession(sessionPath)
+        actualConfig = null
+        sendJson(res, 200, { loggedIn: false })
+        return
+      }
+
       if (req.method === "GET" && path === "/api/retirement/state") {
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "fresh"))
+        sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "fresh"))
         return
       }
 
@@ -868,7 +918,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           dashboard.monteCarloTaxBands = bands as MonteCarloTaxBandMeta[] | null
         }
         writeFireConfig(configPath, { ...fireConfig, dashboard })
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
+        sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
@@ -879,9 +929,9 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           return
         }
         const { config: fireConfig } = loadFireConfig(configPath)
-        const rawAccounts = await fetchAllOpenAccounts(actualConfig)
+        const rawAccounts = await fetchAllOpenAccounts(requireActualConfig())
         applyAccountOrder(fireConfig, configPath, body.orderedIds as string[], rawAccounts)
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
+        sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
@@ -892,7 +942,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const accountId = decodeURIComponent(accountMatch[1] as string)
         const body = (await readJsonBody(req)) as Record<string, unknown>
         const { config: fireConfig } = loadFireConfig(configPath)
-        const rawAccounts = await fetchAllOpenAccounts(actualConfig)
+        const rawAccounts = await fetchAllOpenAccounts(requireActualConfig())
         const account = rawAccounts.find((candidate) => candidate.id === accountId)
         if (!account) {
           sendJson(res, 404, { error: `No open account with id ${accountId}.` })
@@ -907,19 +957,19 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         if (prunedAccounts.length !== reloaded.accounts.length) {
           writeFireConfig(configPath, { ...reloaded, accounts: prunedAccounts })
         }
-        sendJson(res, 200, await buildState(actualConfig, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
+        sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
       if (req.method === "GET" && path === "/api/retirement/check") {
         const { config: fireConfig } = loadFireConfig(configPath)
         const plan = requirePlan(fireConfig)
-        const rawAccounts = await fetchAllOpenAccounts(actualConfig)
+        const rawAccounts = await fetchAllOpenAccounts(requireActualConfig())
         const irsLimits = loadIrsLimits(irsLimitsPath)
         const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
         const federalPovertyGuidelines = loadFederalPovertyGuidelines(federalPovertyGuidelinesPath)
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
-        const result = await checkDashboard(actualConfig, accounts, {
+        const result = await checkDashboard(requireActualConfig(), accounts, {
           ...plan,
           fallbackInflationMean: 0.03,
           federalTaxBrackets,
@@ -930,7 +980,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       }
 
       if (req.method === "GET" && path === "/api/budget/context") {
-        const groups = await fetchCategoryGroups(actualConfig)
+        const groups = await fetchCategoryGroups(requireActualConfig())
         // Income categories/groups are never a valid set-values/anomalies target (see
         // findIncomeFilterMatches in actual-helpers.ts) -- excluded here so the picker can't even
         // offer one, rather than letting the request round-trip into a thrown error.
@@ -944,7 +994,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       if (req.method === "POST" && path === "/api/budget/table") {
         const body = (await readJsonBody(req)) as Record<string, unknown>
         const startMonth = parseBudgetMonth(body.startMonth, "startMonth")
-        const table = await fetchBudgetTable(actualConfig, startMonth, parseBudgetMonth(body.endMonth ?? startMonth, "endMonth"))
+        const table = await fetchBudgetTable(requireActualConfig(), startMonth, parseBudgetMonth(body.endMonth ?? startMonth, "endMonth"))
         sendJson(res, 200, table)
         return
       }
@@ -960,7 +1010,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         if (categories.length === 0) {
           throw new Error("Pick at least one category to update.")
         }
-        const months = await setBudgetValues(actualConfig, {
+        const months = await setBudgetValues(requireActualConfig(), {
           action: parseBudgetAction(body.action),
           startMonth,
           endMonth: parseBudgetMonth(body.endMonth ?? startMonth, "endMonth"),
@@ -974,7 +1024,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       if (req.method === "POST" && path === "/api/budget/anomalies") {
         const body = (await readJsonBody(req)) as Record<string, unknown>
         const startMonth = parseBudgetMonth(body.startMonth, "startMonth")
-        const findings = await findAnomalies(actualConfig, {
+        const findings = await findAnomalies(requireActualConfig(), {
           categories: parseBudgetCategories(body.categories),
           startMonth,
           endMonth: parseBudgetMonth(body.endMonth ?? startMonth, "endMonth"),
@@ -987,8 +1037,8 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const body = (await readJsonBody(req)) as Record<string, unknown>
         const startMonth = parseBudgetMonth(body.startMonth, "startMonth")
         const endMonth = parseBudgetMonth(body.endMonth ?? startMonth, "endMonth")
-        const findings = await findAnomalies(actualConfig, { categories: parseBudgetCategories(body.categories), startMonth, endMonth })
-        const tagResults = await tagAnomalyFindings(actualConfig, findings, startMonth, parseDryRun(body.dryRun))
+        const findings = await findAnomalies(requireActualConfig(), { categories: parseBudgetCategories(body.categories), startMonth, endMonth })
+        const tagResults = await tagAnomalyFindings(requireActualConfig(), findings, startMonth, parseDryRun(body.dryRun))
         sendJson(res, 200, { findings, tagResults })
         return
       }
