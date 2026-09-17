@@ -11,53 +11,23 @@ import type {
   TaxTreatment,
 } from "./fire-accounts.ts"
 
-// Builds an Actual-native dashboard JSON (net worth and a Monte Carlo simulation) from classified
-// accounts and expense categories. Pure -- no API calls, no file I/O.
+// Account classification helpers, the Monte Carlo widget/pot builder this app's own in-app
+// simulation (fire-monte-carlo.ts) runs on internally, and the plan-wide "Simulation settings"
+// resolution. Pure -- no API calls, no file I/O. (Used to also build and merge a full
+// Actual-native dashboard JSON for Export to Dashboard -- removed entirely; see FireWidgetType's
+// own doc comment.)
 //
 // The types below are a minimal, hand-vendored local copy of the upstream ExportImportDashboard
 // shape from actualbudget/actual's packages/loot-core/src/types/models/dashboard.ts, read at the
 // "master" branch on 2026-09-05. Actual does not publish this as an npm type and does not version
-// it independently of its own releases -- re-check against upstream before extending this file,
-// especially before adding the Monte Carlo widget in a later phase.
+// it independently of its own releases -- re-check against upstream before extending this file.
 
-export type TimeFrameMode =
-  | "sliding-window"
-  | "static"
-  | "full"
-  | "lastMonth"
-  | "lastYear"
-  | "yearToDate"
-  | "priorYearToDate"
-  | "currentQuarter"
-  | "previousQuarter"
-
-export interface TimeFrame {
-  start: string
-  end: string
-  mode: TimeFrameMode
-}
-
-export interface RuleCondition {
-  field: string
-  op: string
-  value: unknown
-}
-
-export interface NetWorthCardMeta {
-  name?: string
-  conditions?: RuleCondition[]
-  conditionsOp?: "and" | "or"
-  timeFrame?: TimeFrame
-  interval?: "Daily" | "Weekly" | "Monthly" | "Yearly"
-  mode?: "trend" | "stacked"
-}
-
-// "crossover-card" is no longer generated (see [[bridge-burndown-chart]] project memory -- Actual's
-// own crossover projection ignores locked/inaccessible balances entirely, which this app's own
-// Bridge chart already does correctly) but stays a recognized FireWidgetType/OWNED_WIDGET_TYPES
-// member below so a widget from a dashboard exported before this change is cleanly dropped on the
-// next regenerate, rather than either erroring or being preserved forever as "foreign" content.
-export type FireWidgetType = "net-worth-card" | "crossover-card" | "monte-carlo-card"
+// The only widget type this app still builds -- net-worth-card and crossover-card (and the whole
+// generate/export-to-Actual feature they belonged to) were removed once Export to Dashboard was;
+// this survives on its own because buildMonteCarloWidget below is also how the in-app Monte Carlo
+// simulation itself is run (see fire-monte-carlo.ts's runRetirementMonteCarlo), not just how a
+// dashboard widget gets built.
+export type FireWidgetType = "monte-carlo-card"
 
 export interface ExportImportDashboardWidget<Meta = unknown> {
   type: FireWidgetType
@@ -68,32 +38,12 @@ export interface ExportImportDashboardWidget<Meta = unknown> {
   meta: Meta | null
 }
 
-export interface ExportImportDashboard {
-  version: 1
-  widgets: ExportImportDashboardWidget[]
-}
-
-// Function to build the net-worth-card widget, spanning the full page width. Deliberately no
-// account filter: an unfiltered net worth (meta.conditions omitted) is a valid Actual default --
-// its own DEFAULT_DASHBOARD_STATE uses exactly this for the same widget -- and true net worth
-// across every account is what a FIRE dashboard wants.
-export function buildNetWorthWidget(x: number, y: number): ExportImportDashboardWidget<NetWorthCardMeta> {
-  return { type: "net-worth-card", x, y, width: 12, height: 2, meta: { name: "Net Worth", mode: "trend" } }
-}
-
 // Function to pick which classified accounts count as "the portfolio" -- see fire-accounts.ts's
 // portfolioAccounts/isPortfolioCategory for which categories qualify (debt, cash, and other never
 // do). Used broadly (portfolio totals, contributions, debt-payoff streams), not tied to any one
 // widget.
 export function portfolioAccountIds(accounts: readonly ClassifiedAccount[]): string[] {
   return portfolioAccounts(accounts).map((account) => account.id)
-}
-
-// Function to assemble the base FIRE dashboard on Actual's 12-column grid: just net worth,
-// full-width. (Used to also include a crossover-card widget -- see FireWidgetType's own doc
-// comment for why that stopped.)
-export function buildFireDashboard(): ExportImportDashboard {
-  return { version: 1, widgets: [buildNetWorthWidget(0, 0)] }
 }
 
 // --- Monte Carlo (experimental in Actual as of 2026-09-05 -- gated behind Settings > Advanced >
@@ -228,6 +178,13 @@ export function withdrawalTaxRateFor(account: Pick<ClassifiedAccount, "taxTreatm
   return account.customWithdrawalTaxRate ?? WITHDRAWAL_TAX_RATES[account.taxTreatment]
 }
 
+// IRC Sec. 72(t): the additional tax on an early distribution from a qualified retirement plan,
+// on top of ordinary income tax on the same dollars. Applied only for years before the account's
+// own normal accessAge -- see effectiveAccessAge (which is what actually grants the early access
+// this rate prices) and fire-analysis.ts's simulateBridge (which is what actually applies it,
+// since it's the one place an account's per-year age is known during the withdrawal math).
+export const EARLY_WITHDRAWAL_PENALTY_RATE = 0.1
+
 // Function to compute a pot's effective access age, applying Rule of 55 when it's earlier than the
 // category default. IRS Code Sec. 72(t)(2)(A)(v): separating from an employer during or after the
 // calendar year you turn 55 lets you withdraw penalty-free from THAT employer's own 401(k)/403(b)
@@ -243,11 +200,34 @@ export function withdrawalTaxRateFor(account: Pick<ClassifiedAccount, "taxTreatm
 // that combination is contradictory, not just a later date. When separationAge is later than this
 // scenario's retirementAge, the boost is skipped and the normal accessAge stands for THIS scenario
 // only; a later retirementAge scenario where separationAge <= retirementAge still gets the boost.
-export function effectiveAccessAge(account: Pick<ClassifiedAccount, "accessAge" | "ruleOf55SeparationAge">, retirementAge: number): number | null {
-  if (account.ruleOf55SeparationAge != null && account.ruleOf55SeparationAge >= 55 && account.ruleOf55SeparationAge <= retirementAge) {
-    return account.accessAge == null ? account.ruleOf55SeparationAge : Math.min(account.accessAge, account.ruleOf55SeparationAge)
+export function effectiveAccessAge(
+  account: Pick<ClassifiedAccount, "accessAge" | "ruleOf55SeparationAge" | "earlyWithdrawalPenalty" | "seppMethod" | "seppStartAge">,
+  retirementAge: number,
+): number | null {
+  // Takes priority over everything below -- accepting the 10% penalty grants full, unconditional
+  // access starting now, which is strictly more permissive than any earlier-but-still-conditional
+  // access age Rule of 55 or a SEPP election could produce, so there's nothing left for either
+  // check to add once this is set.
+  if (account.earlyWithdrawalPenalty) {
+    return null
   }
-  return account.accessAge
+  // Rule of 55 and a SEPP election are two independent, non-exclusive ways to get early access --
+  // a plan is free to use either (or, unusually, qualify for both at once), so this takes the
+  // EARLIEST of whichever actually apply rather than treating one as the only option. accessAge
+  // itself only enters the comparison when it's a real age -- a null accessAge (nothing locked to
+  // begin with) has nothing to compare against and must fall out entirely, not compete as if it
+  // were age zero.
+  const candidates: number[] = []
+  if (account.ruleOf55SeparationAge != null && account.ruleOf55SeparationAge >= 55 && account.ruleOf55SeparationAge <= retirementAge) {
+    candidates.push(account.ruleOf55SeparationAge)
+  }
+  if (account.seppMethod != null && account.seppStartAge != null) {
+    candidates.push(account.seppStartAge)
+  }
+  if (account.accessAge != null) {
+    candidates.push(account.accessAge)
+  }
+  return candidates.length > 0 ? Math.min(...candidates) : null
 }
 
 // Function to build one Monte Carlo pot from a portfolio account. Requires a non-null
@@ -377,11 +357,9 @@ export interface MonteCarloAssumptions {
   simulationCount: number
 }
 
-// Used only the first time a dashboard is generated for a page with no existing file to merge
-// against -- config.json no longer stores these at all, since mergeGeneratedDashboard already
-// preserves whatever the person tunes afterward (in Actual's own Monte Carlo config UI, or by
-// hand) by reading the previously generated dashboard file. Actual's own real UI defaults
-// (matched against MonteCarloConfiguration.tsx), not invented.
+// The fallback for whichever "Simulation settings" fields a person hasn't overridden on the Plan
+// section (see monteCarloAssumptionsWithOverrides) -- Actual's own real UI defaults (matched
+// against MonteCarloConfiguration.tsx), not invented.
 export const DEFAULT_MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
   withdrawalStrategy: "proportional",
   returnModel: "normal",
@@ -394,27 +372,8 @@ export const DEFAULT_MONTE_CARLO_ASSUMPTIONS: MonteCarloAssumptions = {
   simulationCount: 5000,
 }
 
-// Every MonteCarloAssumptions field (see above) that maps to a "Simulation settings" field in this
-// app's own UI, keyed by the DashboardConfig field that pins it. withdrawalRule/taxBands are
-// pinned as whole values (an object, an array) rather than the flat scalars every other row here
-// is -- see MonteCarloWithdrawalStrategy's doc comment in fire-accounts.ts for why -- but the
-// generic pin-it-here-it-always-wins mechanism (mergeMonteCarloMeta below) applies identically.
-const PINNABLE_MONTE_CARLO_FIELDS: ReadonlyArray<{ dashboardField: keyof DashboardConfig; metaField: keyof MonteCarloCardMeta }> = [
-  { dashboardField: "monteCarloWithdrawalStrategy", metaField: "withdrawalStrategy" },
-  { dashboardField: "monteCarloReturnModel", metaField: "returnModel" },
-  { dashboardField: "monteCarloTaxModel", metaField: "taxModel" },
-  { dashboardField: "monteCarloInflationMean", metaField: "inflationMean" },
-  { dashboardField: "monteCarloInflationStdDev", metaField: "inflationStdDev" },
-  { dashboardField: "monteCarloMinimumWithdrawal", metaField: "minimumWithdrawal" },
-  { dashboardField: "monteCarloSimulationCount", metaField: "simulationCount" },
-  { dashboardField: "monteCarloWithdrawalRule", metaField: "withdrawalRule" },
-  { dashboardField: "monteCarloTaxBands", metaField: "taxBands" },
-]
-
-// Function to layer a person's "Simulation settings" overrides over the plain defaults -- the
-// seed used for a first-time generation (nothing to merge against yet) and, for whichever fields
-// are actually set, the value pinned across every retirement-age comparison widget regardless of
-// what merging would otherwise preserve (see mergeMonteCarloMeta's pinnedFields).
+// Function to layer a person's "Simulation settings" overrides over the plain defaults used to
+// actually run this app's own in-app Monte Carlo simulation (see fire-monte-carlo.ts).
 export function monteCarloAssumptionsWithOverrides(dashboard: DashboardConfig): MonteCarloAssumptions {
   return {
     ...DEFAULT_MONTE_CARLO_ASSUMPTIONS,
@@ -430,15 +389,9 @@ export function monteCarloAssumptionsWithOverrides(dashboard: DashboardConfig): 
   }
 }
 
-// Function to compute which MonteCarloCardMeta fields a person has actually pinned -- see
-// mergeGeneratedDashboard's pinnedMonteCarloFields.
-export function pinnedMonteCarloFields(dashboard: DashboardConfig): Set<string> {
-  return new Set(PINNABLE_MONTE_CARLO_FIELDS.filter(({ dashboardField }) => dashboard[dashboardField] != null).map(({ metaField }) => metaField))
-}
-
 // Neither of these two has a counterpart in any exported widget (there's no crossover-card widget
-// to feed them into any more -- see FireWidgetType's own doc comment) -- they only ever feed this
-// app's own trailing-average spend calculation (fire-generate.ts's spendFromLocalSelection).
+// any more -- see FireWidgetType's own doc comment) -- they only ever feed this app's own
+// trailing-average spend calculation (fire-generate.ts's spendFromLocalSelection).
 export const DEFAULT_EXPENSE_ADJUSTMENT_FACTOR = 1.0
 export const DEFAULT_SPEND_HISTORY_MONTHS = 12
 
@@ -540,178 +493,3 @@ export function buildMonteCarloWidget(
   }
 }
 
-// Function to build one stacked monte-carlo-card widget per retirement age, so multiple retirement
-// scenarios can be compared side by side on the same dashboard page. Actual's dashboard has no
-// built-in way to overlay multiple Monte Carlo configs on a single chart -- each widget holds
-// exactly one config -- so this is the closest real comparison the widget model supports. A single
-// retirement age keeps the original plain "Monte Carlo" name; multiple ages get a name naming each
-// one so they're distinguishable on the page.
-export function buildMonteCarloWidgets(
-  x: number,
-  y: number,
-  accounts: readonly ClassifiedAccount[],
-  currentAge: number,
-  retirementAges: readonly number[],
-  targetAge: number,
-  annualSpendCents: number,
-  assumptions: MonteCarloAssumptions,
-  incomeStreams: readonly RetirementIncomeStream[] = [],
-): ExportImportDashboardWidget<MonteCarloCardMeta>[] {
-  return retirementAges.map((retirementAge, index) => {
-    const name = retirementAges.length > 1 ? `Monte Carlo — Retire at ${retirementAge}` : "Monte Carlo"
-    return buildMonteCarloWidget(
-      x,
-      y + index * MONTE_CARLO_WIDGET_HEIGHT,
-      accounts,
-      currentAge,
-      retirementAge,
-      targetAge,
-      annualSpendCents,
-      assumptions,
-      name,
-      incomeStreams,
-    )
-  })
-}
-
-// --- Merging a freshly generated dashboard with an existing file on disk ---
-//
-// Regenerating always recomputes the real-data fields (account/category ids, pot values and
-// contributions from config.json, current age, retirement-age-driven spending), but a person may
-// have hand-edited the previous output -- tweaked an assumption (safeWithdrawalRate, returnModel,
-// withdrawalRule, ...), added an extra pot field (fees), or added an extra spending phase -- after
-// opening it in Actual and copying settings back, or just by editing the JSON directly. Merging
-// preserves all of that instead of silently discarding it on every regeneration.
-
-// A widget as read back from an existing dashboard file -- not guaranteed to match this module's
-// current FireWidgetType union (an older or hand-edited file may have a type this version no
-// longer generates, e.g. the removed spending-card), so `type` stays a plain string here.
-export interface ExistingDashboardWidget {
-  type: string
-  x: number
-  y: number
-  width: number
-  height: number
-  meta: Record<string, unknown> | null
-}
-
-export interface ExistingDashboard {
-  version: number
-  widgets: ExistingDashboardWidget[]
-}
-
-const OWNED_WIDGET_TYPES: readonly FireWidgetType[] = ["net-worth-card", "crossover-card", "monte-carlo-card"]
-
-// Function to build a stable identity key for matching a freshly generated widget against one
-// already present in an existing file. net-worth-card and crossover-card are singletons;
-// monte-carlo-card is disambiguated by its name, which always encodes the retirement age it
-// represents (see buildMonteCarloWidgets) -- a retirement age no longer requested simply has no
-// generated widget to match against, so its old widget is dropped, not carried forward.
-function widgetKey(widget: { type: string; meta: unknown }): string {
-  if (widget.type === "monte-carlo-card") {
-    const name = (widget.meta as { name?: unknown } | null)?.name
-    return `monte-carlo-card:${typeof name === "string" ? name : ""}`
-  }
-  return widget.type
-}
-
-// Function to merge one pot's fresh, account-derived fields over any extra fields (fees, a custom
-// taxableFraction, ...) an existing pot with the same account id already had. A pot with no
-// existing counterpart (a newly classified portfolio account) is used exactly as generated.
-function mergePots(generatedPots: MonteCarloPotMeta[], existingPotsRaw: unknown): MonteCarloPotMeta[] {
-  const existingPots = Array.isArray(existingPotsRaw) ? (existingPotsRaw as Record<string, unknown>[]) : []
-  const existingById = new Map(existingPots.filter((pot) => typeof pot.id === "string").map((pot) => [pot.id as string, pot]))
-  return generatedPots.map((pot) => ({ ...existingById.get(pot.id), ...pot }))
-}
-
-// The spending phase ids this module generates (see buildSpendingPhases) -- these are always fully
-// refreshed (fromAge/annualWithdrawal come straight from the current retirement age, trailing
-// spend, and pension/Social Security config), so a stale one (e.g. "pre-retirement" left over from
-// a since-removed future retirement age, or "income-pension" after the pension is cleared) is
-// dropped rather than carried forward. "income-*" is a prefix, not a fixed set, since which income
-// streams exist varies run to run. Any other phase id is untouched, hand-added content.
-function isOwnedSpendingPhaseId(id: unknown): boolean {
-  return id === "pre-retirement" || id === "retirement-spending" || (typeof id === "string" && id.startsWith("income-"))
-}
-
-function mergeSpendingPhases(generatedPhases: MonteCarloSpendingPhaseMeta[], existingPhasesRaw: unknown): MonteCarloSpendingPhaseMeta[] {
-  const existingPhases = Array.isArray(existingPhasesRaw) ? (existingPhasesRaw as MonteCarloSpendingPhaseMeta[]) : []
-  const extraPhases = existingPhases.filter((phase) => !isOwnedSpendingPhaseId(phase?.id))
-  return [...generatedPhases, ...extraPhases]
-}
-
-// Function to merge fresh, account-derived contributions (see buildContributions) over an existing
-// file's contributions array: every generated contribution (id "contribution-<accountId>") is
-// always refreshed in full -- these come straight from each account's configured
-// monthlyContribution, real data, not a hand-tunable assumption -- while any OTHER contribution id
-// (e.g. one a person added by hand, not tied to a currently-contributing account) is preserved,
-// same treatment as an extra hand-added spending phase.
-function mergeContributions(generatedContributions: MonteCarloContributionMeta[], existingContributionsRaw: unknown): MonteCarloContributionMeta[] {
-  const existingContributions = Array.isArray(existingContributionsRaw) ? (existingContributionsRaw as MonteCarloContributionMeta[]) : []
-  const generatedIds = new Set(generatedContributions.map((contribution) => contribution.id))
-  const extraContributions = existingContributions.filter((contribution) => !generatedIds.has(contribution?.id))
-  return [...generatedContributions, ...extraContributions]
-}
-
-// Fields always refreshed from real data/this run's inputs on a monte-carlo-card, never preserved
-// from an existing file: pots, spendingPhases, and contributions (each merged field-by-field
-// above, real data from config.json), currentAge (from the birth date), targetAge (from
-// --plan-to-age), and name (encodes the retirement age). Everything else (withdrawalStrategy,
-// inflationMean, taxModel, returnModel, withdrawalRule, minimumWithdrawal, inflationStdDev,
-// simulationCount, taxBands, ...) is preserved from the existing file when present -- UNLESS the
-// person has pinned it in this app's own "Simulation settings" (see monteCarloSettingsOverride),
-// in which case it's promoted into this same always-refreshed bucket, same as the real-data
-// fields: pinning a setting here is exactly so every retirement-age comparison widget uses that
-// one value, not whatever each one independently drifted to inside Actual.
-function mergeMonteCarloMeta(generatedMeta: Record<string, unknown>, existingMeta: Record<string, unknown>, pinnedFields: ReadonlySet<string>): Record<string, unknown> {
-  const merged: Record<string, unknown> = {
-    ...generatedMeta,
-    ...existingMeta,
-    name: generatedMeta.name,
-    currentAge: generatedMeta.currentAge,
-    targetAge: generatedMeta.targetAge,
-    pots: mergePots(generatedMeta.pots as MonteCarloPotMeta[], existingMeta.pots),
-    spendingPhases: mergeSpendingPhases(generatedMeta.spendingPhases as MonteCarloSpendingPhaseMeta[], existingMeta.spendingPhases),
-    contributions: mergeContributions(generatedMeta.contributions as MonteCarloContributionMeta[], existingMeta.contributions),
-  }
-  for (const field of pinnedFields) {
-    merged[field] = generatedMeta[field]
-  }
-  return merged
-}
-
-// Function to merge one freshly generated widget with its match (if any) from an existing file.
-// Layout (x/y/width/height) always comes from the fresh generation, since it's a function of how
-// many widgets this run produces, not something meaningful to hand-tune in the file.
-function mergeWidget(generated: ExportImportDashboardWidget, existingWidget: ExistingDashboardWidget | undefined, pinnedMonteCarloFields: ReadonlySet<string>): ExportImportDashboardWidget {
-  if (existingWidget?.meta == null || generated.meta === null) {
-    return generated
-  }
-  const generatedMeta = generated.meta as Record<string, unknown>
-  const existingMeta = existingWidget.meta
-  const meta: Record<string, unknown> =
-    generated.type === "monte-carlo-card"
-      ? mergeMonteCarloMeta(generatedMeta, existingMeta, pinnedMonteCarloFields)
-      : // net-worth-card has no real-data fields at all -- an existing customization wins outright.
-        { ...generatedMeta, ...existingMeta }
-  return { ...generated, meta }
-}
-
-// Function to merge a freshly generated dashboard with the one already on disk, if any: preserves
-// any customization to a still-generated widget (see mergeWidget), drops a generated-type widget
-// that's no longer produced this run (e.g. a removed retirement age, or crossover-card -- see
-// FireWidgetType's own doc comment), and carries through untouched any widget whose type this tool
-// has never generated (hand-added content, never this tool's to manage). Pass `existing: null` for
-// a first run / no file yet -- returns `generated` unchanged. pinnedMonteCarloFields names the
-// MonteCarloCardMeta fields (see monteCarloSettingsOverride) the person has explicitly set in this
-// app's own settings -- always refreshed across every monte-carlo-card widget rather than
-// independently preserved per widget.
-export function mergeGeneratedDashboard(generated: ExportImportDashboard, existing: ExistingDashboard | null, pinnedMonteCarloFields: ReadonlySet<string> = new Set()): ExportImportDashboard {
-  if (existing === null) {
-    return generated
-  }
-  const existingByKey = new Map(existing.widgets.map((widget) => [widgetKey(widget), widget]))
-  const widgets = generated.widgets.map((widget) => mergeWidget(widget, existingByKey.get(widgetKey(widget)), pinnedMonteCarloFields))
-  const foreignWidgets = existing.widgets.filter((widget) => !OWNED_WIDGET_TYPES.includes(widget.type as FireWidgetType))
-  return { version: generated.version, widgets: [...widgets, ...(foreignWidgets as ExportImportDashboardWidget[])] }
-}

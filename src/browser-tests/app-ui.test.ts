@@ -123,7 +123,8 @@ async function openBudgetPage(): Promise<{ page: Page; errors: string[] }> {
     actualConfig,
     configPath: join(dir, "config.json"),
     irsLimitsPath: join(dir, "irs-limits.json"),
-    outputPath: join(dir, "fire-dashboard.json"),
+    federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),
+    irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"),
     uiDir: UI_DIR,
   })
   const opened = await (browser as Browser).newPage({ viewport: { width: 1400, height: 1000 } })

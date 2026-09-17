@@ -1,13 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
-
 import {
   addMonthsToDate,
   ageFromBirthDate,
   averageSpent,
-  fetchAccountBalance,
   fetchAccountTransactions,
   fetchCategoryGroups,
-  fetchDashboardPages,
   fetchDashboardWidgets,
   fetchHistoricalSpent,
   formatError,
@@ -15,14 +11,11 @@ import {
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth, Transaction } from "./actual-helpers.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
-import { buildFireDashboard, buildMonteCarloWidgets, effectiveAccessAge, mergeGeneratedDashboard, portfolioAccountIds } from "./fire-dashboard.ts"
-import type { ExistingDashboard, MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import { effectiveAccessAge, portfolioAccountIds } from "./fire-dashboard.ts"
+import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 import {
   bridgeFinding,
   calculateMortgagePayoff,
-  detectMonteCarloWidgetSetDrift,
-  detectPotDrift,
-  detectSpendingPhaseDrift,
   historicalBridgeYear,
   monteCarloFinding,
   projectAccountBalance,
@@ -33,14 +26,15 @@ import type { BridgeResult, Finding } from "./fire-analysis.ts"
 import { runRetirementMonteCarlo } from "./fire-monte-carlo.ts"
 import type { MonteCarloResultEntry, MonteCarloSummary } from "./fire-monte-carlo.ts"
 
-// The non-CLI guts of what used to be reports-fire.ts's main(): fetching real data, building or
-// analyzing the dashboard, and returning a plain structured result rather than printing one --
-// consumed by app-server.ts's /api/retirement/generate and /api/retirement/check routes, and
-// directly unit-testable without capturing stdout.
+// The non-CLI guts of what used to be reports-fire.ts's main(): fetching real data and analyzing
+// the dashboard, returning a plain structured result rather than printing one -- consumed by
+// app-server.ts's /api/retirement/check route, and directly unit-testable without capturing
+// stdout. (Used to also build and write a fresh dashboard for Export to Dashboard -- removed
+// entirely, along with the drift-detection findings that only existed to nudge a re-export.)
 
 // The API has no running-balance field; summing an account's full transaction history is the
-// accounting identity used instead (see fetchAccountBalance), so this must reach back further than
-// any real account could have existed.
+// accounting identity used instead, so this must reach back further than any real account could
+// have existed.
 const BALANCE_SINCE_DATE = "1970-01-01"
 
 // Function to get the current month as a yyyy-mm string
@@ -88,61 +82,6 @@ async function spendFromLocalSelection(
     `${categoryIds.length} categories over ${historyMonths} months to ${currentMonth()} (Plan section selection)` +
     (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
   return { annualSpend, basis }
-}
-
-// Function to read a previously written dashboard file, if any, so mergeGeneratedDashboard can
-// preserve customizations made to it. A missing file is normal (first run) and returns null
-// silently; a present-but-unreadable/malformed file (never written by this tool, or corrupted)
-// falls back to a fresh generation rather than failing the whole run.
-function loadExistingDashboard(path: string): ExistingDashboard | null {
-  if (!existsSync(path)) {
-    return null
-  }
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
-    if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { widgets?: unknown }).widgets)) {
-      throw new Error("missing a widgets array")
-    }
-    return parsed as ExistingDashboard
-  } catch {
-    return null
-  }
-}
-
-// Function to read back whatever is actually live on the "FIRE" dashboard page in Actual right
-// now, as the merge basis for preserving hand-tuned settings (withdrawal strategy, tax model,
-// inflation, safe withdrawal rate, ...) that this app deliberately doesn't expose -- the true
-// source of truth once something has been imported, and a real fix over the previous approach of
-// merging against the local server-side output file: since Generate downloads to the browser
-// rather than only writing a server-side file, that local copy can go stale the moment a person
-// tunes a setting inside Actual itself, silently reverting it on the next regenerate. Scoped to a
-// page literally named "FIRE" (this tool's own documented convention) specifically so an unrelated
-// widget from another page (e.g. a net-worth-card most budgets already have on their main page)
-// doesn't get mistaken for this dashboard's own. Returns null -- not an error -- when there's no
-// such page yet, or when the run-query endpoint is unavailable (advisory, same as everywhere else
-// this repo reads live dashboard state); the caller falls back to the local file in that case.
-export async function fetchLiveExistingDashboard(actualConfig: ActualConfig): Promise<ExistingDashboard | null> {
-  try {
-    const pages = await fetchDashboardPages(actualConfig)
-    const firePage = pages.find((page) => page.name.trim().toLowerCase() === "fire")
-    if (!firePage) {
-      return null
-    }
-    const widgets = await fetchDashboardWidgets<Record<string, unknown>>(actualConfig, firePage.id)
-    return {
-      version: 1,
-      widgets: widgets.map((widget) => ({
-        type: widget.type,
-        x: widget.x,
-        y: widget.y,
-        width: widget.width,
-        height: widget.height,
-        meta: widget.meta ?? null,
-      })),
-    }
-  } catch {
-    return null
-  }
 }
 
 // Function to turn each debt account's own mortgage-payoff projection (see
@@ -194,24 +133,6 @@ function debtPayoffIncomeStreams(accounts: readonly ClassifiedAccount[], current
   return streams
 }
 
-export interface GenerateOptions {
-  outputPath: string
-  currentAge: number
-  retirementAges: readonly number[]
-  planToAge: number
-  incomeStreams: readonly RetirementIncomeStream[]
-  monteCarloAssumptions: MonteCarloAssumptions
-  pinnedMonteCarloFields: ReadonlySet<string>
-  // Set on the Plan section -- see DashboardConfig's own doc comment. Null keeps today's default
-  // (every non-income, non-hidden category).
-  crossoverExpenseCategoryIds: readonly string[] | null
-  // See fire-dashboard.ts's expenseAdjustmentFactorWithOverride/spendHistoryMonthsWithOverride
-  // (both resolved once in app-server.ts's requirePlan) -- spendFromLocalSelection's only other
-  // two inputs besides crossoverExpenseCategoryIds above.
-  expenseAdjustmentFactor: number
-  spendHistoryMonths: number
-}
-
 export interface RuleOf55Boost {
   accountName: string
   from: number | null
@@ -225,131 +146,6 @@ export interface DebtPayoff {
   monthlyAmount: number
 }
 
-export interface GenerateResult {
-  portfolioAccountCount: number
-  portfolioTotal: number
-  expenseCategoryCount: number
-  annualSpend: number
-  ruleOf55Boosts: RuleOf55Boost[]
-  debtPayoffs: DebtPayoff[]
-  outputPath: string
-  widgetTypes: string[]
-  // Where hand-tuned settings (withdrawal strategy, tax model, inflation, safe withdrawal rate,
-  // ...) were preserved from, if anywhere -- "live" (a page literally named "FIRE" in Actual right
-  // now, the true source of truth once something's been imported) beats "local" (the last file
-  // this tool wrote, used only when the live page isn't found or reachable); "none" means nothing
-  // to preserve, i.e. this is effectively a first-time generation.
-  mergeSource: "live" | "local" | "none"
-  // Null when no live crossover widget's own selection could be used, i.e. annualSpend came from
-  // this tool's own fallback (every non-income/non-hidden category, trailing 12 months) instead --
-  // see generateDashboard's own doc comment on why the fallback is a poor substitute for a
-  // narrowed selection once one exists.
-  spendBasis: string | null
-  // The generated dashboard, pre-serialized -- lets a caller (the web UI) hand it straight to the
-  // browser as a download, without a second round trip to re-read what was just written.
-  dashboardJson: string
-}
-
-// Function to build (or regenerate) the FIRE dashboard from live account/category data and write
-// it to outputPath. Crossover/Monte Carlo assumptions are seeded from fire-dashboard.ts's plain
-// defaults only when there's nothing to merge against yet -- an existing file's hand-tuned
-// assumptions are always preserved by mergeGeneratedDashboard, regardless of what's seeded here.
-export async function generateDashboard(
-  actualConfig: ActualConfig,
-  accounts: readonly ClassifiedAccount[],
-  options: GenerateOptions,
-): Promise<GenerateResult> {
-  const portfolioIds = portfolioAccountIds(accounts)
-  if (portfolioIds.length === 0) {
-    throw new Error(
-      "No accounts are classified as retirement/HSA/investment-taxable -- nothing to build a portfolio from. Classify at least one account first.",
-    )
-  }
-
-  const groups = await fetchCategoryGroups(actualConfig)
-  const expenseCategoryIds = groups.flatMap((group) => group.categories).filter((category) => !category.is_income && !category.hidden).map((category) => category.id)
-  if (expenseCategoryIds.length === 0) {
-    throw new Error("No non-income, non-hidden categories found -- the crossover widget requires at least one expense category.")
-  }
-
-  const liveExisting = await fetchLiveExistingDashboard(actualConfig)
-  const localExisting = loadExistingDashboard(options.outputPath)
-  const existing = liveExisting ?? localExisting
-  const mergeSource: GenerateResult["mergeSource"] = liveExisting ? "live" : localExisting ? "local" : "none"
-
-  // The Plan section's own expense-category selection (see spendFromLocalSelection) is the only
-  // input to this -- entirely local, never a live Actual crossover widget's own checklist/date
-  // range.
-  const [spendResult, portfolioBalances] = await Promise.all([
-    spendFromLocalSelection(actualConfig, expenseCategoryIds, options.crossoverExpenseCategoryIds, options.expenseAdjustmentFactor, options.spendHistoryMonths),
-    Promise.all(portfolioIds.map((accountId) => fetchAccountBalance(actualConfig, accountId, BALANCE_SINCE_DATE))),
-  ])
-  const { annualSpend, basis: spendBasis } = spendResult
-  const portfolioTotal = portfolioBalances.reduce((total, balance) => total + balance, 0)
-  const balanceByAccountId = new Map(portfolioIds.map((id, index) => [id, portfolioBalances[index] as number]))
-
-  // Reported against the latest configured retirement age -- effectiveAccessAge's own gate
-  // (separationAge <= retirementAge) only gets easier to satisfy as retirementAge grows, so if the
-  // boost doesn't apply there, it can't apply for any earlier scenario on this plan either. A
-  // summary line for a boost that only some scenarios benefit from is still worth surfacing; the
-  // per-scenario widgets themselves (buildMonteCarloWidget) are what actually enforce the cutoff.
-  const latestRetirementAge = Math.max(...options.retirementAges)
-  const contributionsAnnualByAccount = new Map(
-    accounts.flatMap((account) => (account.monthlyContribution == null ? [] : [[account.id, account.monthlyContribution * 12] as [string, number]])),
-  )
-  const ruleOf55Boosts: RuleOf55Boost[] = []
-  for (const account of accounts) {
-    const boosted = effectiveAccessAge(account, latestRetirementAge)
-    if (boosted !== account.accessAge) {
-      // The amount that will actually be there BY the unlock age, not what's in the account today
-      // -- see projectAccountBalance's own doc comment.
-      const projected = projectAccountBalance(toBridgeAccounts([account], balanceByAccountId, contributionsAnnualByAccount, latestRetirementAge), options.currentAge, boosted as number)
-      ruleOf55Boosts.push({ accountName: account.name, from: account.accessAge, to: boosted as number, amount: projected })
-    }
-  }
-
-  const debtStreams = debtPayoffIncomeStreams(accounts, options.currentAge)
-  const debtPayoffs: DebtPayoff[] = debtStreams.map((stream) => ({
-    accountName: stream.name.replace(/ paid off$/, ""),
-    payoffAge: stream.startAge,
-    monthlyAmount: Math.round(stream.annualAmount / 12),
-  }))
-  const incomeStreams = [...options.incomeStreams, ...debtStreams]
-
-  const generated = buildFireDashboard()
-  generated.widgets.push(
-    ...buildMonteCarloWidgets(
-      0,
-      6,
-      accounts,
-      options.currentAge,
-      options.retirementAges,
-      options.planToAge,
-      annualSpend,
-      options.monteCarloAssumptions,
-      incomeStreams,
-    ),
-  )
-
-  const dashboard = mergeGeneratedDashboard(generated, existing, options.pinnedMonteCarloFields)
-  const dashboardJson = `${JSON.stringify(dashboard, null, 2)}\n`
-  writeFileSync(options.outputPath, dashboardJson)
-
-  return {
-    portfolioAccountCount: portfolioIds.length,
-    portfolioTotal,
-    expenseCategoryCount: expenseCategoryIds.length,
-    annualSpend,
-    ruleOf55Boosts,
-    debtPayoffs,
-    outputPath: options.outputPath,
-    widgetTypes: dashboard.widgets.map((widget) => widget.type),
-    mergeSource,
-    spendBasis,
-    dashboardJson,
-  }
-}
-
 export interface CheckOptions {
   currentAge: number
   retirementAges: readonly number[]
@@ -359,8 +155,9 @@ export interface CheckOptions {
   fallbackInflationMean: number
   incomeStreams: readonly RetirementIncomeStream[]
   monteCarloAssumptions: MonteCarloAssumptions
-  // See GenerateOptions.crossoverExpenseCategoryIds/expenseAdjustmentFactor/spendHistoryMonths --
-  // entirely local, same as Generate.
+  // See fire-dashboard.ts's expenseAdjustmentFactorWithOverride/spendHistoryMonthsWithOverride
+  // (both resolved once in app-server.ts's requirePlan) -- spendFromLocalSelection's only other
+  // two inputs besides this one, entirely local.
   crossoverExpenseCategoryIds: readonly string[] | null
   expenseAdjustmentFactor: number
   spendHistoryMonths: number
@@ -383,7 +180,6 @@ export interface CheckResult {
   // back to every non-income/non-hidden category, which isn't a choice worth describing in text.
   spendBasis: string | null
   inflationMean: number
-  staleFindings: Finding[]
   bridgeFindings: Finding[]
   // The full simulation behind bridgeFindings, one entry per retirement age in the same order --
   // bridgeFindings is prose derived from these; this is what the client charts the burndown from.
@@ -391,8 +187,8 @@ export interface CheckResult {
   // The in-app Monte Carlo simulation (src/vendor/monte-carlo/), one entry per retirement age in
   // the same order as bridgeResults -- an alternative to reading the equivalent monte-carlo-card
   // widget off Actual's own dashboard. Empty when an incomplete account (no allocationPreset set)
-  // makes buildMonteCarloWidget itself throw -- Generate is where that needs to be a hard stop,
-  // not Check.
+  // makes buildMonteCarloWidget itself throw -- caught below rather than failing this whole
+  // read-only analysis.
   monteCarloResults: MonteCarloResultEntry[]
   // Prose derived from monteCarloResults, same order -- the fan chart's companion text, same
   // pairing as bridgeFindings/bridgeResults above.
@@ -403,12 +199,10 @@ export interface CheckResult {
   // (unlike bridgeResults' own per-scenario history): total balance doesn't depend on which
   // retirement age a scenario is comparing, only Bridge's accessible/locked split does.
   monteCarloHistory: { age: number; totalBalance: number }[]
-  // The same at-a-glance numbers Generate's own result reports -- current portfolio total and the
-  // access-age/spending adjustments already baked into every projection above. Previously only
-  // shown as a side effect of clicking Download, which also writes a file and triggers a browser
-  // download every time; reading them here costs nothing extra (every value below is already
-  // computed, or a cheap pure function over data already fetched, elsewhere in this same function),
-  // so the client can show them just by opening or refreshing this tab.
+  // At-a-glance numbers -- current portfolio total and the access-age/spending adjustments already
+  // baked into every projection above. Every value below is already computed, or a cheap pure
+  // function over data already fetched, elsewhere in this same function, so the client can show
+  // them just by opening or refreshing this tab.
   portfolioAccountCount: number
   portfolioTotal: number
   ruleOf55Boosts: RuleOf55Boost[]
@@ -439,8 +233,7 @@ export async function checkDashboard(
     .filter((meta): meta is MonteCarloCardMeta => meta !== null)
 
   // Entirely local -- see spendFromLocalSelection's own doc comment for why this never falls back
-  // to reading a live Actual crossover widget's own checklist. Same ordering as generateDashboard's
-  // own spendFromLocalSelection call, so Check and Generate never disagree about the answer.
+  // to reading a live Actual crossover widget's own checklist.
   const groups = await fetchCategoryGroups(actualConfig)
   const allExpenseCategoryIds = groups.flatMap((group) => group.categories).filter((category) => !category.is_income && !category.hidden).map((category) => category.id)
   const { annualSpend, basis: spendBasis } = await spendFromLocalSelection(
@@ -458,33 +251,6 @@ export async function checkDashboard(
     payoffAge: stream.startAge,
     monthlyAmount: Math.round(stream.annualAmount / 12),
   }))
-
-  // Real data (a narrowed crossover category selection, a pension/Social Security figure, a debt
-  // nearing payoff, a changed contribution) can drift out from under an already-imported dashboard
-  // the instant it changes, since nothing pushes it there automatically -- comparing the live
-  // widgets against what Generate would produce for these exact same inputs RIGHT NOW is what
-  // actually catches that. Never lets an incomplete "custom" allocation (see
-  // returnAssumptionsFor's own throw) fail this whole read-only analysis -- Generate is where that
-  // needs to be a hard stop, not Check.
-  let spendingPhaseDriftFindings: Finding[] = []
-  let widgetSetDriftFindings: Finding[] = []
-  try {
-    const freshWidgets = buildMonteCarloWidgets(0, 6, accounts, options.currentAge, options.retirementAges, options.planToAge, annualSpend, options.monteCarloAssumptions, incomeStreams)
-    spendingPhaseDriftFindings = detectSpendingPhaseDrift(freshWidgets, monteCarloMetas)
-    widgetSetDriftFindings = detectMonteCarloWidgetSetDrift(freshWidgets, monteCarloMetas)
-  } catch {
-    // Leave both empty -- the other drift checks below still run, and Generate will surface the
-    // same incomplete-config error clearly if the person tries it.
-  }
-
-  const staleFindings: Finding[] =
-    monteCarloMetas.length === 0
-      ? []
-      : [
-          ...detectPotDrift(monteCarloMetas, accounts, options.retirementAges),
-          ...widgetSetDriftFindings,
-          ...spendingPhaseDriftFindings,
-        ]
 
   // Prefer the inflation the live dashboard is actually simulating with; fall back only when
   // nothing has been imported yet.
@@ -532,15 +298,20 @@ export async function checkDashboard(
     totalBalance: portfolioIds.reduce((total, accountId) => total + (historicalBalancesByAge.get(age)?.get(accountId) ?? 0), 0),
   }))
 
-  // Reported against the latest configured retirement age, same as Generate's own identical loop:
-  // effectiveAccessAge's own gate (separationAge <= retirementAge) only gets easier to satisfy as
+  // Reported against the latest configured retirement age -- effectiveAccessAge's own gate
+  // (separationAge <= retirementAge) only gets easier to satisfy as
   // retirementAge grows, so a boost that doesn't apply there can't apply for any earlier scenario
   // on this plan either.
   const latestRetirementAge = Math.max(...options.retirementAges)
   const ruleOf55Boosts: RuleOf55Boost[] = []
   for (const account of accounts) {
     const boosted = effectiveAccessAge(account, latestRetirementAge)
-    if (boosted !== account.accessAge) {
+    // Accepting the 10% early-withdrawal penalty, or electing a 72(t) SEPP schedule, both also
+    // change effectiveAccessAge -- but neither is a real employment-driven exception the way Rule
+    // of 55 is, so both are deliberately excluded here rather than mislabeled as a Rule of 55
+    // boost. A SEPP account's own computed distribution is reported separately (AccountState's
+    // seppAnnualAmount), not folded into this figure.
+    if (!account.earlyWithdrawalPenalty && account.seppMethod == null && boosted !== account.accessAge) {
       // The amount that will actually be there BY the unlock age, not what's in the account today
       // -- see projectAccountBalance's own doc comment.
       const projected = projectAccountBalance(toBridgeAccounts([account], balances, contributionsAnnualByAccount, latestRetirementAge), options.currentAge, boosted as number)
@@ -572,11 +343,10 @@ export async function checkDashboard(
   // Simulated once per retirement age, same order as bridgeResults; monteCarloFindings below is
   // prose derived from these same results, not a second computation. Never lets an incomplete
   // "custom" allocation (see returnAssumptionsFor's own throw, reached via buildMonteCarloWidget)
-  // fail this whole read-only analysis -- Generate is where that needs to be a hard stop, not Check.
-  // Skipped entirely with no portfolio accounts at all: the vendored engine's own
-  // runMonteCarloSimulation falls back to a single fake $500,000 pot (MONTE_CARLO_DEFAULTS.pots)
-  // for an empty pots array rather than simulating nothing, which would otherwise chart fabricated
-  // data for a plan with no real portfolio yet.
+  // fail this whole read-only analysis -- caught below instead. Skipped entirely with no portfolio
+  // accounts at all: the vendored engine's own runMonteCarloSimulation falls back to a single fake
+  // $500,000 pot (MONTE_CARLO_DEFAULTS.pots) for an empty pots array rather than simulating
+  // nothing, which would otherwise chart fabricated data for a plan with no real portfolio yet.
   let monteCarloByAge: { retirementAge: number; result: MonteCarloSummary }[] = []
   if (portfolioIds.length > 0) {
     try {
@@ -585,7 +355,8 @@ export async function checkDashboard(
         result: runRetirementMonteCarlo(accounts, balances, options.currentAge, retirementAge, options.planToAge, annualSpend, options.monteCarloAssumptions, incomeStreams),
       }))
     } catch {
-      // Leave empty -- Generate will surface the same incomplete-config error clearly if attempted.
+      // Leave empty -- an incomplete "custom" allocation just means no Monte Carlo results this
+      // pass, not a failed Check.
     }
   }
   const monteCarloResults: MonteCarloResultEntry[] = monteCarloByAge.map((entry) => ({ ...entry.result, retirementAge: entry.retirementAge }))
@@ -600,7 +371,6 @@ export async function checkDashboard(
     annualSpend,
     spendBasis,
     inflationMean,
-    staleFindings,
     bridgeFindings,
     bridgeResults,
     monteCarloResults,

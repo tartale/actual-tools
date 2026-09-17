@@ -1,8 +1,8 @@
 import { addMonthsToDate, formatUsd } from "./actual-helpers.ts"
 import { isPortfolioCategory } from "./fire-accounts.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
-import { ALLOCATION_PRESET_RETURNS, effectiveAccessAge, withdrawalTaxRateFor } from "./fire-dashboard.ts"
-import type { MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
+import { ALLOCATION_PRESET_RETURNS, EARLY_WITHDRAWAL_PENALTY_RATE, effectiveAccessAge, withdrawalTaxRateFor } from "./fire-dashboard.ts"
+import type { RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
 
 export type FindingLevel = "fail" | "warn" | "info" | "ok"
@@ -72,6 +72,25 @@ export interface BridgeAccount {
   annualContribution: number
   returnMean: number
   withdrawalTaxRate: number
+  // The account's own normal accessAge (pre-Rule-of-55, pre-early-withdrawal-penalty) -- when set,
+  // a withdrawal from this account in a year before this age owes EARLY_WITHDRAWAL_PENALTY_RATE on
+  // top of withdrawalTaxRate; from this age on, withdrawalTaxRate alone applies, same as if this
+  // were never set. Null for an account that isn't using the early-withdrawal-penalty option (or
+  // has no accessAge to begin with). See simulateBridge's own withdrawal-phase loop for where this
+  // is actually applied, and fire-dashboard.ts's effectiveAccessAge for what grants the early
+  // access this prices.
+  earlyWithdrawalPenaltyUntilAge: number | null
+}
+
+// Function to resolve one account's ACTUAL withdrawal tax rate for a specific age -- its flat
+// withdrawalTaxRate, plus EARLY_WITHDRAWAL_PENALTY_RATE on top for any age before
+// earlyWithdrawalPenaltyUntilAge (unset for an account not using that option, in which case this
+// is just withdrawalTaxRate itself, every year). Age-dependent, so this can't be baked into
+// BridgeAccount as a single number the way withdrawalTaxRate itself is -- resolved fresh each year
+// inside simulateBridge's own withdrawal-phase loop instead.
+function withdrawalTaxRateAt(account: BridgeAccount, age: number): number {
+  const penalty = account.earlyWithdrawalPenaltyUntilAge != null && age < account.earlyWithdrawalPenaltyUntilAge ? EARLY_WITHDRAWAL_PENALTY_RATE : 0
+  return account.withdrawalTaxRate + penalty
 }
 
 // Balances are whole cents, but the proportional split across pots is floating-point, so a year's
@@ -273,7 +292,7 @@ export function simulateBridge(
       // Withdrawals are taxed, so funding `spend` net needs a larger gross withdrawal. Each pot
       // contributes its balance-weighted share of that gross at its own rate.
       const netPerGross = reachable.reduce(
-        (total, index) => total + (shares.get(index) as number) * (1 - (accounts[index] as BridgeAccount).withdrawalTaxRate),
+        (total, index) => total + (shares.get(index) as number) * (1 - withdrawalTaxRateAt(accounts[index] as BridgeAccount, age)),
         0,
       )
       const gross = netPerGross > 0 ? spend / netPerGross : Infinity
@@ -342,7 +361,7 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
     return {
       level: "fail",
       title: `age ${result.retirementAge} -- reachable money runs out at age ${result.depletionAge}, ${gap} yr${gap === 1 ? "" : "s"} before the next ${formatUsd(result.lockedAtDepletion)} unlocks at age ${result.nextUnlockAfterDepletion}.`,
-      detail: [...split, "This is already the best case -- mean returns, no volatility -- so every simulated run fails here too."],
+      detail: [...split, "This is already the best case -- mean returns, no volatility -- so simulations will also likely fail at this age."],
     }
   }
   return {
@@ -413,6 +432,12 @@ export function toBridgeAccounts(
     const balance = balances.get(account.id) ?? 0
     const returnMean = bridgeReturnMean(account)
     const withdrawalTaxRate = withdrawalTaxRateFor(account)
+    // The account's own normal accessAge, not the effective one -- effectiveAccessAge is what
+    // GRANTS the early access the penalty prices, so using its own output as the penalty's cutoff
+    // would make the penalty apply to zero years (accessAge already reads null once the penalty
+    // flag is set). Meaningless when there's no accessAge to begin with (a taxable/HSA/cash
+    // account, say) -- nothing for the penalty to have shortened.
+    const earlyWithdrawalPenaltyUntilAge = account.earlyWithdrawalPenalty && account.accessAge != null ? account.accessAge : null
 
     if (account.type === "roth-ira" && account.rothBasis != null && account.rothBasis > 0) {
       // Clamped, not just subtracted -- a market drop since the contributions were made can leave
@@ -428,6 +453,9 @@ export function toBridgeAccounts(
           annualContribution: annualContributions.get(account.id) ?? 0,
           returnMean,
           withdrawalTaxRate,
+          // Contributed basis is already unconditionally accessible (IRC Sec. 408A(d)(4)) -- the
+          // penalty option has nothing left to grant here.
+          earlyWithdrawalPenaltyUntilAge: null,
         },
         {
           id: `${account.id}-growth`,
@@ -437,6 +465,7 @@ export function toBridgeAccounts(
           annualContribution: 0,
           returnMean,
           withdrawalTaxRate,
+          earlyWithdrawalPenaltyUntilAge,
         },
       ]
     }
@@ -450,158 +479,9 @@ export function toBridgeAccounts(
         annualContribution: annualContributions.get(account.id) ?? 0,
         returnMean,
         withdrawalTaxRate,
+        earlyWithdrawalPenaltyUntilAge,
       },
     ]
   })
 }
 
-// Function to compare the access ages actually stored in the live dashboard's Monte Carlo pots
-// against what the current config would generate. A mismatch means the dashboard predates a
-// config change and hasn't been re-imported -- the drift that makes the generate/import/edit cycle
-// go wrong, and which nothing surfaces today.
-//
-// retirementAges is the full set of scenarios on the plan -- an account's Rule-of-55-adjusted
-// accessAge can legitimately differ from one retirement-age widget to the next (see
-// effectiveAccessAge), so "what's expected" is a set of ages, one per scenario, not a single value.
-export function detectPotDrift(
-  metas: readonly MonteCarloCardMeta[],
-  accounts: readonly ClassifiedAccount[],
-  retirementAges: readonly number[],
-): Finding[] {
-  const portfolio = accounts.filter((account) => isPortfolioCategory(account.category))
-  const expected = new Map(
-    portfolio.map((account) => [account.id, new Set(retirementAges.map((retirementAge) => effectiveAccessAge(account, retirementAge)))]),
-  )
-
-  const live = new Map<string, Set<number | null>>()
-  for (const meta of metas) {
-    for (const pot of meta.pots ?? []) {
-      if (pot.accountId == null) {
-        continue
-      }
-      const seen = live.get(pot.accountId) ?? new Set<number | null>()
-      seen.add(pot.accessAge ?? null)
-      live.set(pot.accountId, seen)
-    }
-  }
-
-  const findings: Finding[] = []
-  for (const account of portfolio) {
-    const seen = live.get(account.id)
-    if (seen === undefined) {
-      findings.push({
-        level: "warn",
-        title: `${account.name} is classified ${account.category} but has no pot in Actual's exported dashboard.`,
-        detail: ["Added or reclassified since you last exported. This doesn't affect the numbers on this page -- use Export to Dashboard to include it in Actual too."],
-      })
-      continue
-    }
-    const want = expected.get(account.id) ?? new Set<number | null>([null])
-    const stale = [...seen].filter((age) => !want.has(age))
-    if (stale.length > 0) {
-      findings.push({
-        level: "warn",
-        title: `${account.name}: Actual has access age ${stale.map((age) => age ?? "none").join("/")}, your current config would produce access age ${[...want].map((age) => age ?? "none").join("/")}.`,
-        detail: ["Your exported Actual dashboard predates this change. This doesn't affect the numbers on this page -- use Export to Dashboard to update it in Actual too."],
-      })
-    }
-  }
-
-  for (const accountId of live.keys()) {
-    if (!expected.has(accountId)) {
-      const named = accounts.find((account) => account.id === accountId)
-      findings.push({
-        level: "info",
-        title: `${named?.name ?? accountId} has a pot in Actual's exported dashboard but is no longer a portfolio account here.`,
-        detail: ["Doesn't affect the numbers on this page -- use Export to Dashboard to drop it from Actual too."],
-      })
-    }
-  }
-
-  return findings
-}
-
-// Function to catch a configured retirement-age scenario with no live widget at all yet -- not a
-// mismatch WITHIN an existing widget (detectPotDrift/detectSpendingPhaseDrift's job), the widget
-// itself missing outright. Real, not hypothetical: buildMonteCarloWidgets names a widget
-// "Monte Carlo — Retire at N" once there's more than one configured age, but plain "Monte Carlo"
-// with only one -- so going from one retirement age to several doesn't just need new widgets
-// alongside the old one, the ORIGINAL scenario's own expected name changes too, and a dashboard
-// generated back when there was only one age matches NONE of the freshly expected names any more.
-// Matches by name, the same identifier Generate itself gives each widget and the only one a fresh
-// widget and a live one share.
-export function detectMonteCarloWidgetSetDrift(
-  freshWidgets: readonly { meta: { name?: string } | null }[],
-  liveMetas: readonly MonteCarloCardMeta[],
-): Finding[] {
-  const freshNames = new Set(freshWidgets.map((widget) => widget.meta?.name).filter((name): name is string => typeof name === "string"))
-  const liveNames = new Set(liveMetas.filter((meta) => typeof meta.name === "string").map((meta) => meta.name as string))
-
-  const findings: Finding[] = []
-  for (const name of freshNames) {
-    if (!liveNames.has(name)) {
-      findings.push({
-        level: "warn",
-        title: `Actual has no Monte Carlo widget named "${name}" yet.`,
-        detail: ["A retirement age was added, or the set of configured ages changed, since you last exported. This doesn't affect the numbers on this page -- click Export to Dashboard above if you'd also like it reflected in Actual."],
-      })
-    }
-  }
-  for (const name of liveNames) {
-    if (!freshNames.has(name)) {
-      findings.push({
-        level: "info",
-        title: `"${name}" is in Actual but no longer matches a configured retirement age.`,
-        detail: ["Remove it by hand in Actual, or use Export to Dashboard to replace the whole set there."],
-      })
-    }
-  }
-  return findings
-}
-
-// Function to compare each live Monte Carlo widget's spendingPhases/contributions -- fields only
-// ever refreshed when Generate actually runs -- against what a fresh generate would produce right
-// now for the matching retirement-age scenario, matched by name (the same deterministic key
-// mergeGeneratedDashboard already uses for merging, so this needs no separate age-parsing logic).
-// This is what actually catches real data changing out from under an already-imported dashboard --
-// a narrowed crossover category selection, a new pension/Social Security figure, a debt nearing
-// payoff, or a changed account contribution -- none of which detectPotDrift (access ages alone)
-// would ever flag. A scenario with nothing live yet is skipped here -- there's no spending phase to
-// compare it against -- but IS a real gap this function doesn't cover: detectPotDrift only flags an
-// account with NO live pot anywhere, and every account in an existing scenario already has one, so
-// adding a whole new retirement-age scenario (same accounts, one more age) sailed past both checks
-// with no finding at all. See detectMonteCarloWidgetSetDrift below, which is what actually covers
-// that case -- an account having a pot somewhere and a SCENARIO existing at all are different
-// questions, and no other check was asking the second one.
-export function detectSpendingPhaseDrift(
-  freshWidgets: readonly { meta: { name?: string; spendingPhases?: unknown; contributions?: unknown } | null }[],
-  liveMetas: readonly MonteCarloCardMeta[],
-): Finding[] {
-  const liveByName = new Map(liveMetas.filter((meta) => typeof meta.name === "string").map((meta) => [meta.name as string, meta]))
-  const findings: Finding[] = []
-  for (const widget of freshWidgets) {
-    const name = widget.meta?.name
-    if (typeof name !== "string") {
-      continue
-    }
-    const live = liveByName.get(name)
-    if (!live) {
-      continue
-    }
-    if (JSON.stringify(widget.meta?.spendingPhases ?? null) !== JSON.stringify(live.spendingPhases ?? null)) {
-      findings.push({
-        level: "warn",
-        title: `"${name}" spending in Actual no longer matches your current Runway config.`,
-        detail: ["An expense-category selection (Spend configuration), pension/Social Security figure, or debt payoff has changed since you last exported. This doesn't affect the numbers on this page -- use Export to Dashboard to update it in Actual too."],
-      })
-    }
-    if (JSON.stringify(widget.meta?.contributions ?? null) !== JSON.stringify(live.contributions ?? null)) {
-      findings.push({
-        level: "warn",
-        title: `"${name}" contributions in Actual no longer match your current Runway config.`,
-        detail: ["An account's monthly contribution has changed since you last exported. This doesn't affect the numbers on this page -- use Export to Dashboard to update it in Actual too."],
-      })
-    }
-  }
-  return findings
-}

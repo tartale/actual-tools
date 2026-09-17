@@ -8,3 +8,4 @@
 - [Crossover self-containment](crossover-self-containment.md) — SUPERSEDED (see bridge-burndown-chart's 6th follow-up): the crossover-card widget this covered was removed entirely; kept for historical reasoning only
 - [Live-testing cleanup discipline](live-testing-cleanup-discipline.md) — an unverified `/dev/null`-piped reset left the user's real config.json pinned wrong for a full turn; always confirm a cleanup PATCH's response, never fire-and-forget it
 - [SRE deployment responsibility](sre-deployment-responsibility.md) — this Dev session is also SRE now: rebuild the image + restart the container after shipping, not just merge the PR; the .envrc-sourcing gotcha and the dev-vs-container config.json split
+- [./actual service stop gotcha](actual-service-stop-gotcha.md) — always tears down the prod container regardless of -p/--dev; kill the dev server's own PID instead

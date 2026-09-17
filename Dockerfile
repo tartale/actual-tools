@@ -24,6 +24,8 @@ WORKDIR /app
 # is served from a path resolved relative to the module, so it needs no separate arrangement).
 COPY package.json ./
 COPY irs-limits.json ./
+COPY federal-tax-brackets.json ./
+COPY irs-life-expectancy.json ./
 COPY src/ ./src/
 
 # Written to as well as read, so it is a mounted directory rather than a baked-in file: config.json
@@ -35,4 +37,4 @@ EXPOSE 4247
 # Binds every interface because the point of running it here is to reach it from another device --
 # and there is no authentication, so the network it is published on is the whole of the security
 # boundary. compose.yaml says the same thing at greater length.
-CMD ["node", "src/app.ts", "--no-open", "--config", "/app/data/config.json", "--output", "/app/data/fire-dashboard.json"]
+CMD ["node", "src/app.ts", "--no-open", "--config", "/app/data/config.json"]

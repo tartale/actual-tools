@@ -109,7 +109,8 @@ async function openRetirementPage(retirementAges: number[]): Promise<{ page: Pag
     actualConfig,
     configPath: join(dir, "config.json"),
     irsLimitsPath: join(dir, "irs-limits.json"),
-    outputPath: join(dir, "fire-dashboard.json"),
+    federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),
+    irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"),
     uiDir: UI_DIR,
   })
   await fetch(`${server.url}api/retirement/plan`, {
@@ -140,7 +141,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     )
     expect(tiles.some((t) => t.includes("(2 accounts)"))).toBe(true)
     expect(tiles.some((t) => /\$2,040,000\.00/.test(t))).toBe(true)
-    expect(tiles.some((t) => t.includes("Spend"))).toBe(true)
+    expect(tiles.some((t) => t.includes("Projected Expenditures"))).toBe(true)
 
     expect(await ui.evaluate(() => document.body.textContent ?? "")).not.toContain("withdrawals taxed")
     expect(errors).toEqual([])
@@ -168,7 +169,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     // The unlock reference line is a plain line with no label of its own now (the age is already
     // in the prose finding below), so there's nothing left to assert about it beyond the line count.
     expect(chart.unlockLines).toBe(1)
-    expect(chart.endLabel).toMatch(/^depletes at \d+$/)
+    expect(chart.endLabel).toMatch(/^depletes at age \d+$/)
     expect(chart.dashedLines).toBe(1)
 
     // Matches the prose finding right below it -- same age, same run, told two ways. The Stale
@@ -179,7 +180,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
       return group?.querySelector(".finding .title")?.textContent
     })
     const depletionAge = chart.endLabel?.match(/\d+/)?.[0]
-    expect(findingText).toContain(`runs out at ${depletionAge}`)
+    expect(findingText).toContain(`runs out at age ${depletionAge}`)
     expect(errors).toEqual([])
   }, 60000)
 
@@ -264,7 +265,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
 
   it("shows no chart, and no page error, when a portfolio has nothing to bridge", async () => {
     vi.stubGlobal("fetch", mockActualFetch())
-    server = await startAppServer({ actualConfig, configPath: join(dir, "config.json"), irsLimitsPath: join(dir, "irs-limits.json"), outputPath: join(dir, "fire-dashboard.json"), uiDir: UI_DIR })
+    server = await startAppServer({ actualConfig, configPath: join(dir, "config.json"), irsLimitsPath: join(dir, "irs-limits.json"), federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"), irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"), uiDir: UI_DIR })
     await fetch(`${server.url}api/retirement/plan`, {
       method: "PATCH",
       body: JSON.stringify({ birthDate: birthDateForAge(50), retirementAges: [50], planToAge: 100 }),

@@ -35,50 +35,46 @@
       <div class="top-error" id="topError" hidden></div>
 
       <div class="page" id="page-retirement">
-      <!-- Position-fixed overlay -- lives here just because "right after the page opens" is as
-           good a spot as any; its place in the DOM has no bearing on where it renders. -->
-      <div class="modal-backdrop" id="exportModalBackdrop" hidden>
-        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
-          <button type="button" class="modal-close" id="exportModalClose" title="Close" aria-label="Close">×</button>
-          <h2 id="exportModalTitle">Export to Actual Dashboard</h2>
-          <p>Builds net-worth and Monte Carlo widgets from live balances and the accounts in Accounts. Download the file, then bring it into Actual:</p>
-          <ol>
-            <li>Open your budget in Actual and go to <strong>Reports</strong>.</li>
-            <li>Create a new dashboard page (e.g. name it "FIRE") — or reuse one this app already generated.</li>
-            <li>On that page, open the <strong>"…"</strong> menu → <strong>Import</strong> → pick the file you download below.</li>
-          </ol>
-          <p class="derived">Importing replaces every widget already on the target page — always import onto a page you're fine wiping. Re-exporting and re-importing onto that same page is the normal way to refresh it; your hand edits there are preserved (see the README).</p>
-          <button type="button" class="btn" id="generateBtn">Download dashboard</button>
-          <div class="gen-result" id="genResult" hidden></div>
-        </div>
-      </div>
-
-      <!-- Zoomed-in chart view -- opened by the zoom button renderBridgeChart/renderMonteCarloChart
-           add to their own chart (see addChartZoom in app.js). #chartZoomBody holds whichever
-           chart's own DOM node gets moved into it, not a copy -- reparented back out on close, so
-           its hover/tooltip wiring is never re-created. -->
+      <!-- Zoomed-in chart view -- opened by clicking anywhere on a chart, or its own zoom button
+           (see openChartZoom/addChartZoom in app.js). Always shows both Bridge and Monte Carlo
+           together, not just whichever one was clicked. #chartZoomBody holds whichever charts'
+           own DOM nodes get moved into it, not copies -- reparented back out on close, so their
+           hover/tooltip wiring is never re-created. -->
       <div class="modal-backdrop" id="chartZoomBackdrop" hidden>
         <div class="modal modal-chart" role="dialog" aria-modal="true" aria-labelledby="chartZoomTitle">
           <button type="button" class="modal-close" id="chartZoomClose" title="Close" aria-label="Close">×</button>
-          <h2 id="chartZoomTitle"></h2>
+          <h2 id="chartZoomTitle">Analysis</h2>
           <div id="chartZoomBody"></div>
         </div>
       </div>
 
-      <!-- Two columns wide enough to hold both (see the min-width media query in style.css) --
-           .retirement-inputs scrolls normally; .retirement-live-sticky (everything the live
-           recalculation touches: tiles, Stale, the Bridge/Monte Carlo charts) sticks near the top
-           of the viewport as .retirement-inputs scrolls past it, so tweaking a field and watching
-           its effect never needs scrolling back and forth between the two. Narrower than that,
-           falls back to today's single stacked column -- not enough width to split, and nothing is
-           sticky there. -->
-      <div class="retirement-split">
-      <div class="retirement-inputs">
-        <div class="column-toolbar">
+      <!-- Refresh/Expand all/Collapse all (used to be the left column's own toolbar) and the
+           Portfolio/Projected Expenditures tiles (used to sit at the top of the right column) merged into one panel
+           that freezes right below the topbar as the page scrolls -- one sticky element instead of
+           two independently-positioned ones that had to be kept in exact alignment with each other. -->
+      <div class="retirement-toolbar" id="retirementToolbar">
+        <div class="retirement-toolbar-actions">
           <button type="button" class="btn secondary" id="refreshBtn">Refresh</button>
           <button type="button" class="btn secondary" id="expandAllBtn">Expand all</button>
           <button type="button" class="btn secondary" id="collapseAllBtn">Collapse all</button>
         </div>
+        <!-- Portfolio (instant, from STATE) plus whatever /api/retirement/check adds once it
+             resolves (Projected Expenditures, any Rule of 55/debt-payoff adjustment) -- all plain
+             label/number tiles, no sentences; see renderSummary/renderSummaryStats in app.js. -->
+        <div class="panel-loading top-loading" id="topLoading"><div class="spinner" aria-hidden="true"></div>Loading…</div>
+        <div class="summary" id="summaryTiles" hidden>
+          <div class="tile"><div class="label">Portfolio</div><div class="value num" id="sumPortfolio">—</div></div>
+        </div>
+      </div>
+
+      <!-- Two columns wide enough to hold both (see the min-width media query in style.css) --
+           .retirement-inputs scrolls normally; .retirement-live-sticky (the Bridge/Monte Carlo
+           charts) sticks near the top of the viewport, right below .retirement-toolbar above, as
+           .retirement-inputs scrolls past it, so tweaking a field and watching its effect never
+           needs scrolling back and forth between the two. Narrower than that, falls back to today's
+           single stacked column -- not enough width to split, and nothing is sticky there. -->
+      <div class="retirement-split">
+      <div class="retirement-inputs">
         <div class="card" data-section="plan">
           <div class="card-head">
             <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Plan</h2></span>
@@ -92,7 +88,7 @@
                 <div class="derived">Current age: <span class="num" id="ageDerived">—</span> — used for IRS catch-up tiers<span class="saved-flag" id="savedBirth">saved</span></div>
               </div>
               <div class="field">
-                <label for="retireAges">Retirement ages to compare</label>
+                <label for="retireAges">Retirement ages</label>
                 <input type="text" id="retireAges">
                 <div class="derived">Space- or comma-separated<span class="saved-flag" id="savedRetire">saved</span></div>
               </div>
@@ -100,6 +96,16 @@
                 <label for="planToAge">Plan to age</label>
                 <input type="number" id="planToAge">
                 <div class="derived">Conservative horizon, not a lifespan estimate<span class="saved-flag" id="savedPlan">saved</span></div>
+              </div>
+              <div class="field">
+                <label for="filingStatus">Filing status<button type="button" class="help-icon" data-help="Drives the standard deduction and tax bracket thresholds used to estimate your effective tax rate and MAGI (Modified Adjusted Gross Income) once a withdrawal strategy is in place.&#10;&#10;Federal only -- state tax isn't modeled.">?</button></label>
+                <select id="filingStatus">
+                  <option value="">not entered</option>
+                  <option value="single">Single</option>
+                  <option value="marriedFilingJointly">Married filing jointly</option>
+                  <option value="headOfHousehold">Head of household</option>
+                </select>
+                <div class="derived">For the MAGI/effective-tax-rate estimate<span class="saved-flag" id="savedFilingStatus">saved</span></div>
               </div>
             </div>
           </div>
@@ -344,26 +350,16 @@
 
       <div class="retirement-live">
       <div class="retirement-live-sticky">
-        <div class="column-toolbar">
-          <button type="button" class="btn" id="exportDashboardBtn">Export to Dashboard</button>
-        </div>
-        <!-- Portfolio (instant, from STATE) plus whatever /api/retirement/check adds once it
-             resolves (Spend, any Rule of 55/debt-payoff adjustment) -- all plain label/number
-             tiles, no sentences, no separate "Current numbers" card or heading; see
-             renderSummary/renderSummaryStats in app.js. -->
-        <div class="panel-loading top-loading" id="topLoading"><div class="spinner" aria-hidden="true"></div>Loading…</div>
-        <div class="summary" id="summaryTiles" hidden>
-          <div class="tile"><div class="label">Portfolio</div><div class="value num" id="sumPortfolio">—</div></div>
-        </div>
-
-        <!-- Stale findings: always visible, not a foldable card -- these are alerts, not settings,
-             so they stay out from under a fold a person could leave collapsed. Hidden (not just
-             empty) while there's nothing to say -- see renderStaleResult. -->
-        <div class="card" id="staleResult" hidden></div>
-
         <div class="card" data-section="analysis">
           <div class="card-head">
-            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Analysis</h2></span>
+            <h2>Analysis</h2>
+            <!-- The one zoom entry point for both charts at once (see openChartZoom in app.js) --
+                 pinned here and always visible, rather than a hover-only button on each chart
+                 individually. Not foldable like the other cards: it's the one thing on this page
+                 someone's actually looking at, not a setting to tuck away. -->
+            <button type="button" class="icon-btn" id="chartZoomOpenBtn" title="Zoom in" aria-label="Zoom in">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+            </button>
           </div>
           <div class="card-fold">
           <div id="checkResult">
