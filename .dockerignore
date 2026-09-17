@@ -11,9 +11,11 @@ node_modules
 .env
 .envrc
 
-# Run-time data, mounted as a volume instead (see compose.yaml). config.json in particular is
-# rewritten by the app, so a copy baked into the image would be a stale shadow of the real one.
+# Run-time data, mounted as a volume instead (see compose.yaml). config.json/session.json in
+# particular are rewritten by the app, so a copy baked into the image would be a stale shadow of
+# the real one.
 config.json
+session.json
 fire-dashboard.json
 data/
 
