@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   bridgeFinding,
   calculateMortgagePayoff,
+  magiFinding,
   monteCarloFinding,
   simulateBridge,
   toBridgeAccounts,
@@ -11,6 +12,7 @@ import type { BridgeAccount, BridgeResult } from "./fire-analysis.ts"
 import type { ClassifiedAccount } from "./fire-accounts.ts"
 import type { RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
+import type { FederalTaxBrackets } from "./federal-tax-brackets.ts"
 
 // Function to build a bridge account with inert defaults -- no growth, no contributions, no tax --
 // so each test only has to state the one dimension it is actually exercising.
@@ -251,6 +253,39 @@ describe("bridgeFinding", () => {
   it("warns, rather than failing, when everything has already unlocked", () => {
     const finding = bridgeFinding(bridgeResult({ retirementAge: 59, accessibleAtRetirement: 1000, depletionAge: 80 }), 100)
     expect(finding.level).toBe("warn")
+  })
+})
+
+// Same fixture/figures as estimateMagi's own "combines every ordinary-income source" test in
+// federal-tax-brackets.test.ts, reused here rather than re-derived -- magiFinding is purely a
+// formatting layer over that same function.
+const MAGI_TABLE: FederalTaxBrackets = {
+  taxYear: 2026,
+  source: "https://example.com",
+  standardDeduction: { single: 1610000, marriedFilingJointly: 3220000, headOfHousehold: 2415000 },
+  brackets: {
+    single: [
+      { rate: 0.1, upTo: 1240000 },
+      { rate: 0.12, upTo: 5040000 },
+      { rate: 0.22, upTo: 10570000 },
+      { rate: 0.24, upTo: 20177500 },
+      { rate: 0.32, upTo: 25622500 },
+      { rate: 0.35, upTo: 64060000 },
+      { rate: 0.37, upTo: null },
+    ],
+    marriedFilingJointly: [{ rate: 0.1, upTo: null }],
+    headOfHousehold: [{ rate: 0.1, upTo: null }],
+  },
+}
+
+describe("magiFinding", () => {
+  it("states MAGI, marginal/effective rate, and the withdrawal/pension/SS breakdown", () => {
+    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE)
+    expect(finding.level).toBe("info")
+    // MAGI $77,000, marginal 22% (see estimateMagi's own equivalent test) -- 811000/7700000 = 10.5%.
+    expect(finding.title).toBe("age 59 -- est. MAGI $77,000.00 puts you in the 22% federal bracket (10.5% effective).")
+    expect(finding.detail[0]).toBe("$60,000.00 assumed from tax-deferred withdrawals, $0.00 pension, $17,000.00 of taxable Social Security -- taxable income $60,900.00 after the standard deduction.")
+    expect(finding.detail[1]).toContain("not a line from Form 1040")
   })
 })
 

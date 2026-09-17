@@ -429,6 +429,7 @@ function requirePlan(fireConfig: FireConfig): {
   crossoverExpenseCategoryIds: string[] | null
   expenseAdjustmentFactor: number
   spendHistoryMonths: number
+  filingStatus: FilingStatus | null
 } {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
@@ -449,6 +450,7 @@ function requirePlan(fireConfig: FireConfig): {
     crossoverExpenseCategoryIds: fireConfig.dashboard.crossoverExpenseCategoryIds,
     expenseAdjustmentFactor: expenseAdjustmentFactorWithOverride(fireConfig.dashboard),
     spendHistoryMonths: spendHistoryMonthsWithOverride(fireConfig.dashboard),
+    filingStatus: fireConfig.dashboard.filingStatus,
   }
 }
 
@@ -904,10 +906,12 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const plan = requirePlan(fireConfig)
         const rawAccounts = await fetchAllOpenAccounts(actualConfig)
         const irsLimits = loadIrsLimits(irsLimitsPath)
+        const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
         const result = await checkDashboard(actualConfig, accounts, {
           ...plan,
           fallbackInflationMean: 0.03,
+          federalTaxBrackets,
         })
         sendJson(res, 200, result)
         return

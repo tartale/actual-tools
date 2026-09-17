@@ -402,6 +402,69 @@ describe("GET /api/retirement/check", () => {
     expect(body.ruleOf55Boosts).toEqual([])
   })
 
+  const FEDERAL_TAX_BRACKETS_FIXTURE = {
+    taxYear: 2026,
+    source: "https://example.com",
+    standardDeduction: { single: 1610000, marriedFilingJointly: 3220000, headOfHousehold: 2415000 },
+    brackets: {
+      single: [{ rate: 0.1, upTo: 1240000 }, { rate: 0.12, upTo: 5040000 }, { rate: 0.22, upTo: null }],
+      marriedFilingJointly: [{ rate: 0.1, upTo: null }],
+      headOfHousehold: [{ rate: 0.1, upTo: null }],
+    },
+  }
+
+  it("adds a MAGI finding alongside the funding-status one when filing status and tax brackets are both set", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    // One funding-status finding plus one MAGI finding for the single configured retirement age.
+    expect(body.bridgeFindings).toHaveLength(2)
+    expect(body.bridgeFindings.some((f) => f.title.includes("est. MAGI"))).toBe(true)
+  })
+
+  it("omits the MAGI finding when filing status isn't set, even with tax brackets available", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.bridgeFindings).toHaveLength(1)
+    expect(body.bridgeFindings.some((f) => f.title.includes("est. MAGI"))).toBe(false)
+  })
+
+  it("omits the MAGI finding when the tax-bracket file isn't available, even with filing status set", async () => {
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 100_000_00, transfer_id: null }] },
+      dashboardRows: [],
+    })
+    // No writeFileSync for federalTaxBracketsPath here -- loadFederalTaxBrackets sees a missing file.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.bridgeFindings).toHaveLength(1)
+    expect(body.bridgeFindings.some((f) => f.title.includes("est. MAGI"))).toBe(false)
+  })
+
   it("runs the in-app Monte Carlo simulation once per retirement age, same order as bridgeResults", async () => {
     const url = await boot({
       accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],

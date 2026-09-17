@@ -17,6 +17,7 @@ import {
   bridgeFinding,
   calculateMortgagePayoff,
   historicalBridgeYear,
+  magiFinding,
   monteCarloFinding,
   projectAccountBalance,
   simulateBridge,
@@ -25,6 +26,7 @@ import {
 import type { BridgeResult, Finding } from "./fire-analysis.ts"
 import { runRetirementMonteCarlo } from "./fire-monte-carlo.ts"
 import type { MonteCarloResultEntry, MonteCarloSummary } from "./fire-monte-carlo.ts"
+import type { FederalTaxBrackets, FilingStatus } from "./federal-tax-brackets.ts"
 
 // The non-CLI guts of what used to be reports-fire.ts's main(): fetching real data and analyzing
 // the dashboard, returning a plain structured result rather than printing one -- consumed by
@@ -161,6 +163,11 @@ export interface CheckOptions {
   crossoverExpenseCategoryIds: readonly string[] | null
   expenseAdjustmentFactor: number
   spendHistoryMonths: number
+  // Both needed for the MAGI/effective-tax-rate finding (see magiFinding in fire-analysis.ts) --
+  // either missing just skips that finding entirely (checkDashboard), the same "absent, not an
+  // error" convention as ruleOf55Boosts/debtPayoffs.
+  filingStatus: FilingStatus | null
+  federalTaxBrackets: FederalTaxBrackets | null
 }
 
 export interface AccountContribution {
@@ -338,7 +345,29 @@ export async function checkDashboard(
     ]
     return { ...result, history }
   })
-  const bridgeFindings = bridgeResults.map((result) => bridgeFinding(result, options.planToAge))
+  // A second finding per scenario, right after its own funding-status finding, estimating that
+  // year's MAGI/effective-tax-rate -- see magiFinding's own doc comment for the simplifying
+  // assumptions. Skipped (not an error) whenever filing status or the tax-bracket table is missing,
+  // same convention as ruleOf55Boosts/debtPayoffs being empty rather than reported as broken.
+  const bridgeFindings = bridgeResults.flatMap((result) => {
+    const findings = [bridgeFinding(result, options.planToAge)]
+    if (options.filingStatus != null && options.federalTaxBrackets != null) {
+      const retirementAge = result.retirementAge
+      // incomeStreams here is the FULL merged set (pension/SS + any debt-freed-up cash flow) --
+      // matches simulateBridge's own netting exactly, so a paid-off mortgage correctly lowers the
+      // withdrawal this estimates without also being (wrongly) treated as taxable income itself.
+      const incomeAtRetirement = incomeStreams.filter((s) => s.startAge <= retirementAge).reduce((sum, s) => sum + s.annualAmount, 0)
+      const grossTaxDeferredWithdrawal = Math.max(0, projectedSpendAt(retirementAge) - incomeAtRetirement)
+      // options.incomeStreams (pension/SS only, pre-merge) for the RAW figures MAGI needs as their
+      // own separate ordinary-income lines -- already netted out of grossTaxDeferredWithdrawal
+      // above, so adding them back here (rather than re-deriving them some other way) is what keeps
+      // the total modeled income correct instead of double-subtracting them.
+      const pensionIncome = options.incomeStreams.find((s) => s.id === "pension" && s.startAge <= retirementAge)?.annualAmount ?? 0
+      const socialSecurityBenefit = options.incomeStreams.find((s) => s.id === "social-security" && s.startAge <= retirementAge)?.annualAmount ?? 0
+      findings.push(magiFinding(retirementAge, pensionIncome, socialSecurityBenefit, grossTaxDeferredWithdrawal, options.filingStatus, options.federalTaxBrackets))
+    }
+    return findings
+  })
 
   // Simulated once per retirement age, same order as bridgeResults; monteCarloFindings below is
   // prose derived from these same results, not a second computation. Never lets an incomplete

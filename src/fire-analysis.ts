@@ -4,6 +4,8 @@ import type { ClassifiedAccount } from "./fire-accounts.ts"
 import { ALLOCATION_PRESET_RETURNS, EARLY_WITHDRAWAL_PENALTY_RATE, effectiveAccessAge, withdrawalTaxRateFor } from "./fire-dashboard.ts"
 import type { RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
+import { estimateMagi } from "./federal-tax-brackets.ts"
+import type { FederalTaxBrackets, FilingStatus } from "./federal-tax-brackets.ts"
 
 export type FindingLevel = "fail" | "warn" | "info" | "ok"
 
@@ -368,6 +370,35 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
     level: "warn",
     title: `age ${result.retirementAge} -- runs out at age ${result.depletionAge}, short of age ${planToAge}.`,
     detail: [...split, "Everything has unlocked by then, so this is a shortfall, not a bridging problem."],
+  }
+}
+
+// Function to turn one retirement age's estimated MAGI into prose, read alongside bridgeFinding's
+// own funding-status finding for the same age (checkDashboard appends this right after it). Always
+// "info" -- no IRMAA/ACA threshold data is vendored here, so this never passes or fails anything,
+// just states the estimate. grossTaxDeferredWithdrawal is the caller's own simplifying assumption
+// (see checkDashboard in fire-generate.ts): the full withdrawal need for the year, assumed to come
+// entirely from tax-deferred accounts, NOT grossed up for the tax itself (that would be circular
+// with the rate being estimated here) -- so this is a floor on the real number, not an exact one,
+// and says so in its own detail text rather than implying more precision than it has.
+export function magiFinding(
+  retirementAge: number,
+  pensionIncome: number,
+  socialSecurityBenefit: number,
+  grossTaxDeferredWithdrawal: number,
+  filingStatus: FilingStatus,
+  table: FederalTaxBrackets,
+): Finding {
+  const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, filingStatus, table)
+  const marginalPct = Math.round(estimate.marginalRate * 1000) / 10
+  const effectivePct = Math.round(estimate.effectiveRate * 1000) / 10
+  return {
+    level: "info",
+    title: `age ${retirementAge} -- est. MAGI ${formatUsd(estimate.magi)} puts you in the ${marginalPct}% federal bracket (${effectivePct}% effective).`,
+    detail: [
+      `${formatUsd(grossTaxDeferredWithdrawal)} assumed from tax-deferred withdrawals, ${formatUsd(pensionIncome)} pension, ${formatUsd(estimate.taxableSocialSecurity)} of taxable Social Security -- taxable income ${formatUsd(estimate.taxableIncome)} after the standard deduction.`,
+      "A simplified estimate, not a line from Form 1040 -- assumes the full withdrawal need comes from tax-deferred accounts and doesn't gross that withdrawal up for the tax itself, so treat this as a floor, not an exact number.",
+    ],
   }
 }
 
