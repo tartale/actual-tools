@@ -4,7 +4,8 @@ import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 
-import { formatError, loadConfigFromEnv } from "./actual-helpers.ts"
+import { formatError } from "./actual-helpers.ts"
+import { DEFAULT_SESSION_PATH } from "./actual-session.ts"
 import { DEFAULT_CONFIG_PATH } from "./fire-accounts.ts"
 import { DEFAULT_IRS_LIMITS_PATH } from "./irs-limits.ts"
 import { DEFAULT_FEDERAL_TAX_BRACKETS_PATH } from "./federal-tax-brackets.ts"
@@ -31,6 +32,7 @@ const uiDir = join(dirname(fileURLToPath(import.meta.url)), "app-ui")
 
 interface Options {
   configPath: string
+  sessionPath: string
   irsLimitsPath: string
   federalTaxBracketsPath: string
   irsLifeExpectancyPath: string
@@ -50,6 +52,10 @@ const HELP_PAGE: HelpPage = {
       label: "Options",
       entries: [
         { name: "-f, --config PATH", description: `Path to the config file to read from and write (default: ${DEFAULT_CONFIG_PATH}).` },
+        {
+          name: "-s, --session PATH",
+          description: `Path to store the Actual REST credentials entered through the app's own login form (default: ${DEFAULT_SESSION_PATH}). Missing is fine -- the app just starts logged out.`,
+        },
         {
           name: "-i, --irs-limits PATH",
           description: `Path to the IRS contribution limits reference file (default: ${DEFAULT_IRS_LIMITS_PATH}). Missing is fine, just skips that context.`,
@@ -81,6 +87,7 @@ function usage(message: string): never {
 
 function parseArguments(argv: readonly string[]): Options {
   let configPath = DEFAULT_CONFIG_PATH
+  let sessionPath = DEFAULT_SESSION_PATH
   let irsLimitsPath = DEFAULT_IRS_LIMITS_PATH
   let federalTaxBracketsPath = DEFAULT_FEDERAL_TAX_BRACKETS_PATH
   let irsLifeExpectancyPath = DEFAULT_IRS_LIFE_EXPECTANCY_PATH
@@ -94,6 +101,11 @@ function parseArguments(argv: readonly string[]): Options {
       const value = argv[i + 1]
       if (value === undefined || value.startsWith("-")) usage("Missing argument for --config")
       configPath = value
+      i++
+    } else if (arg === "-s" || arg === "--session") {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith("-")) usage("Missing argument for --session")
+      sessionPath = value
       i++
     } else if (arg === "-i" || arg === "--irs-limits") {
       const value = argv[i + 1]
@@ -131,7 +143,7 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  return { configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, port, open }
+  return { configPath, sessionPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, port, open }
 }
 
 // Function to best-effort open a URL in the default browser. Swallowed non-fatally: this is a
@@ -151,10 +163,9 @@ function tryOpenBrowser(url: string): void {
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2))
-  const actualConfig = loadConfigFromEnv()
 
   const server = await startAppServer({
-    actualConfig,
+    sessionPath: options.sessionPath,
     configPath: options.configPath,
     irsLimitsPath: options.irsLimitsPath,
     federalTaxBracketsPath: options.federalTaxBracketsPath,
@@ -170,7 +181,7 @@ async function main(): Promise<void> {
     for (const networkUrl of server.networkUrls) {
       console.log(`  ${networkUrl}`)
     }
-    console.log("(no login is required -- only share these on a network you trust)")
+    console.log("(the app itself doesn't require its own login -- only share these on a network you trust)")
   }
   console.log("Press Ctrl+C to stop.")
   if (options.open) {
