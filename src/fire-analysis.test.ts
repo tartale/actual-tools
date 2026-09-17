@@ -284,7 +284,9 @@ describe("magiFinding", () => {
     expect(finding.level).toBe("info")
     // MAGI $77,000, marginal 22% (see estimateMagi's own equivalent test) -- 811000/7700000 = 10.5%.
     expect(finding.title).toBe("age 59 -- est. MAGI $77,000.00 puts you in the 22% federal bracket (10.5% effective).")
-    expect(finding.detail[0]).toBe("$60,000.00 assumed from tax-deferred withdrawals, $0.00 pension, $17,000.00 of taxable Social Security -- taxable income $60,900.00 after the standard deduction.")
+    expect(finding.detail[0]).toBe(
+      "$60,000.00 estimated from tax-deferred withdrawals (only the share of your ACCESSIBLE balance at this age that's tax-deferred -- still-locked accounts don't count), $0.00 pension, $17,000.00 of taxable Social Security -- taxable income $60,900.00 after the standard deduction.",
+    )
     expect(finding.detail[1]).toContain("not a line from Form 1040")
   })
 })

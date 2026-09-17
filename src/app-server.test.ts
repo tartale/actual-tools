@@ -431,6 +431,30 @@ describe("GET /api/retirement/check", () => {
     expect(body.bridgeFindings.some((f) => f.title.includes("est. MAGI"))).toBe(true)
   })
 
+  it("estimates $0 tax-deferred withdrawal when the only portfolio account is still locked at the retirement age -- the early-retirement/FIRE case", async () => {
+    const url = await boot({
+      accounts: [{ id: "401k", name: "Fidelity 401k", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { "401k": [{ amount: 500_000_00, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    // Retiring at 51, well before a traditional-401k's own default 59 access age -- the whole
+    // portfolio is locked at that age, so the real withdrawal can't be tax-deferred at all.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [51], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.annualSpend).toBeGreaterThan(0) // a real, nonzero withdrawal need -- not a vacuous $0 test
+    const magi = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magi?.detail[0]).toContain("$0.00 estimated from tax-deferred withdrawals")
+  })
+
   it("omits the MAGI finding when filing status isn't set, even with tax brackets available", async () => {
     const url = await boot({
       accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],

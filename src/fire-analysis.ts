@@ -376,11 +376,14 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
 // Function to turn one retirement age's estimated MAGI into prose, read alongside bridgeFinding's
 // own funding-status finding for the same age (checkDashboard appends this right after it). Always
 // "info" -- no IRMAA/ACA threshold data is vendored here, so this never passes or fails anything,
-// just states the estimate. grossTaxDeferredWithdrawal is the caller's own simplifying assumption
-// (see checkDashboard in fire-generate.ts): the full withdrawal need for the year, assumed to come
-// entirely from tax-deferred accounts, NOT grossed up for the tax itself (that would be circular
-// with the rate being estimated here) -- so this is a floor on the real number, not an exact one,
-// and says so in its own detail text rather than implying more precision than it has.
+// just states the estimate. grossTaxDeferredWithdrawal is the caller's own estimate (see
+// checkDashboard in fire-generate.ts): the withdrawal need for the year, times whatever share of
+// the ACCESSIBLE portfolio at this age is tax-deferred -- a 401(k) still locked behind its own
+// accessAge contributes nothing, the same accessibility rule simulateBridge itself applies, so this
+// doesn't overstate MAGI for the early-retirement/FIRE case this app is built around (tax-deferred
+// money routinely still locked at the chosen retirement age). Not grossed up for the tax itself
+// (that would be circular with the rate being estimated here) -- still an approximation, not an
+// exact figure, and says so in its own detail text.
 export function magiFinding(
   retirementAge: number,
   pensionIncome: number,
@@ -396,8 +399,8 @@ export function magiFinding(
     level: "info",
     title: `age ${retirementAge} -- est. MAGI ${formatUsd(estimate.magi)} puts you in the ${marginalPct}% federal bracket (${effectivePct}% effective).`,
     detail: [
-      `${formatUsd(grossTaxDeferredWithdrawal)} assumed from tax-deferred withdrawals, ${formatUsd(pensionIncome)} pension, ${formatUsd(estimate.taxableSocialSecurity)} of taxable Social Security -- taxable income ${formatUsd(estimate.taxableIncome)} after the standard deduction.`,
-      "A simplified estimate, not a line from Form 1040 -- assumes the full withdrawal need comes from tax-deferred accounts and doesn't gross that withdrawal up for the tax itself, so treat this as a floor, not an exact number.",
+      `${formatUsd(grossTaxDeferredWithdrawal)} estimated from tax-deferred withdrawals (only the share of your ACCESSIBLE balance at this age that's tax-deferred -- still-locked accounts don't count), ${formatUsd(pensionIncome)} pension, ${formatUsd(estimate.taxableSocialSecurity)} of taxable Social Security -- taxable income ${formatUsd(estimate.taxableIncome)} after the standard deduction.`,
+      "A simplified estimate, not a line from Form 1040 -- doesn't gross the withdrawal up for the tax itself, and uses today's account balances rather than projecting them forward to this age, so treat this as an approximation, not an exact number.",
     ],
   }
 }

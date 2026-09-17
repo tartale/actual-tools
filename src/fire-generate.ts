@@ -349,6 +349,26 @@ export async function checkDashboard(
   // year's MAGI/effective-tax-rate -- see magiFinding's own doc comment for the simplifying
   // assumptions. Skipped (not an error) whenever filing status or the tax-bracket table is missing,
   // same convention as ruleOf55Boosts/debtPayoffs being empty rather than reported as broken.
+  // Share of the portfolio balance that's BOTH tax-deferred AND actually reachable at a given
+  // retirement age -- e.g. a 401(k) still locked behind its own accessAge contributes 0, not its
+  // balance, exactly matching isAccessible's own check inside simulateBridge. Using today's real
+  // balances (not a forward projection to retirementAge) is a deliberate simplification -- the
+  // dominant source of error this corrects for is locked-vs-accessible (all-or-nothing per
+  // account), not the smaller effect of accounts growing at slightly different rates in between.
+  const accessibleTaxDeferredShare = (retirementAge: number): number => {
+    const portfolioAccounts = accounts.filter((account) => portfolioIds.includes(account.id))
+    let accessibleTotal = 0
+    let accessibleTaxDeferred = 0
+    for (const account of portfolioAccounts) {
+      const accessAge = effectiveAccessAge(account, retirementAge)
+      if (accessAge != null && retirementAge < accessAge) continue // still locked at this age
+      const balance = balances.get(account.id) ?? 0
+      accessibleTotal += balance
+      if (account.taxTreatment === "tax-deferred") accessibleTaxDeferred += balance
+    }
+    return accessibleTotal > 0 ? accessibleTaxDeferred / accessibleTotal : 0
+  }
+
   const bridgeFindings = bridgeResults.flatMap((result) => {
     const findings = [bridgeFinding(result, options.planToAge)]
     if (options.filingStatus != null && options.federalTaxBrackets != null) {
@@ -357,11 +377,17 @@ export async function checkDashboard(
       // matches simulateBridge's own netting exactly, so a paid-off mortgage correctly lowers the
       // withdrawal this estimates without also being (wrongly) treated as taxable income itself.
       const incomeAtRetirement = incomeStreams.filter((s) => s.startAge <= retirementAge).reduce((sum, s) => sum + s.annualAmount, 0)
-      const grossTaxDeferredWithdrawal = Math.max(0, projectedSpendAt(retirementAge) - incomeAtRetirement)
+      const netWithdrawalNeed = Math.max(0, projectedSpendAt(retirementAge) - incomeAtRetirement)
+      // Only the ACCESSIBLE tax-deferred share of that withdrawal counts here -- a locked 401(k)
+      // can't fund this year's spend at all, so assuming the whole need is tax-deferred (as an
+      // earlier version of this did) overstated MAGI for exactly the FIRE/early-retirement case
+      // this app is built around, where tax-deferred money is routinely still locked at the chosen
+      // retirement age and the real withdrawal is coming from taxable/cash/Roth money instead.
+      const grossTaxDeferredWithdrawal = Math.round(netWithdrawalNeed * accessibleTaxDeferredShare(retirementAge))
       // options.incomeStreams (pension/SS only, pre-merge) for the RAW figures MAGI needs as their
-      // own separate ordinary-income lines -- already netted out of grossTaxDeferredWithdrawal
-      // above, so adding them back here (rather than re-deriving them some other way) is what keeps
-      // the total modeled income correct instead of double-subtracting them.
+      // own separate ordinary-income lines -- already netted out of netWithdrawalNeed above, so
+      // adding them back here (rather than re-deriving them some other way) is what keeps the total
+      // modeled income correct instead of double-subtracting them.
       const pensionIncome = options.incomeStreams.find((s) => s.id === "pension" && s.startAge <= retirementAge)?.annualAmount ?? 0
       const socialSecurityBenefit = options.incomeStreams.find((s) => s.id === "social-security" && s.startAge <= retirementAge)?.annualAmount ?? 0
       findings.push(magiFinding(retirementAge, pensionIncome, socialSecurityBenefit, grossTaxDeferredWithdrawal, options.filingStatus, options.federalTaxBrackets))
