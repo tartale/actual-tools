@@ -1027,6 +1027,19 @@ function moneyify(text) {
   return escapeHtml(text)
     .replace(/-?\$[\d,]+\.\d{2}/g, (match) => moneyHtml(match))
     .replace(/\b(at|around|access) age (\d+(?:\/\d+)*)/g, (_match, lead, nums) => `${lead} age <span class="money">${nums}</span>`)
+    // MAGI's own %FPL figure (see magiFinding in fire-analysis.ts) reads as "just a percentage,"
+    // but it's MAGI divided by a PUBLISHED, public FPL table value -- unmasked, it'd let anyone who
+    // looks up that table solve backward for the real (otherwise-blurred) MAGI dollar figure. Masked
+    // the same way an age is: just the number, "% FPL" stays put so it's still legible as a %FPL
+    // figure, just not which one.
+    .replace(/\((\d+(?:\.\d+)?)% FPL\)/g, (_match, pct) => `(<span class="money">${pct}</span>% FPL)`)
+    // Same reasoning, same fix, for the marginal ("N% federal bracket") and effective ("N%
+    // effective") rate in that same finding -- both are federalTax/taxableIncome ratios, and
+    // federalTaxOwed is a deterministic function of a PUBLIC bracket table -- given the visible
+    // filing status, knowing both rates together is enough to solve backward for the exact
+    // (otherwise-blurred) MAGI, not just narrow it down.
+    .replace(/(\d+(?:\.\d+)?)% federal bracket/g, (_match, pct) => `<span class="money">${pct}</span>% federal bracket`)
+    .replace(/(\d+(?:\.\d+)?)% effective/g, (_match, pct) => `<span class="money">${pct}</span>% effective`)
 }
 
 // --- Bridge burndown chart (Analyze tab) ---
@@ -1105,7 +1118,7 @@ function niceAxisTicks(maxCents, targetCount) {
 // its own line already stops naturally at the age it runs out, which is the entire point.
 const BRIDGE_WINDOW_YEARS = 20
 
-function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = [], debtPayoffs = [], incomeStreams = []) {
+function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = [], debtPayoffs = [], incomeStreams = [], acaCliffCrossings = []) {
   const usable = bridgeResults.filter((r) => r.timeline.length > 0 && r.accessibleAtRetirement + r.lockedAtRetirement > 0)
   if (usable.length === 0) return null
   // Read once, not per-figure -- see svgMoneyText/svgAgeText's own doc comment for why this
@@ -1205,16 +1218,18 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     .map((age) => `<line x1="${scaleX(age).toFixed(1)}" y1="${margin.top}" x2="${scaleX(age).toFixed(1)}" y2="${height - margin.bottom}" class="bridge-unlock-line" />`)
     .join("")
 
-  // Three kinds of "something changes at this age" reference line -- a 401(k)'s Rule-of-55
+  // Four kinds of "something changes at this age" reference line -- a 401(k)'s Rule-of-55
   // separation making it accessible early, a mortgage/loan's projected payoff, a pension or Social
-  // Security stream starting -- neutral like the unlock lines above (belongs to no one scenario,
-  // drawn regardless of whether any scenario depletes). Combined into one x-sorted stack so a
-  // crowded age never collides: each keeps its own class for color, but a shared row index decides
-  // its label's height -- leftmost (soonest) highest, stepping one row lower per marker as age
-  // increases to the right, however many of the three kinds actually land in that stretch.
+  // Security stream starting, a scenario's MAGI crossing the ACA subsidy cliff -- neutral like the
+  // unlock lines above (belongs to no one scenario's balance line, drawn regardless of whether any
+  // scenario depletes). Combined into one x-sorted stack so a crowded age never collides: each
+  // keeps its own class for color, but a shared row index decides its label's height -- leftmost
+  // (soonest) highest, stepping one row lower per marker as age increases to the right, however
+  // many of the four kinds actually land in that stretch.
   const ruleOf55Ages = [...new Set(ruleOf55Boosts.map((b) => b.to))].filter((age) => age > minAge && age <= maxAge)
   const debtPayoffAges = [...new Set(debtPayoffs.map((d) => d.payoffAge))].filter((age) => age > minAge && age <= maxAge)
   const incomeAges = [...new Set(incomeStreams.map((s) => s.startAge))].filter((age) => age > minAge && age <= maxAge)
+  const acaCliffAges = [...new Set(acaCliffCrossings.map((c) => c.crossesAtAge))].filter((age) => age > minAge && age <= maxAge)
   const markers = [
     ...ruleOf55Ages.map((age) => ({
       age,
@@ -1237,42 +1252,89 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
         amount: `+${usdCompact(streamsAtAge.reduce((total, s) => total + s.annualAmount, 0))}/yr`,
       }
     }),
+    // Only ever drawn for a scenario that actually crosses -- see acaCliffCrossings in
+    // fire-generate.ts. %FPL reads as "just a percentage," but it's MAGI divided by a PUBLISHED,
+    // public FPL table value -- unmasked, it'd let anyone who looks up that table solve backward
+    // for the real (otherwise-blurred) MAGI dollar figure. Masked the same way an age is on this
+    // chart (content-swapped to "~~", not CSS blur -- see moneyMaskText/ageMaskText's own doc
+    // comments on why filter:blur doesn't reliably paint on SVG <tspan>s), baked in here at
+    // construction time rather than left to the shownAmount step below (which only knows how to
+    // mask a DOLLAR figure), so "% FPL" stays legible either way, same as every other masked figure
+    // on this page keeping its own unit/label visible.
+    ...acaCliffAges.map((age) => {
+      const crossingsAtAge = acaCliffCrossings.filter((c) => c.crossesAtAge === age)
+      const name = scenarios.length > 1 ? `ACA Subsidy Cliff (retire ${crossingsAtAge.map((c) => c.retirementAge).join(", ")})` : "ACA Subsidy Cliff"
+      // More than one scenario can cross at the same age with different %FPL values (different
+      // withdrawal needs) -- the highest is the one furthest past the cliff, so that's what's shown.
+      const pctFPL = Math.max(...crossingsAtAge.map((c) => c.pctFPL))
+      return { age, className: "acacliff", name, amount: `${ageMaskText(pctFPL, isPrivate)}% FPL` }
+    }),
   ].sort((a, b) => a.age - b.age)
   const markerRowStep = 13
-  const positionedMarkers = markers.map(({ age, className, name, amount }, row) => {
-    // The amount actually rendered (see markerLines) -- masked text in privacy mode, so the width
-    // used for anchor/halo math below matches what's really on screen either way.
-    const shownAmount = moneyMaskText(amount, isPrivate)
-    const label = `${name}: ${shownAmount}`
-    const x = scaleX(age)
-    const labelY = margin.top + 8 + row * markerRowStep
-    // No canvas measurement available for an inline SVG string -- ~5.3px/char is a fair estimate
-    // for this label's font-size (8.5px), good enough to decide which side of "middle" would run
-    // the label off the plot area, which is all this needs.
-    const labelWidth = label.length * 5.3
-    const halfLabelWidth = labelWidth / 2
-    const anchor = x + halfLabelWidth > width - margin.right ? "end" : x - halfLabelWidth < margin.left ? "start" : "middle"
-    const dx = anchor === "end" ? -4 : anchor === "start" ? 4 : 0
-    const haloLeft = anchor === "start" ? x + dx : anchor === "end" ? x + dx - labelWidth : x + dx - halfLabelWidth
-    return { x, labelY, className, name, shownAmount, anchor, dx, labelWidth, haloLeft }
-  })
   // One line per DISTINCT age, not one per marker -- two marker types landing on the exact same
   // age (e.g. a pension starting the same year a mortgage happens to be paid off) would otherwise
   // draw two fully-overlapping <line> elements at the identical x, and the later one would just
-  // paint over the earlier one entirely, silently hiding it (its label still shows, in its own
-  // row, since labels never collide the same way -- only the line looked "missing"). When more
-  // than one marker type shares an age, the line falls back to a neutral shared style rather than
-  // picking one type's color arbitrarily, since it no longer represents just that one thing.
+  // paint over the earlier one entirely, silently hiding it. Each marker keeps its OWN row (still
+  // stacked, one label per line, not comma-joined onto one row -- easier to read at a glance,
+  // especially past two facts) -- only the vertical guide line itself is shared.
   const markersByAge = new Map()
   markers.forEach((m) => {
     if (!markersByAge.has(m.age)) markersByAge.set(m.age, [])
     markersByAge.get(m.age).push(m)
   })
+  let nextRow = 0
+  const positionedMarkers = [...markersByAge.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .flatMap(([age, entries]) => {
+      const x = scaleX(age)
+      const withLabel = entries.map((entry) => {
+        // The amount actually rendered -- masked text in privacy mode, so the width used for
+        // anchor/halo math below matches what's really on screen either way. Skipped for the ACA
+        // cliff marker: its "amount" was already masked (or not) when it was built above, using
+        // ageMaskText's "~~" convention rather than this moneyMaskText -- which assumes a leading
+        // "$" to preserve, and would otherwise mangle a %-only string into a bare "~~~~~".
+        const shownAmount = entry.className === "acacliff" ? entry.amount : moneyMaskText(entry.amount, isPrivate)
+        const label = `${entry.name}: ${shownAmount}`
+        // No canvas measurement available for an inline SVG string -- ~5.3px/char is a fair
+        // estimate for this label's font-size (8.5px), good enough for the edge checks below.
+        return { ...entry, shownAmount, label, labelWidth: label.length * 5.3 }
+      })
+      // One shared anchor for every row sharing this age -- left-aligned by default (each row's
+      // text starting at the same x, reading as one aligned block down the line) rather than each
+      // row independently centering on x by its own width, which left shorter/longer labels at
+      // visibly different starting edges even though they belong to the same stack. Only flips to
+      // right-aligned (still one shared choice for the whole stack) when the WIDEST row would
+      // otherwise run off the plot's own right edge.
+      const maxLabelWidth = Math.max(...withLabel.map((w) => w.labelWidth))
+      const anchor = x + 4 + maxLabelWidth > width - margin.right ? "end" : "start"
+      const dx = anchor === "end" ? -4 : 4
+      return withLabel.map((w) => {
+        const labelY = margin.top + 8 + nextRow * markerRowStep
+        nextRow++
+        const haloLeft = anchor === "start" ? x + dx : x + dx - w.labelWidth
+        return { x, labelY, className: w.className, name: w.name, shownAmount: w.shownAmount, anchor, dx, labelWidth: w.labelWidth, haloLeft }
+      })
+    })
+  // Each marker type's own label/line color (mirrors the --accent/--info/--ok/--fail custom
+  // properties in style.css -- duplicated here rather than read via getComputedStyle, since these
+  // strings are assembled into markup before anything is in the DOM to compute against). When two
+  // or more distinct types share an age, their line blends all of them via color-mix rather than
+  // falling back to one flat neutral tone -- a quick visual hint of WHICH kinds of things are
+  // stacked on that line before even reading the labels. Chained pairwise at decreasing weights
+  // (1/2, 1/3, 1/4, ...) rather than flat 50/50 so N colors end up EQUALLY weighted regardless of
+  // how many are being folded in, not biased toward whichever was mixed in last.
+  const MARKER_COLORS = { ruleof55: "#9446ed", mortgage: "#66b5fa", income: "#65d6ad", acacliff: "#ff9b9b" }
+  const blendMarkerColors = (classNames) =>
+    classNames
+      .map((cls) => MARKER_COLORS[cls])
+      .reduce((acc, color, i) => (i === 0 ? color : `color-mix(in srgb, ${color} ${Math.round(100 / (i + 1))}%, ${acc} ${Math.round(100 - 100 / (i + 1))}%)`))
   const sharedAgeLines = [...markersByAge.entries()]
     .map(([age, atAge]) => {
-      const className = new Set(atAge.map((m) => m.className)).size === 1 ? atAge[0]?.className : "shared"
+      const distinctClasses = [...new Set(atAge.map((m) => m.className))]
       const x = scaleX(age)
-      return `<line x1="${x.toFixed(1)}" y1="${margin.top}" x2="${x.toFixed(1)}" y2="${height - margin.bottom}" class="bridge-${className}-line" />`
+      const style = distinctClasses.length > 1 ? ` style="stroke: ${blendMarkerColors(distinctClasses)}"` : ""
+      const className = distinctClasses.length === 1 ? distinctClasses[0] : "shared"
+      return `<line x1="${x.toFixed(1)}" y1="${margin.top}" x2="${x.toFixed(1)}" y2="${height - margin.bottom}" class="bridge-${className}-line"${style} />`
     })
     .join("")
   // Every marker's own vertical guide line runs the FULL plot height, so a marker whose x lands
@@ -2007,7 +2069,7 @@ function renderCheckResult(result) {
     const group = document.createElement("div")
     group.className = "findings-group"
     group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
-    const chart = renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams)
+    const chart = renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams, result.acaCliffCrossings)
     if (chart) group.appendChild(chart)
     result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
     container.appendChild(group)
