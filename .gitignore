@@ -7,6 +7,7 @@ node_modules
 .tmp
 .claude/settings.local.json
 config.json
+session.json
 fire-dashboard.json
 # The container's mounted data directory: the same two files, plus whatever the app writes
 # alongside them. The directory itself is tracked so the bind mount has something to attach to.
