@@ -32,8 +32,8 @@ docker run -d --name actual-tools -p 4247:4247 \
 ```
 
 Replace `actual-api.local` with the hostname from your REST API server's
-own URL (e.g. if you'll log in with `http://tartalenas.local:5007/v1`,
-that's `tartalenas.local`) — this is what lets the container reach a
+own URL (e.g. if you'll log in with `http://myserver.local:5007/v1`,
+that's `myserver.local`) — this is what lets the container reach a
 server running on your own machine or LAN by that name; skip the whole
 `--add-host` flag if your REST API server is reachable by a plain IP
 address instead. Once it's up:
