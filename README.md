@@ -22,17 +22,21 @@ server; see that project for how to deploy it if you don't have one yet.
 Requires [Docker](https://docs.docker.com/get-docker/), a running,
 self-hosted Actual Budget server, and a running, self-hosted
 [Actual Budget REST API](https://github.com/jhonderson/actual-http-api)
-server pointed at it. That's it — Node isn't needed on your machine; the
-container has everything it needs to run.
+server pointed at it.
 
 ```sh
-git clone https://github.com/tartale/actual-tools.git
-cd actual-tools
-./actual service start
+mkdir -p data
+docker run -d --name actual-tools -p 4247:4247 \
+  --add-host actual-api.local:host-gateway \
+  -v "$(pwd)/data:/app/data" ghcr.io/tartale/actual-tools:latest
 ```
 
-The first run builds the container image automatically (a minute or so);
-after that, starting is instant. Once it's up:
+Replace `actual-api.local` with the hostname from your REST API server's
+own URL (e.g. if you'll log in with `http://tartalenas.local:5007/v1`,
+that's `tartalenas.local`) — this is what lets the container reach a
+server running on your own machine or LAN by that name; skip the whole
+`--add-host` flag if your REST API server is reachable by a plain IP
+address instead. Once it's up:
 
 1. Open **http://localhost:4247** in your browser.
 2. Log in with your Actual Budget REST API server's own **URL**, **budget
@@ -42,37 +46,33 @@ after that, starting is instant. Once it's up:
 3. You're in. Everything autosaves as you go — there's no separate save
    step.
 
-Check on it any time with `./actual service status`, stop it with
-`./actual service stop`. Sensible defaults cover the common case (running
-Docker locally, both servers reachable by a normal URL); if the REST API
-server isn't reachable from inside the container — a "fetch failed" error
-right after logging in — or you're deploying to a NAS/remote Docker host,
-see [docs/reference.md](docs/reference.md#actual-service--actual-build-image)
-for the two environment variables that fix it.
+Check on it any time with `docker ps`, stop it with `docker stop
+actual-tools`.
 
-### Without cloning the repo
+### Building it from source
 
-Every push to `main` publishes a ready-to-run image, so you don't need the
-source at all:
+Prefer to build the image yourself, or plan to make changes? Clone the
+repo instead — Node isn't needed even here, the container has everything
+it needs to run:
 
 ```sh
-mkdir -p data
-docker run -d --name actual-tools -p 4247:4247 \
-  -v "$(pwd)/data:/app/data" ghcr.io/tartale/actual-tools:latest
+git clone https://github.com/tartale/actual-tools.git
+cd actual-tools
+./actual service start
 ```
 
-Then open http://localhost:4247 and log in the same way as above. If the
-REST API server isn't reachable from inside the container, add
-`--add-host <hostname-in-its-url>:host-gateway` to the `docker run`
-command — see [docs/reference.md](docs/reference.md#actual-service--actual-build-image)
-for why this is sometimes needed and what it does.
+The first run builds the container image automatically (a minute or so);
+after that, starting is instant, and you log in the same way as above.
+Check on it any time with `./actual service status`, stop it with
+`./actual service stop`. Sensible defaults cover the common case (running
+Docker locally, both servers reachable by a normal URL); if you're
+deploying to a NAS/remote Docker host instead, see
+[docs/reference.md](docs/reference.md#actual-service--actual-build-image)
+for the two environment variables that fix it.
 
-This project also includes a few one-shot CLI tools for scripted budget
-edits (`budget set-values`, `budget anomalies`, `transactions
-match-uncleared`) — see [docs/reference.md](docs/reference.md) for those,
-and for everything else: the full `./actual` command reference, what each
-part of the Retirement page does, config file formats, and development
-notes.
+Detailed documentation on the CLI tools, the Runway app, file formats, and
+development notes can be found in
+[docs/reference.md](docs/reference.md).
 
 **A note on security**: this app has no login of its own protecting it on
 the network — anyone who can reach its port can open it and use your
