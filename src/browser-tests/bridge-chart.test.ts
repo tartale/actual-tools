@@ -237,6 +237,48 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
+  it("never lets the zoomed chart's legend/style-key column overlap the findings column next to it", async () => {
+    // Regression: the SVG's height-driven width (flex: 0 0 auto, no shrink) could exceed its real
+    // share of the row once the side column's own width was subtracted, with nothing left to give
+    // -- the legend then overflowed past the chart column's own right edge, on top of the findings
+    // column beside it. Two open sections (both zoomed at once) splits the modal's own height in
+    // half, which is what made this reproduce reliably.
+    const { page: ui, errors } = await openRetirementPage([50, 65])
+    await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
+    await ui.click("#chartZoomOpenBtn")
+    await ui.waitForSelector("#chartZoomBody .bridge-chart-svg path", { timeout: 20000 })
+
+    const overlaps = await ui.evaluate(() =>
+      [...document.querySelectorAll(".chart-zoom-section")].map((section) => {
+        const side = section.querySelector(".bridge-chart-side")?.getBoundingClientRect()
+        const findingsCol = section.querySelector(".chart-zoom-findings-col")?.getBoundingClientRect()
+        return side && findingsCol ? side.right - findingsCol.left : null
+      }),
+    )
+    // A positive value means the side column's own right edge sits PAST the findings column's
+    // left edge -- an overlap. Anything <= 0 (a real gap, or flush) is fine.
+    expect(overlaps.every((overlap) => overlap === null || overlap <= 0)).toBe(true)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("keeps the in-page chart SVG at its real 640:240 aspect ratio, however tall the card gets", async () => {
+    // Regression: the SVG's height:100% (pinned unconditionally) let this sidebar's own narrower
+    // available WIDTH clamp the width down via max-width without shrinking that pinned height to
+    // match -- the SVG rendered squashed into a shorter, wider-than-intended box the moment the
+    // window was tall enough to give the card more vertical room than a correctly-proportioned
+    // chart actually needs. Reproduces starting around 800px tall at this width; 1000px (this
+    // suite's own default viewport) is comfortably past that threshold.
+    const { page: ui, errors } = await openRetirementPage([50])
+    await ui.waitForSelector(".bridge-chart-svg path", { timeout: 20000 })
+
+    const ratio = await ui.evaluate(() => {
+      const rect = (document.querySelector(".retirement-live-sticky .bridge-chart-svg") as HTMLElement).getBoundingClientRect()
+      return rect.width / rect.height
+    })
+    expect(ratio).toBeCloseTo(640 / 240, 1)
+    expect(errors).toEqual([])
+  }, 60000)
+
   it("compares two retirement ages on one chart, with a legend and independent lines", async () => {
     const { page: ui, errors } = await openRetirementPage([50, 65])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })

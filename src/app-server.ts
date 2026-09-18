@@ -438,6 +438,7 @@ function requirePlan(fireConfig: FireConfig): {
   spendHistoryMonths: number
   filingStatus: FilingStatus | null
   householdSize: number | null
+  medicareAge: number | null
 } {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
@@ -460,6 +461,7 @@ function requirePlan(fireConfig: FireConfig): {
     spendHistoryMonths: spendHistoryMonthsWithOverride(fireConfig.dashboard),
     filingStatus: fireConfig.dashboard.filingStatus,
     householdSize: fireConfig.dashboard.householdSize,
+    medicareAge: fireConfig.dashboard.medicareAge,
   }
 }
 
@@ -798,6 +800,12 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             throw new Error("householdSize must be a positive number or null.")
           }
           dashboard.householdSize = body.householdSize
+        }
+        if ("medicareAge" in body) {
+          if (body.medicareAge !== null && (typeof body.medicareAge !== "number" || body.medicareAge <= 0)) {
+            throw new Error("medicareAge must be a positive number or null.")
+          }
+          dashboard.medicareAge = body.medicareAge
         }
         if ("pensionStartAge" in body) {
           if (body.pensionStartAge !== null && (typeof body.pensionStartAge !== "number" || body.pensionStartAge <= 0)) {

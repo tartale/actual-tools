@@ -506,6 +506,88 @@ describe("GET /api/retirement/check", () => {
     expect(magiAfter?.detail[0]).toContain("$0.00 tax-deferred")
   })
 
+  it("paces non-tax-deferred withdrawals toward a set medicareAge without ever missing plan-to-age", async () => {
+    const url = await boot({
+      accounts: [
+        { id: "cash", name: "Brokerage", offbudget: true, closed: false },
+        { id: "401k", name: "Fidelity 401k", offbudget: true, closed: false },
+      ],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      // Sized so that full, unthrottled pacing (spreading the $450,000 cash pot evenly across all
+      // 15 pre-Medicare years) would touch the 401k earlier than plain sequential order does,
+      // forgoing enough of ITS OWN growth to actually deplete before plan-to-age -- confirmed by
+      // direct exploration against simulateBridge itself (matching the real 3% fallback inflation
+      // and the 401k's own 10%-penalty-until-59 window this endpoint applies), not guessed. Plain
+      // sequential order alone still funds the plan fine -- the pacing search is what's supposed to
+      // notice full pacing would break it and throttle back automatically.
+      transactionsByAccount: { cash: [{ amount: 450_000_00, transfer_id: null }], "401k": [{ amount: 200_000_00, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2500_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1976-01-01", retirementAges: [50], planToAge: 70, filingStatus: "single", medicareAge: 65 }) })
+    await fetch(`${url}api/retirement/accounts/cash`, {
+      method: "PATCH",
+      body: JSON.stringify({ type: "brokerage", withdrawalOrder: 0, customReturnMean: 0, customWithdrawalTaxRate: 0 }),
+    })
+    await fetch(`${url}api/retirement/accounts/401k`, {
+      method: "PATCH",
+      body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true, withdrawalOrder: 1, customReturnMean: 0.06, customWithdrawalTaxRate: 0.22 }),
+    })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    const bridge = body.bridgeFindings.find((f) => f.title.startsWith("age 50"))
+    // Not "runs out" -- the search found (or fell back to) a pacing strength that still funds the
+    // whole plan, rather than blindly applying full pacing and letting it deplete early.
+    expect(bridge?.title).toContain("funds every year until age 70")
+  })
+
+  it("shows a nonzero, paced tax-deferred draw in the MAGI finding once medicareAge makes full pacing worthwhile and affordable", async () => {
+    const boot0 = {
+      accounts: [
+        { id: "cash", name: "Brokerage", offbudget: true, closed: false },
+        { id: "401k", name: "Fidelity 401k", offbudget: true, closed: false },
+      ],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      // Comfortably funds the plan either way -- large enough that full pacing (spreading the cash
+      // pot over all 15 pre-Medicare years) is easily affordable, so the search settles on it
+      // outright rather than throttling back.
+      transactionsByAccount: { cash: [{ amount: 400_000_00, transfer_id: null }], "401k": [{ amount: 800_000_00, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2500_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    }
+    const url = await boot(boot0)
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1976-01-01", retirementAges: [50], planToAge: 95, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/cash`, {
+      method: "PATCH",
+      body: JSON.stringify({ type: "brokerage", withdrawalOrder: 0, customReturnMean: 0, customWithdrawalTaxRate: 0 }),
+    })
+    await fetch(`${url}api/retirement/accounts/401k`, {
+      method: "PATCH",
+      body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true, withdrawalOrder: 1, customReturnMean: 0.06, customWithdrawalTaxRate: 0.22 }),
+    })
+
+    // No medicareAge yet -- plain sequential order, cash alone comfortably covers the first year.
+    const beforePacing = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    const magiBefore = beforePacing.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magiBefore?.detail[0]).toContain("$0.00 tax-deferred")
+
+    // Once medicareAge is set, the first year draws only a paced SLICE of cash (spread across 15
+    // years) rather than the whole year's need -- the shortfall comes from the 401k, so its MAGI
+    // finding now shows a real, nonzero tax-deferred draw where before it showed none.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ medicareAge: 65 }) })
+    const afterPacing = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    const magiAfter = afterPacing.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magiAfter?.detail[0]).not.toContain("$0.00 tax-deferred")
+  })
+
   const FEDERAL_POVERTY_GUIDELINES_FIXTURE = {
     guidelineYear: 2025,
     source: "https://example.com",
@@ -565,6 +647,37 @@ describe("GET /api/retirement/check", () => {
     const res = await fetch(`${url}api/retirement/check`)
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
+    expect(body.acaCliffCrossings).toEqual([])
+  })
+
+  it("never marks a cliff crossing at or after the age the scenario itself runs dry", async () => {
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Inherited IRA", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      // $200,000 against $24,000/yr of spend runs dry at age 75 -- well under 400% FPL on its own
+      // (magiInputsAt's own withdrawal-based MAGI never crosses here).
+      transactionsByAccount: { ira: [{ amount: 200_000_00, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    // A pension starting at 80 -- AFTER the age-75 depletion above -- large enough on its own
+    // (766% FPL, confirmed directly against estimateMagi) that without the depletion cutoff this
+    // would still mark a crossing at 80, well past the point the chart already shows $0 accessible.
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1, pensionStartAge: 80, pensionMonthlyAmount: 10000_00 }),
+    })
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    const bridge = body.bridgeFindings.find((f) => f.title.startsWith("age 65"))
+    expect(bridge?.title).toContain("runs out at age 75")
     expect(body.acaCliffCrossings).toEqual([])
   })
 

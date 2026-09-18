@@ -241,6 +241,7 @@ function renderPlan() {
   const planInput = document.getElementById("planToAge")
   const filingStatusInput = document.getElementById("filingStatus")
   const householdSizeInput = document.getElementById("householdSize")
+  const medicareAgeInput = document.getElementById("medicareAge")
   // Only overwrite a field the user isn't actively editing -- avoids clobbering keystrokes if a
   // response from one field's PATCH arrives while another is still focused.
   if (document.activeElement !== birthInput) birthInput.value = STATE.dashboard.birthDate ?? ""
@@ -248,6 +249,7 @@ function renderPlan() {
   if (document.activeElement !== planInput) planInput.value = STATE.dashboard.planToAge
   if (document.activeElement !== filingStatusInput) filingStatusInput.value = STATE.dashboard.filingStatus ?? ""
   if (document.activeElement !== householdSizeInput) householdSizeInput.value = STATE.dashboard.householdSize ?? ""
+  if (document.activeElement !== medicareAgeInput) medicareAgeInput.value = STATE.dashboard.medicareAge ?? ""
   document.getElementById("ageDerived").textContent = STATE.currentAge ?? "—"
 }
 
@@ -2153,6 +2155,11 @@ document.getElementById("filingStatus").addEventListener("change", (e) => runExc
 document.getElementById("householdSize").addEventListener("change", (e) => {
   const size = e.target.value === "" ? null : parseFloat(e.target.value)
   runExclusive(() => patchPlan({ householdSize: size === null || size <= 0 ? null : size }, "savedHouseholdSize"))
+})
+
+document.getElementById("medicareAge").addEventListener("change", (e) => {
+  const age = e.target.value === "" ? null : parseFloat(e.target.value)
+  runExclusive(() => patchPlan({ medicareAge: age === null || age <= 0 ? null : age }, "savedMedicareAge"))
 })
 
 document.getElementById("pensionStartAge").addEventListener("change", (e) => {

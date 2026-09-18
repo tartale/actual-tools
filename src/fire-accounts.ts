@@ -480,6 +480,13 @@ export interface DashboardConfig {
   // filingStatus. Independent of filingStatus itself (a married couple can have any number of
   // dependents), so it isn't derived from it.
   householdSize: number | null
+  // Age Medicare eligibility begins (typically 65) -- when set, the bridge/MAGI simulation paces
+  // non-tax-deferred withdrawals to last until this age instead of draining them by plain
+  // withdrawalOrder, since that's what actually avoids the ACA subsidy cliff for as many years as
+  // possible (Medicare replaces the need for ACA marketplace coverage entirely). See
+  // simulateBridge's own nonTaxableWithdrawalCapAt parameter and fire-generate.ts's pacing search.
+  // Null (the default) skips pacing entirely -- today's plain order/proportional allocation.
+  medicareAge: number | null
   // Cents/mo, null until entered. A pension with no start age (or vice versa) isn't applied --
   // see retirementIncomeStreams in fire-dashboard.ts.
   pensionStartAge: number | null
@@ -551,6 +558,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   planToAge: DEFAULT_PLAN_TO_AGE,
   filingStatus: null,
   householdSize: null,
+  medicareAge: null,
   pensionStartAge: null,
   pensionMonthlyAmount: null,
   socialSecurityClaimingAge: null,
@@ -1150,6 +1158,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.householdSize != null && (typeof dashboardSource.householdSize !== "number" || dashboardSource.householdSize <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.householdSize must be a positive number, or null.`)
   }
+  if (dashboardSource.medicareAge != null && (typeof dashboardSource.medicareAge !== "number" || dashboardSource.medicareAge <= 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.medicareAge must be a positive number, or null.`)
+  }
   if (dashboardSource.pensionStartAge != null && (typeof dashboardSource.pensionStartAge !== "number" || dashboardSource.pensionStartAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.pensionStartAge must be a positive number.`)
   }
@@ -1243,6 +1254,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       planToAge: dashboardSource.planToAge ?? DEFAULT_DASHBOARD_CONFIG.planToAge,
       filingStatus: dashboardSource.filingStatus ?? DEFAULT_DASHBOARD_CONFIG.filingStatus,
       householdSize: dashboardSource.householdSize ?? DEFAULT_DASHBOARD_CONFIG.householdSize,
+      medicareAge: dashboardSource.medicareAge ?? DEFAULT_DASHBOARD_CONFIG.medicareAge,
       pensionStartAge: dashboardSource.pensionStartAge ?? DEFAULT_DASHBOARD_CONFIG.pensionStartAge,
       pensionMonthlyAmount: dashboardSource.pensionMonthlyAmount ?? DEFAULT_DASHBOARD_CONFIG.pensionMonthlyAmount,
       socialSecurityClaimingAge: dashboardSource.socialSecurityClaimingAge ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityClaimingAge,

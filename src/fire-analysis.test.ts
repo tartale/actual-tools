@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  allocateWithdrawal,
   bridgeFinding,
   calculateMortgagePayoff,
   magiFinding,
@@ -26,6 +27,7 @@ function bridgeAccount(overrides: Partial<BridgeAccount> & Pick<BridgeAccount, "
     withdrawalTaxRate: 0,
     earlyWithdrawalPenaltyUntilAge: null,
     withdrawalOrder: null,
+    isTaxDeferred: false,
     ...overrides,
   }
 }
@@ -240,6 +242,53 @@ describe("simulateBridge", () => {
     const flat = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
     const inflated = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0.1)
     expect(inflated.depletionAge).toBeLessThan(flat.depletionAge as number)
+  })
+
+  it("caps the non-tax-deferred draw at nonTaxableWithdrawalCapAt, forcing tax-deferred to cover the rest sooner", () => {
+    const accounts = [
+      bridgeAccount({ id: "cash", balance: 1000, isTaxDeferred: false }),
+      bridgeAccount({ id: "401k", balance: 1_000_000, withdrawalTaxRate: 0.5, isTaxDeferred: true }),
+    ]
+    const paced = simulateBridge(accounts, 50, 50, 51, 100, 0, [], (_age, nonTaxDeferredBalance) => nonTaxDeferredBalance / 20)
+    // Age 50: cap = 1000/20 = 50, so only 50 (not the full 100 net need) comes from cash; the other
+    // 50 net comes from the 50%-taxed 401k, costing 100 gross -- combined balance drops by
+    // 50 (cash) + 100 (401k gross) = 150, not the 100 it would if cash alone covered the year (as
+    // it would with no cap at all, since cash alone can afford the whole need).
+    expect(paced.timeline[1]?.accessibleBalance).toBe(1_001_000 - 150)
+  })
+})
+
+describe("allocateWithdrawal", () => {
+  it("caps non-tax-deferred draws at nonTaxDeferredPaceCap, covering the rest from tax-deferred", () => {
+    const accounts = [
+      { balance: 1000, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
+      { balance: 1000, withdrawalTaxRate: 0.2, withdrawalOrder: null, isTaxDeferred: true },
+    ]
+    const allocation = allocateWithdrawal(accounts, 300, 100)
+    // 100 (the cap) from the non-tax-deferred pot; the remaining 200 net needs 250 gross from the
+    // 20%-taxed tax-deferred pot.
+    expect(allocation.grossByIndex).toEqual([100, 250])
+  })
+
+  it("draws non-tax-deferred past its own cap once tax-deferred is exhausted, rather than under-funding the year", () => {
+    const accounts = [
+      { balance: 1000, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
+      { balance: 50, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: true }, // a tiny tax-deferred pot
+    ]
+    const allocation = allocateWithdrawal(accounts, 300, 100)
+    // Tier 1: 100 (the cap) from non-tax-deferred. Tier 2: only 50 available from tax-deferred --
+    // its entire balance. Tier 3 (overflow): the remaining 150 comes back out of non-tax-deferred,
+    // past its own cap, since the year's real spending need still has to be met.
+    expect(allocation.grossByIndex).toEqual([250, 50])
+  })
+
+  it("allocates proportionally across accounts when no order or pace cap is given (today's default)", () => {
+    const accounts = [
+      { balance: 300, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
+      { balance: 700, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: true },
+    ]
+    const allocation = allocateWithdrawal(accounts, 100)
+    expect(allocation.grossByIndex).toEqual([30, 70])
   })
 })
 
