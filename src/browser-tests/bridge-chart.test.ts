@@ -267,6 +267,50 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
+  it("zoom modal puts findings beside the chart, then restores them on close with nothing lost or duplicated", async () => {
+    const { page: ui, errors } = await openRetirementPage([50, 65])
+    await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
+
+    const findingsBefore = await ui.locator("#checkResult .finding").count()
+    expect(findingsBefore).toBeGreaterThan(0)
+
+    await ui.click("#chartZoomOpenBtn")
+    await ui.waitForSelector("#chartZoomBackdrop.open", { timeout: 5000 })
+    await ui.waitForTimeout(300) // matches the modal's own open transition
+
+    const whileOpen = await ui.evaluate(() => ({
+      findingsInModal: document.querySelectorAll("#chartZoomBody .finding").length,
+      findingsStillInPage: document.querySelectorAll("#checkResult .finding").length,
+      // The chart (with its own legend) lives in the left column, findings in the right --
+      // see openChartZoom's own doc comment for why this is a side-by-side split, not a stack.
+      chartInLeftColumn: Boolean(document.querySelector("#chartZoomBody .chart-zoom-chart-col .bridge-chart")),
+      findingsInRightColumn: document.querySelectorAll("#chartZoomBody .chart-zoom-findings-col .finding").length,
+    }))
+    expect(whileOpen.findingsInModal).toBe(findingsBefore)
+    expect(whileOpen.findingsStillInPage).toBe(0)
+    expect(whileOpen.chartInLeftColumn).toBe(true)
+    expect(whileOpen.findingsInRightColumn).toBe(findingsBefore)
+
+    await ui.click("#chartZoomClose")
+    await ui.waitForTimeout(300) // matches the modal's own close transition, after which restore() runs
+
+    const afterClose = await ui.evaluate(() => ({
+      findingsBackInPage: document.querySelectorAll("#checkResult .finding").length,
+      findingsLeftInModal: document.querySelectorAll("#chartZoomBody .finding").length,
+    }))
+    expect(afterClose.findingsBackInPage).toBe(findingsBefore)
+    expect(afterClose.findingsLeftInModal).toBe(0)
+
+    // Reopening a second time is the real test of the restore order (see closeChartZoom's own
+    // reverse-iteration comment) -- a wrong order would throw or silently misplace nodes the first
+    // time it had to insertBefore a reference node that was itself still sitting in the modal.
+    await ui.click("#chartZoomOpenBtn")
+    await ui.waitForTimeout(300)
+    expect(await ui.locator("#chartZoomBody .finding").count()).toBe(findingsBefore)
+
+    expect(errors).toEqual([])
+  }, 60000)
+
   it("shows no chart, and no page error, when a portfolio has nothing to bridge", async () => {
     vi.stubGlobal("fetch", mockActualFetch())
     const sessionPath = join(dir, "session.json")

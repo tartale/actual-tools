@@ -2282,28 +2282,42 @@ document.getElementById("refreshBtn").addEventListener("click", refreshAll)
 
 // --- Chart zoom ---
 //
-// Reparents both charts' own DOM nodes into the modal at once (not a clone/re-render, and not just
-// whichever one was clicked), so their tooltip/hover wiring -- set up once at render time in
-// wireBridgeTooltip/wireMonteCarloTooltip -- keeps working unchanged; that wiring's own coordinate
-// math already normalizes by the SVG's rendered getBoundingClientRect() width rather than assuming
-// its in-page size, so both charts draw larger in the modal for free, no separate "zoomed"
-// rendering path needed. Triggered by a click anywhere on either chart (see addChartZoom), not just
-// its own zoom button.
-let zoomedCharts = [] // [{ node, home: { parent, nextSibling } }] -- where each goes back on close
+// Reparents each chart AND its own finding rows into the modal at once (not a clone/re-render, and
+// not just whichever one was clicked), so the chart's tooltip/hover wiring -- set up once at render
+// time in wireBridgeTooltip/wireMonteCarloTooltip -- keeps working unchanged; that wiring's own
+// coordinate math already normalizes by the SVG's rendered getBoundingClientRect() width rather
+// than assuming its in-page size, so both charts draw larger in the modal for free, no separate
+// "zoomed" rendering path needed. Triggered by a click anywhere on either chart (see addChartZoom),
+// not just its own zoom button.
+//
+// Side by side rather than stacked (the chart's own inline spot always stacks findings below it) --
+// the modal has width to spare that the inline column never does, so spending it here means the
+// chart's own line legend (inside the chart node itself) never has to compete with the findings for
+// the SAME vertical space the way it does inline. The findings column scrolls on its own
+// (chart-zoom-findings-col, see style.css) rather than growing the modal past its own max-height --
+// a narrow scrollbar in a column with width to spare reads very differently than one squeezed into
+// the inline sidebar's own tight column, which is why that fix stops here instead.
+let zoomedNodes = [] // [{ node, home: { parent, nextSibling } }] -- where each goes back on close
 function openChartZoom() {
-  if (zoomedCharts.length > 0) return // already open
+  if (zoomedNodes.length > 0) return // already open
   // Each chart's own group-label ("Bridge · mean returns, 3% inflation") lives on a sibling in
   // #checkResult, not inside the chart wrap itself -- cloned as plain text into the modal (rather
   // than reparenting the real label) so the underlying page's own copy is untouched and doesn't
   // need restoring on close.
-  const charts = [...document.querySelectorAll("#checkResult .findings-group")]
-    .map((group) => ({ chart: group.querySelector(".bridge-chart"), label: group.querySelector(".group-label")?.textContent ?? "" }))
+  const groups = [...document.querySelectorAll("#checkResult .findings-group")]
+    .map((group) => ({
+      chart: group.querySelector(".bridge-chart"),
+      findings: [...group.querySelectorAll(".finding")],
+      label: group.querySelector(".group-label")?.textContent ?? "",
+    }))
     .filter((entry) => entry.chart)
-  if (charts.length === 0) return
-  zoomedCharts = charts.map(({ chart }) => ({ node: chart, home: { parent: chart.parentNode, nextSibling: chart.nextSibling } }))
+  if (groups.length === 0) return
+  zoomedNodes = groups.flatMap(({ chart, findings }) =>
+    [chart, ...findings].map((node) => ({ node, home: { parent: node.parentNode, nextSibling: node.nextSibling } })),
+  )
   const body = document.getElementById("chartZoomBody")
   body.innerHTML = ""
-  charts.forEach(({ chart, label }) => {
+  groups.forEach(({ chart, findings, label }) => {
     const section = document.createElement("div")
     section.className = "chart-zoom-section"
     if (label) {
@@ -2312,7 +2326,19 @@ function openChartZoom() {
       heading.textContent = label
       section.appendChild(heading)
     }
-    section.appendChild(chart)
+    const columns = document.createElement("div")
+    columns.className = "chart-zoom-columns"
+    const chartCol = document.createElement("div")
+    chartCol.className = "chart-zoom-chart-col"
+    chartCol.appendChild(chart)
+    columns.appendChild(chartCol)
+    if (findings.length > 0) {
+      const findingsCol = document.createElement("div")
+      findingsCol.className = "chart-zoom-findings-col"
+      findings.forEach((finding) => findingsCol.appendChild(finding))
+      columns.appendChild(findingsCol)
+    }
+    section.appendChild(columns)
     body.appendChild(section)
   })
   const backdrop = document.getElementById("chartZoomBackdrop")
@@ -2324,11 +2350,16 @@ function openChartZoom() {
   backdrop.classList.add("open")
 }
 function closeChartZoom() {
-  if (zoomedCharts.length === 0) return
+  if (zoomedNodes.length === 0) return
   const backdrop = document.getElementById("chartZoomBackdrop")
   const restore = () => {
-    zoomedCharts.forEach(({ node, home }) => home.parent.insertBefore(node, home.nextSibling))
-    zoomedCharts = []
+    // Reverse order: within a group, a node's own recorded nextSibling is often another node
+    // that ALSO got moved (the chart's original next sibling is its group's first finding, that
+    // finding's is the next one, and so on) -- restoring last-recorded-first guarantees each
+    // nextSibling reference is already back in its parent by the time something needs to
+    // insertBefore it, instead of pointing at a node still sitting detached in the modal.
+    ;[...zoomedNodes].reverse().forEach(({ node, home }) => home.parent.insertBefore(node, home.nextSibling))
+    zoomedNodes = []
     document.getElementById("chartZoomBody").innerHTML = ""
     backdrop.hidden = true
   }
