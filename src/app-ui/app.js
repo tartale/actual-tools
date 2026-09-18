@@ -1358,6 +1358,28 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
   // -- fall back to the legend + tooltip, per the series-count ladder. Only depleting scenarios
   // carry one regardless (see the doc comment on BRIDGE_WINDOW_YEARS for why a funded one doesn't).
   const directLabels = scenarios.length <= 4
+  // "depletes at age N" labels used to sit right on each scenario's own line, at that scenario's
+  // own endY -- which put two labels on top of each other whenever two scenarios happened to
+  // deplete at a similar balance, regardless of how far apart their ages were. Stacked along the
+  // plot's bottom edge instead, ordered left to right by age (soonest first) and built bottom-up
+  // (the same shape as positionedMarkers' own top-down stack above, just anchored to the opposite
+  // edge) -- two labels can never land on the same row regardless of where their lines actually
+  // end, so they can never collide with each other, only ever with the axis (which margin.bottom
+  // already reserves room for).
+  const DEPLETION_LABEL_ROW_STEP = 12
+  const depletionLabels = directLabels
+    ? scenarios
+        .map(({ result, drawn }) => (result.depletionAge == null ? null : { age: result.depletionAge, endX: scaleX(drawn[drawn.length - 1].age) }))
+        .filter((entry) => entry !== null)
+        .sort((a, b) => a.endX - b.endX)
+        .map((entry, row) => ({ ...entry, labelY: height - margin.bottom - 8 - row * DEPLETION_LABEL_ROW_STEP }))
+    : []
+  const depletionLabelsSvg = depletionLabels
+    .map(
+      ({ age, endX, labelY }) =>
+        `<text x="${endX.toFixed(1)}" y="${labelY.toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">depletes at age ${age}</text>`,
+    )
+    .join("")
   const seriesSvg = scenarios
     .map(({ result, drawn, full, trimmed }, index) => {
       const color = BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]
@@ -1410,16 +1432,11 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
           : trimmed
             ? `<path d="M${(endX + 1).toFixed(1)},${(endY - 4).toFixed(1)} L${(endX + 7).toFixed(1)},${endY.toFixed(1)} L${(endX + 1).toFixed(1)},${(endY + 4).toFixed(1)}" fill="none" stroke="${color}" stroke-width="2" class="bridge-end-continues" />`
             : `<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="2" />`
-      const endLabel =
-        directLabels && result.depletionAge != null
-          ? `<text x="${endX.toFixed(1)}" y="${(endY - 9).toFixed(1)}" class="bridge-end-label" text-anchor="${endX > width - margin.right - 56 ? "end" : "middle"}">depletes at age ${result.depletionAge}</text>`
-          : ""
       const lockedDashOffset = lockedPoints.length > 1 ? dashOffsetEndingMidDash(pathPixelLength(lockedPoints, "lockedBalance"), 4, 3) : 0
       return `<g data-series="${index}">
           ${lockedPoints.length > 1 ? `<path d="${linePath(lockedPoints, "lockedBalance")}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4 3" stroke-dashoffset="${lockedDashOffset.toFixed(2)}" opacity="0.55" />` : ""}
           <path d="${linePath(accessiblePoints, "accessibleBalance")}" fill="none" stroke="${color}" stroke-width="2" />
           ${endMarker}
-          ${endLabel}
         </g>`
     })
     .join("")
@@ -1435,21 +1452,20 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
       ${seriesSvg}
       ${unlockLines}
       ${markerLines}
+      ${depletionLabelsSvg}
       <line class="bridge-crosshair" x1="0" y1="${margin.top}" x2="0" y2="${height - margin.bottom}" hidden />
       <rect class="bridge-hit" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="transparent" />
     </svg>
     <div class="bridge-tooltip" hidden></div>
-    ${
-      scenarios.length > 1
-        ? `<div class="bridge-legend">${scenarios
-            .map(
-              ({ result }, index) =>
-                `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${result.retirementAge}</span>`,
-            )
-            .join("")}</div>`
-        : ""
-    }
-    ${showsLocked ? `<div class="bridge-style-key"><span class="bridge-key-line bridge-key-solid"></span>Accessible<span class="bridge-key-line bridge-key-dashed"></span>Locked</div>` : ""}
+    <div class="bridge-chart-side">
+      <div class="bridge-legend">${scenarios
+        .map(
+          ({ result }, index) =>
+            `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${result.retirementAge}</span>`,
+        )
+        .join("")}</div>
+      ${showsLocked ? `<div class="bridge-style-key"><span class="bridge-style-key-item"><span class="bridge-key-line bridge-key-solid"></span>Accessible</span><span class="bridge-style-key-item"><span class="bridge-key-line bridge-key-dashed"></span>Locked</span></div>` : ""}
+    </div>
   `
 
   wireBridgeTooltip(wrap, scenarios, { width, scaleX, minAge, maxAge, margin, plotWidth, currentAge })
@@ -1730,17 +1746,15 @@ function renderMonteCarloChart(monteCarloResults, currentAge, monteCarloHistory 
       <rect class="bridge-hit" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" fill="transparent" />
     </svg>
     <div class="bridge-tooltip" hidden></div>
-    ${
-      series.length > 1
-        ? `<div class="bridge-legend">${series
-            .map(
-              ({ result }, index) =>
-                `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${result.retirementAge}</span>`,
-            )
-            .join("")}</div>`
-        : ""
-    }
-    <div class="bridge-style-key"><span class="mc-key-swatch mc-key-outer"></span>10th-90th<span class="mc-key-swatch mc-key-inner"></span>25th-75th<span class="bridge-key-line"></span>Median</div>
+    <div class="bridge-chart-side">
+      <div class="bridge-legend">${series
+        .map(
+          ({ result }, index) =>
+            `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${result.retirementAge}</span>`,
+        )
+        .join("")}</div>
+      <div class="bridge-style-key"><span class="bridge-style-key-item"><span class="mc-key-swatch mc-key-outer"></span>10th-90th</span><span class="bridge-style-key-item"><span class="mc-key-swatch mc-key-inner"></span>25th-75th</span><span class="bridge-style-key-item"><span class="bridge-key-line"></span>Median</span></div>
+    </div>
   `
 
   wireMonteCarloTooltip(wrap, series, { width, scaleX, minAge, maxAge, margin, plotWidth })
@@ -1918,14 +1932,12 @@ function renderChartSkeleton(ariaLabel, currentAge, planToAge, retirementAges, p
       </svg>
       <div class="chart-loading-overlay"><div class="chart-loading-spinner"><div class="spinner" aria-hidden="true"></div>Loading…</div></div>
     </div>
-    ${
-      retirementAges.length > 1
-        ? `<div class="bridge-legend">${retirementAges
-            .map((age, index) => `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${age}</span>`)
-            .join("")}</div>`
-        : ""
-    }
-    ${styleKey}
+    <div class="bridge-chart-side">
+      <div class="bridge-legend">${retirementAges
+        .map((age, index) => `<span class="bridge-legend-item"><span class="bridge-legend-swatch" style="background:${BRIDGE_SERIES_COLORS[index % BRIDGE_SERIES_COLORS.length]}"></span>Retire at ${age}</span>`)
+        .join("")}</div>
+      ${styleKey}
+    </div>
   `
   return wrap
 }
@@ -1991,9 +2003,9 @@ function renderLoadingSkeleton() {
   // Same style-key markup renderBridgeChart/renderMonteCarloChart themselves emit -- see
   // renderChartSkeleton's own doc comment on why Bridge's is conditional and Monte Carlo's isn't.
   const bridgeStyleKey = hasLockedAccounts
-    ? `<div class="bridge-style-key"><span class="bridge-key-line bridge-key-solid"></span>Accessible<span class="bridge-key-line bridge-key-dashed"></span>Locked</div>`
+    ? `<div class="bridge-style-key"><span class="bridge-style-key-item"><span class="bridge-key-line bridge-key-solid"></span>Accessible</span><span class="bridge-style-key-item"><span class="bridge-key-line bridge-key-dashed"></span>Locked</span></div>`
     : ""
-  const monteCarloStyleKey = `<div class="bridge-style-key"><span class="mc-key-swatch mc-key-outer"></span>10th-90th<span class="mc-key-swatch mc-key-inner"></span>25th-75th<span class="bridge-key-line"></span>Median</div>`
+  const monteCarloStyleKey = `<div class="bridge-style-key"><span class="bridge-style-key-item"><span class="mc-key-swatch mc-key-outer"></span>10th-90th</span><span class="bridge-style-key-item"><span class="mc-key-swatch mc-key-inner"></span>25th-75th</span><span class="bridge-style-key-item"><span class="bridge-key-line"></span>Median</span></div>`
 
   // One placeholder finding row per retirement age -- both bridgeFindings and monteCarloFindings
   // always come back one per configured age (see checkDashboard), so this is a real count, not a
