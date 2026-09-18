@@ -598,10 +598,14 @@ function renderAccounts() {
   list.innerHTML = ""
   const typeKeys = Object.keys(STATE.accountTypes)
 
-  // Pot drain order (see fire-dashboard.ts's buildMonteCarloWidget) only matters for "sequential"
-  // -- every other withdrawal strategy ignores it, so reordering is only offered while that's the
-  // plan's chosen strategy, rather than a control that's live but silently does nothing.
-  const reorderEnabled = STATE.dashboard.monteCarloWithdrawalStrategy === "sequential"
+  // Pot drain order matters whenever there's more than one portfolio account to order -- not just
+  // when the Monte Carlo widget's own strategy is "sequential" (its one-time earlier gate): this
+  // app's own bridge/MAGI simulation reads the same withdrawalOrder field too (see
+  // allocateWithdrawal in fire-analysis.ts), and a plan can care about draw order there without
+  // ever exporting a widget, or while that widget uses a different strategy entirely. A single
+  // portfolio account has nothing to order against, so the control stays hidden until there's
+  // actually a choice to make.
+  const reorderEnabled = STATE.accounts.filter((account) => account.isPortfolio).length > 1
   document.getElementById("reorderHint").hidden = !reorderEnabled
 
   STATE.accounts.forEach((account) => {

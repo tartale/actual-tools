@@ -84,6 +84,66 @@ export interface BridgeAccount {
   // is actually applied, and fire-dashboard.ts's effectiveAccessAge for what grants the early
   // access this prices.
   earlyWithdrawalPenaltyUntilAge: number | null
+  // Same field, same meaning, as ClassifiedAccount's own withdrawalOrder (see fire-accounts.ts) --
+  // reused here rather than re-invented so setting an order once (in the account editor) governs
+  // both Actual's own Monte Carlo widget AND this app's bridge/MAGI simulation, instead of the two
+  // silently disagreeing about draw order. See allocateWithdrawal below for how this is applied.
+  withdrawalOrder: number | null
+}
+
+// Function to split one year's net withdrawal need across a set of already-reachable (accessible)
+// accounts -- shared by simulateBridge's own withdrawal-phase loop (which uses this to actually
+// decrement balances) and fire-generate.ts's MAGI/ACA estimate (which uses this to work out how
+// much of a hypothetical withdrawal would come from which account, without re-simulating a whole
+// trajectory), so the two can never disagree about where a dollar came from the way they used to
+// (accessibleTaxDeferredShare used to guess a tax-deferred SHARE of the accessible balance instead
+// of asking this same allocation, which is exactly why enabling the early-withdrawal-penalty option
+// on a large 401(k) could spike the MAGI estimate even with a smaller, untouched taxable/cash pot
+// still sitting there -- simulateBridge itself drew from both proportionally, by balance, with no
+// way to prefer one pot over another).
+//
+// Sequential (drain pots strictly in withdrawalOrder, ascending, with any unset order sorting last)
+// the moment ANY given account carries a withdrawalOrder -- otherwise proportional, today's
+// long-standing default (each pot contributes its balance-weighted share), so a plan that's never
+// touched the withdrawal-order UI keeps behaving exactly as it always has.
+export interface WithdrawalAllocation {
+  // Parallel to the accounts array passed in -- how much GROSS money (before its own tax rate) came
+  // out of each account this year.
+  grossByIndex: number[]
+  // Total NET money these accounts could produce if fully drained -- the same figure regardless of
+  // allocation order (it only depends on which accounts are reachable and their own balance/rate),
+  // so this is what the caller compares the year's net need against to detect depletion.
+  totalNetCapacity: number
+}
+export function allocateWithdrawal(
+  accounts: readonly { balance: number; withdrawalTaxRate: number; withdrawalOrder: number | null }[],
+  netNeed: number,
+): WithdrawalAllocation {
+  const totalNetCapacity = accounts.reduce((total, account) => total + account.balance * (1 - account.withdrawalTaxRate), 0)
+  if (accounts.some((account) => account.withdrawalOrder != null)) {
+    const order = accounts.map((account, index) => ({ account, index })).sort((a, b) => (a.account.withdrawalOrder ?? Infinity) - (b.account.withdrawalOrder ?? Infinity))
+    const grossByIndex: number[] = accounts.map(() => 0)
+    let remaining = netNeed
+    for (const { account, index } of order) {
+      if (remaining <= 0) break
+      const capacity = account.balance * (1 - account.withdrawalTaxRate)
+      if (capacity <= remaining) {
+        // Drain this pot completely and move to the next one in order.
+        grossByIndex[index] = account.balance
+        remaining -= capacity
+      } else {
+        // This pot alone covers what's left -- withdraw exactly enough gross to net it, then stop.
+        grossByIndex[index] = account.withdrawalTaxRate < 1 ? remaining / (1 - account.withdrawalTaxRate) : account.balance
+        remaining = 0
+      }
+    }
+    return { grossByIndex, totalNetCapacity }
+  }
+  const total = accounts.reduce((sum, account) => sum + account.balance, 0)
+  const netPerGross = total > 0 ? accounts.reduce((sum, account) => sum + (account.balance / total) * (1 - account.withdrawalTaxRate), 0) : 0
+  const gross = netPerGross > 0 ? netNeed / netPerGross : 0
+  const grossByIndex = accounts.map((account) => (total > 0 ? gross * (account.balance / total) : 0))
+  return { grossByIndex, totalNetCapacity }
 }
 
 // Function to resolve one account's ACTUAL withdrawal tax rate for a specific age -- its flat
@@ -91,8 +151,10 @@ export interface BridgeAccount {
 // earlyWithdrawalPenaltyUntilAge (unset for an account not using that option, in which case this
 // is just withdrawalTaxRate itself, every year). Age-dependent, so this can't be baked into
 // BridgeAccount as a single number the way withdrawalTaxRate itself is -- resolved fresh each year
-// inside simulateBridge's own withdrawal-phase loop instead.
-function withdrawalTaxRateAt(account: BridgeAccount, age: number): number {
+// inside simulateBridge's own withdrawal-phase loop, and again by fire-generate.ts's MAGI/ACA
+// estimate (see allocateWithdrawal above), which needs the SAME per-account rate at a given age to
+// stay consistent with what simulateBridge itself would actually do.
+export function withdrawalTaxRateAt(account: BridgeAccount, age: number): number {
   const penalty = account.earlyWithdrawalPenaltyUntilAge != null && age < account.earlyWithdrawalPenaltyUntilAge ? EARLY_WITHDRAWAL_PENALTY_RATE : 0
   return account.withdrawalTaxRate + penalty
 }
@@ -292,21 +354,23 @@ export function simulateBridge(
         recordDepletion(age)
         break
       }
-      const shares = new Map(reachable.map((index) => [index, (balances[index] as number) / reachableTotal]))
-      // Withdrawals are taxed, so funding `spend` net needs a larger gross withdrawal. Each pot
-      // contributes its balance-weighted share of that gross at its own rate.
-      const netPerGross = reachable.reduce(
-        (total, index) => total + (shares.get(index) as number) * (1 - withdrawalTaxRateAt(accounts[index] as BridgeAccount, age)),
-        0,
+      // See allocateWithdrawal's own doc comment -- proportional (today's long-standing default) or
+      // sequential (drain pots in withdrawalOrder), depending on whether any reachable account has
+      // an order set.
+      const allocation = allocateWithdrawal(
+        reachable.map((index) => {
+          const account = accounts[index] as BridgeAccount
+          return { balance: balances[index] as number, withdrawalTaxRate: withdrawalTaxRateAt(account, age), withdrawalOrder: account.withdrawalOrder }
+        }),
+        spend,
       )
-      const gross = netPerGross > 0 ? spend / netPerGross : Infinity
-      if (gross > reachableTotal + FUNDING_TOLERANCE_CENTS) {
+      if (allocation.totalNetCapacity < spend - FUNDING_TOLERANCE_CENTS) {
         recordDepletion(age)
         break
       }
-      for (const index of reachable) {
-        balances[index] = (balances[index] as number) - gross * (shares.get(index) as number)
-      }
+      reachable.forEach((index, position) => {
+        balances[index] = (balances[index] as number) - (allocation.grossByIndex[position] as number)
+      })
     }
 
     accounts.forEach((account, index) => {
@@ -498,6 +562,9 @@ export function toBridgeAccounts(
           // Contributed basis is already unconditionally accessible (IRC Sec. 408A(d)(4)) -- the
           // penalty option has nothing left to grant here.
           earlyWithdrawalPenaltyUntilAge: null,
+          // Same order as the account's own -- basis and growth are one user-configured pot split
+          // into two synthetic entries, not two independently orderable ones.
+          withdrawalOrder: account.withdrawalOrder,
         },
         {
           id: `${account.id}-growth`,
@@ -508,6 +575,7 @@ export function toBridgeAccounts(
           returnMean,
           withdrawalTaxRate,
           earlyWithdrawalPenaltyUntilAge,
+          withdrawalOrder: account.withdrawalOrder,
         },
       ]
     }
@@ -522,6 +590,7 @@ export function toBridgeAccounts(
         returnMean,
         withdrawalTaxRate,
         earlyWithdrawalPenaltyUntilAge,
+        withdrawalOrder: account.withdrawalOrder,
       },
     ]
   })
