@@ -128,7 +128,7 @@ async function openRetirementPage(retirementAges: number[]): Promise<{ page: Pag
   opened.on("pageerror", (error) => errors.push(error.message))
   await opened.goto(server.url)
   await opened.locator('.section-item[data-section="retirement"]').click()
-  await opened.waitForSelector("#checkResult .finding, #checkResult .empty-note", { timeout: 20000 })
+  await opened.waitForSelector("#checkResult .finding, #checkResult .empty-note", { state: "attached", timeout: 20000 })
   return { page: opened, errors }
 }
 
@@ -159,7 +159,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     const chart = await ui.evaluate(() => {
       const el = document.querySelector(".bridge-chart") as HTMLElement
       return {
-        hasLegend: Boolean(el.querySelector(".bridge-legend")), // one scenario -- no legend box
+        legendItems: [...el.querySelectorAll(".bridge-legend-item")].map((e) => e.textContent?.trim()),
         hasStyleKey: Boolean(el.querySelector(".bridge-style-key")), // has locked money -- key shown
         criticalMarkers: el.querySelectorAll(".bridge-end-critical").length,
         unlockLines: el.querySelectorAll(".bridge-unlock-line").length,
@@ -167,7 +167,10 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
         dashedLines: el.querySelectorAll('path[stroke-dasharray]').length,
       }
     })
-    expect(chart.hasLegend).toBe(false)
+    // Shown even for a single scenario now -- the zoom modal's own findings column no longer
+    // states the retirement age in view the way the inline finding text used to, so the legend is
+    // the one place left that says which age this line is.
+    expect(chart.legendItems).toEqual(["Retire at 50"])
     expect(chart.hasStyleKey).toBe(true)
     expect(chart.criticalMarkers).toBe(1)
     // The unlock reference line is a plain line with no label of its own now (the age is already
@@ -267,6 +270,45 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
+  it("keeps the chart, legend, and style-key inline, with findings hidden until zoomed", async () => {
+    const { page: ui, errors } = await openRetirementPage([50, 65])
+    await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
+
+    // Regression: the inline chart used to grow a full-width legend ROW below the SVG, sized off
+    // its own natural (uncompressed) height rather than the real, possibly-compressed space this
+    // card actually has -- style-key items (built from a bare swatch span + bare text, not a
+    // single grouped element the way legend items are) ended up positioned below the chart's real
+    // bottom edge, and separately, the chart's own SVG stopped tracking the container's height at
+    // all once this moved to CSS grid (flex:1, its old sizing hook, does nothing on a grid item).
+    const layout = await ui.evaluate(() => {
+      const chart = document.querySelector(".bridge-chart:not(.mc-chart)") as HTMLElement
+      const chartRect = chart.getBoundingClientRect()
+      const svgRect = chart.querySelector(".bridge-chart-svg")!.getBoundingClientRect()
+      const styleKeyItems = [...chart.querySelectorAll(".bridge-style-key-item")]
+      return {
+        svgTracksChartHeight: Math.abs(svgRect.height - chartRect.height) < 1,
+        // Every style-key item groups its own swatch with its own label -- if the underlying
+        // markup ever regresses to a bare swatch span + bare text (not wrapped together), this
+        // count only sees "found something", not that they're actually paired.
+        styleKeyItemsHaveASwatchEach: styleKeyItems.length > 0 && styleKeyItems.every((item) => item.querySelector(".bridge-key-line, .mc-key-swatch") !== null),
+        styleKeyWithinChartBounds: styleKeyItems.every((item) => item.getBoundingClientRect().bottom <= chartRect.bottom + 1),
+      }
+    })
+    expect(layout.svgTracksChartHeight).toBe(true)
+    expect(layout.styleKeyItemsHaveASwatchEach).toBe(true)
+    expect(layout.styleKeyWithinChartBounds).toBe(true)
+
+    // Findings (the "Ok"/"Warn"/"Fail" chip + prose) are zoom-only now -- the inline card shows
+    // just the chart and its legend/style-key.
+    expect(await ui.locator("#checkResult .finding:visible").count()).toBe(0)
+    await ui.click("#chartZoomOpenBtn")
+    await ui.waitForSelector("#chartZoomBackdrop.open", { timeout: 5000 })
+    await ui.waitForTimeout(300)
+    expect(await ui.locator("#chartZoomBody .finding:visible").count()).toBeGreaterThan(0)
+
+    expect(errors).toEqual([])
+  }, 60000)
+
   it("zoom modal puts findings beside the chart, then restores them on close with nothing lost or duplicated", async () => {
     const { page: ui, errors } = await openRetirementPage([50, 65])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
@@ -340,7 +382,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     opened.on("pageerror", (error) => errors.push(error.message))
     await opened.goto(server.url)
     await opened.locator('.section-item[data-section="retirement"]').click()
-    await opened.waitForSelector("#checkResult .finding, #checkResult .empty-note", { timeout: 20000 })
+    await opened.waitForSelector("#checkResult .finding, #checkResult .empty-note", { state: "attached", timeout: 20000 })
     await opened.waitForTimeout(200)
 
     // :not(.mc-chart): an empty portfolio has no Bridge chart either way, but this also confirms

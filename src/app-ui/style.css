@@ -306,38 +306,77 @@ main:has(#page-retirement.active) { max-width: none; }
   }
   /* A floor, not a fixed size -- shrinks to share the space evenly when both Bridge and Monte
      Carlo findings-groups are present, down to this minimum before anything else (the finding
-     text below it) gives way instead. Also a flex column of its own: the SVG is the one flexible
-     child (flex:1, so it's what actually absorbs the resizing), while the legend/style-key rows
-     below it (bridge-legend, bridge-style-key) stay flex:none so they always keep their own
-     natural height instead of being squeezed to zero by the SVG's height:100% -- which is what
-     pushed them out of the chart's own box entirely and left them overlapping the finding text
-     below.
-  */
+     text below it) gives way instead. A single grid row, not a multi-row span: an earlier version
+     had the SVG spanning multiple auto/min-content rows to sit beside a separately-placed legend
+     and style-key, but a spanning item's OWN size (governed by its aspect-ratio, not a definite
+     height -- flex:1 does nothing for a grid item, unlike the old flex-column layout this
+     replaced) doesn't shrink when the grid's real available height does, leaving the legend/
+     style-key positioned as if the chart were still its own uncompressed natural size -- both
+     ended up invisible, pushed below the chart's real (shorter) bottom edge, the moment this
+     card's own height was ever less than that. bridge-chart-side (see app.js) wraps the legend
+     and style-key in one real element instead, so they're a single grid item occupying the SAME
+     one row the SVG does, positioned by ordinary block flow within it rather than by grid
+     row-track math at all. */
   .retirement-live-sticky .bridge-chart {
     flex: 1 1 0;
     min-height: 160px;
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: 10px;
+    align-items: stretch;
   }
-  .retirement-live-sticky .bridge-chart-svg {
-    flex: 1;
+  .retirement-live-sticky .bridge-chart-svg,
+  .retirement-live-sticky .chart-svg-wrap {
+    grid-column: 1;
+    min-width: 0;
     min-height: 0;
+    /* Definite, not auto -- this grid cell's own height is now always exactly the real available
+       height (the single row stretches to the container, see align-items above), so this can
+       just fill it outright instead of leaning on max-height:100% against an ancestor chain that
+       has to correctly propagate a percentage first. width:auto + aspect-ratio then computes the
+       matching width from THAT real height, clamped by max-width if it would run wider than the
+       column. */
+    height: 100%;
+    width: auto;
+    max-width: 100%;
+    aspect-ratio: 640 / 240;
   }
   /* The loading skeleton (renderChartSkeleton) wraps its own SVG in one extra layer the real
      chart doesn't have (chart-svg-wrap, so the loading overlay/spinner has something to
-     absolutely-position itself against) -- flex:1 on the SVG alone does nothing unless ITS OWN
-     parent is also a flex container passing the space down, so without this the skeleton reverts
-     to the SVG's intrinsic aspect-ratio height instead of the fitted size, and swapping it for the
-     real chart once results land shifts the whole layout. */
+     absolutely-position itself against) -- the wrap gets the sizing rules above, so its own SVG
+     just fills whatever the wrap gives it instead. */
   .retirement-live-sticky .chart-svg-wrap {
     display: flex;
     flex-direction: column;
+  }
+  .retirement-live-sticky .chart-svg-wrap .bridge-chart-svg {
+    height: auto;
+    width: 100%;
+    max-width: none;
+    aspect-ratio: auto;
     flex: 1;
     min-height: 0;
   }
+  .retirement-live-sticky .bridge-chart-side {
+    grid-column: 2;
+    display: flex;
+    flex-direction: column;
+    /* Stretch (not start) so this actually spans the chart's own full height, which is what lets
+       justify-content below split its two groups apart instead of them sitting stacked together
+       at the top. */
+    align-self: stretch;
+    /* The legend (identifies which line is which age) stays pinned to the top, by the chart's own
+       title; the style-key (what solid vs. dashed, or the percentile bands, MEAN) pins to the
+       bottom instead, landing near the chart's own x-axis -- a single child (no style-key, e.g. no
+       locked accounts to explain) just sits at the top same as before, space-between's own
+       behavior for one item. */
+    justify-content: space-between;
+  }
   .retirement-live-sticky .bridge-legend,
   .retirement-live-sticky .bridge-style-key {
-    flex: none;
+    flex-direction: column;
+    align-items: flex-start;
+    flex-wrap: nowrap;
   }
   /* The finding text below each chart never shrinks -- it's already as small as it reads, so a
      tight window takes the space from the chart above (its own flex-shrink), not from here. */
@@ -635,6 +674,14 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .findings-group + .findings-group { border-top: 1px solid var(--line-soft); }
 .findings-group .group-label { padding: 7px 16px 3px; font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
 .finding { padding: 5px 16px 8px; display: grid; grid-template-columns: 60px 1fr; gap: 12px; align-items: start; }
+/* The Analysis findings (chip AND prose) are zoom-only, not inline -- the inline sidebar shows just
+   the chart and its line legend; open the zoom modal (see openChartZoom in app.js) for the "Ok"/
+   "Warn"/"Fail" verdicts and their detail text. Scoped to #checkResult specifically (Budget's own
+   anomaly findings share this same .finding/.chip markup but live in #actionResult, untouched here)
+   and to that container alone -- once a .finding node is reparented into the modal, it's no longer
+   a descendant of #checkResult, so this stops applying with no extra rule needed and it reappears
+   there, in its own column beside the chart. */
+#checkResult .finding { display: none; }
 .chip { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: var(--radius-sm); text-align: center; white-space: nowrap; text-transform: capitalize; }
 .chip.fail { color: var(--fail); background: var(--fail-soft); }
 .chip.warn { color: var(--warn); background: var(--warn-soft); }
@@ -658,7 +705,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .chart-loading-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
 .bridge-grid { stroke: var(--line-soft); stroke-width: 1; }
 .bridge-axis-label { font-size: 9.5px; fill: var(--ink-faint); font-variant-numeric: tabular-nums; }
-.bridge-end-label { font-size: 10px; fill: var(--ink-soft); font-weight: 500; }
+.bridge-end-label { font-size: 8.5px; fill: var(--ink-soft); }
 /* A hollow ring, not a filled dot, so a depleted line reads as "ran out" rather than just "chart
    ends here" -- --fail is a status color and stays off the line itself (which keeps the scenario's
    own categorical color throughout), carried only by this small end mark. */
@@ -712,6 +759,11 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 /* The solid/dashed key, shown only when at least one scenario has locked money on the chart at
    all -- explains the stroke-style half of the encoding once, rather than per scenario. */
 .bridge-style-key { display: flex; align-items: center; gap: 6px; padding: 3px 4px 0; font-size: 10.5px; color: var(--ink-faint); }
+/* Groups each swatch with its own label -- same reason .bridge-legend-item exists for the legend
+   above. Without it, stacking .bridge-style-key itself into a column (see the wide-viewport
+   .retirement-live-sticky rule) stacks its bare children individually instead of by pair: every
+   swatch on its own row, every label on the row after it, rather than swatch-and-label together. */
+.bridge-style-key-item { display: inline-flex; align-items: center; gap: 6px; }
 .bridge-key-line { width: 16px; height: 0; border-top: 2px solid var(--ink-faint); flex: none; }
 .bridge-key-dashed { border-top-style: dashed; margin-left: 10px; }
 /* Neutral (not per-series) swatches for the Monte Carlo chart's own style key -- these explain a
@@ -823,23 +875,54 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
   max-height: 92vh;
   display: flex; flex-direction: column;
 }
-#chartZoomBody { display: flex; flex-direction: column; gap: 16px; flex: 1; min-height: 0; }
+/* Grid, not flex, for splitting the available height between however many chart-zoom-sections are
+   open (1 or 2) -- flex's own "flex: 1 1 0%" distribution turned out to size each section by its
+   OWN content whenever the two sections' content heights differed enough (long real finding text
+   in one, short in the other), rather than the even split flex-basis:0 is supposed to guarantee
+   regardless of content; confirmed live in both Chromium and Firefox. grid-auto-rows: 1fr sidesteps
+   that -- every row gets an equal share of the grid's own height, full stop, independent of what's
+   inside it. */
+#chartZoomBody { display: grid; grid-auto-rows: 1fr; gap: 16px; flex: 1; min-height: 0; }
 /* Both charts stack in one dialog now (see openChartZoom in app.js) -- a divider between sections
    rather than between individual charts, since each section already carries its own group-label.
-   flex:1 splits the available height evenly between however many charts are actually open (usually
-   both, but the Bridge/Monte Carlo groups can each be absent on their own -- see renderCheckResult). */
-.chart-zoom-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.chart-zoom-section + .chart-zoom-section { margin-top: 0; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+   grid-auto-rows: 1fr on #chartZoomBody splits the available height evenly between however many
+   charts are actually open (usually both, but the Bridge/Monte Carlo groups can each be absent on
+   their own -- see renderCheckResult). */
+.chart-zoom-section { min-height: 0; overflow: hidden; display: flex; flex-direction: column; position: relative; }
+/* Drawn inside the grid's own 16px gap via absolute positioning (centered in it, top: -8px) rather
+   than a real border/padding on the section itself -- padding here would eat into just this
+   section's own share of the even grid split above, making it a few pixels shorter than its
+   sibling for no reason other than where the divider happened to be drawn. */
+.chart-zoom-section + .chart-zoom-section::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--line-soft);
+}
 /* Side by side rather than the chart-then-findings stack the inline column always uses -- the
    modal has width the inline sidebar never does, so spending it here means the chart's own line
    legend (drawn inside the chart node itself) never has to fight the findings for the same
    vertical space the way it does inline (see openChartZoom's own doc comment in app.js). */
 .chart-zoom-columns { display: flex; gap: 20px; flex: 1; min-height: 0; }
-.chart-zoom-chart-col { flex: 3 1 0; min-width: 0; display: flex; flex-direction: column; }
+/* min-height: 0 (not just min-width) is load-bearing here -- without it, whenever the Bridge
+   chart's own aspect-ratio-driven natural height (computed off the WIDE available width) exceeds
+   this section's fair share of the modal, this column refuses to shrink below that natural size
+   (flex's own min-height:auto default), forcing its whole .chart-zoom-section taller than its
+   sibling's -- which, since both sections still sum to the same fixed modal height, squeezes the
+   OTHER section (and so its own chart) short. Only shows up with enough finding content on one
+   side to matter -- a short synthetic fixture won't reproduce it, real findings will. */
+.chart-zoom-chart-col { flex: 5 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 /* Scrolls on its own instead of growing the section past the modal's own max-height -- a narrow
    scrollbar in a column with width to spare reads very differently than one squeezed into the
    inline sidebar's own tight column, which is why that fix stops at the modal. */
-.chart-zoom-findings-col { flex: 2 1 260px; min-width: 220px; overflow-y: auto; border-left: 1px solid var(--line-soft); }
+/* Fixed, not growable -- a growable findings column ends up a different actual width per section
+   whenever one side's finding text happens to force a bit more (or less) intrinsic width than the
+   other's, which -- since the chart SVG next to it holds a fixed aspect-ratio -- silently changes
+   that chart's own rendered HEIGHT too. A fixed width keeps both sections' chart columns (and so
+   both charts) exactly the same height regardless of what either one's findings happen to say. */
+.chart-zoom-findings-col { flex: 0 0 260px; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; border-left: 1px solid var(--line-soft); }
 .chart-zoom-findings-col .finding { padding: 5px 0 8px 16px; }
 .modal-chart #chartZoomBody .bridge-chart { margin: 4px 0 2px; cursor: default; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; }
 /* aspect-ratio (not object-fit:contain, and not the in-page width:100%;height:auto -- see the base
