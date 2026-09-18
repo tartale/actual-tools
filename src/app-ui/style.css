@@ -672,8 +672,9 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .line .num { color: var(--accent-selected); font-weight: 500; }
 
 .findings-group + .findings-group { border-top: 1px solid var(--line-soft); }
-.findings-group .group-label { padding: 7px 16px 3px; font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
-.finding { padding: 5px 16px 8px; display: grid; grid-template-columns: 60px 1fr; gap: 12px; align-items: start; }
+.findings-group .group-label,
+.chart-zoom-section .group-label { padding: 7px 16px 3px; font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
+.finding { padding: 5px 16px 8px; display: grid; grid-template-columns: 70px 1fr; gap: 12px; align-items: start; }
 /* The Analysis findings (chip AND prose) are zoom-only, not inline -- the inline sidebar shows just
    the chart and its line legend; open the zoom modal (see openChartZoom in app.js) for the "Ok"/
    "Warn"/"Fail" verdicts and their detail text. Scoped to #checkResult specifically (Budget's own
@@ -765,13 +766,21 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    swatch on its own row, every label on the row after it, rather than swatch-and-label together. */
 .bridge-style-key-item { display: inline-flex; align-items: center; gap: 6px; }
 .bridge-key-line { width: 16px; height: 0; border-top: 2px solid var(--ink-faint); flex: none; }
-.bridge-key-dashed { border-top-style: dashed; margin-left: 10px; }
+/* No left margin -- that was for spacing this swatch away from the PRECEDING item's label when
+   everything sat in one inline row (see bridge-style-key's own history); now every swatch+label
+   pair is its own self-contained bridge-style-key-item, so a margin here only ever misaligned this
+   swatch against its sibling's when the two stack into a column instead. */
+.bridge-key-dashed { border-top-style: dashed; }
 /* Neutral (not per-series) swatches for the Monte Carlo chart's own style key -- these explain a
    band WIDTH convention shared by every series, not one series' identity, the same reasoning as
    Bridge's own accessible/locked key above using ink rather than a series color. */
 .mc-key-swatch { width: 14px; height: 10px; border-radius: 2px; flex: none; background: var(--ink-faint); }
-.mc-key-outer { opacity: 0.3; margin-left: 4px; }
-.mc-key-inner { opacity: 0.6; margin-left: 10px; }
+/* No left margins -- same reasoning as bridge-key-dashed above: these were spacing for an inline
+   row where every swatch+label sat one after another, not for a swatch each in its own
+   self-contained bridge-style-key-item, where a margin here only misaligns it against its
+   siblings once they stack into a column. */
+.mc-key-outer { opacity: 0.3; }
+.mc-key-inner { opacity: 0.6; }
 .bridge-tooltip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45); padding: 6px 9px; font-size: 11px; white-space: nowrap; }
 .bridge-tooltip[hidden] { display: none; }
 .bridge-tooltip-age { font-size: 10px; color: var(--ink-faint); margin-bottom: 3px; }
@@ -875,6 +884,10 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
   max-height: 92vh;
   display: flex; flex-direction: column;
 }
+/* Matches .card-head's own border-bottom -- the modal is this chart's "card" for zoom purposes, so
+   its title gets the same divider separating it from the chart section below as .card-head has
+   above every other section on the page. */
+.modal-chart #chartZoomTitle { padding-bottom: 12px; border-bottom: 1px solid var(--line-soft); }
 /* Grid, not flex, for splitting the available height between however many chart-zoom-sections are
    open (1 or 2) -- flex's own "flex: 1 1 0%" distribution turned out to size each section by its
    OWN content whenever the two sections' content heights differed enough (long real finding text
@@ -889,16 +902,17 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    charts are actually open (usually both, but the Bridge/Monte Carlo groups can each be absent on
    their own -- see renderCheckResult). */
 .chart-zoom-section { min-height: 0; overflow: hidden; display: flex; flex-direction: column; position: relative; }
-/* Drawn inside the grid's own 16px gap via absolute positioning (centered in it, top: -8px) rather
-   than a real border/padding on the section itself -- padding here would eat into just this
-   section's own share of the even grid split above, making it a few pixels shorter than its
-   sibling for no reason other than where the divider happened to be drawn. */
-.chart-zoom-section + .chart-zoom-section::before {
-  content: "";
-  position: absolute;
-  top: -8px;
-  left: 0;
-  right: 0;
+/* A negative margin-top/padding-top pair rather than a plain border/padding on the section -- the
+   two cancel out (net zero extra space), so this doesn't eat into this section's own share of the
+   even grid split above, but the section's box itself still shifts up 8px into the grid's own 16px
+   gap, centering the border there. An earlier version drew this via an absolutely positioned
+   ::before at top:-8px instead -- that sits OUTSIDE this section's own border box, which this
+   section's own overflow:hidden (needed elsewhere -- see .chart-zoom-section above) then silently
+   clipped, so the divider never actually painted despite matching computed styles. Margin, not
+   position, moves the box itself, so there's nothing left outside it to clip. */
+.chart-zoom-section + .chart-zoom-section {
+  margin-top: -8px;
+  padding-top: 8px;
   border-top: 1px solid var(--line-soft);
 }
 /* Side by side rather than the chart-then-findings stack the inline column always uses -- the
@@ -922,9 +936,24 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    other's, which -- since the chart SVG next to it holds a fixed aspect-ratio -- silently changes
    that chart's own rendered HEIGHT too. A fixed width keeps both sections' chart columns (and so
    both charts) exactly the same height regardless of what either one's findings happen to say. */
-.chart-zoom-findings-col { flex: 0 0 260px; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; border-left: 1px solid var(--line-soft); }
+.chart-zoom-findings-col { flex: 0 0 320px; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; border-left: 1px solid var(--line-soft); }
 .chart-zoom-findings-col .finding { padding: 5px 0 8px 16px; }
-.modal-chart #chartZoomBody .bridge-chart { margin: 4px 0 2px; cursor: default; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; }
+/* Flex row, not grid -- a grid column sized "auto" against an aspect-ratio item with a
+   percentage/stretched height turns out to hit CSS Grid's own item-vs-track circular-sizing case
+   (the column's auto width was computed off the SVG's un-stretched natural size, ~730px, rather
+   than its actual ~560px rendered width), leaving the same wide gap this was meant to close.
+   Flexbox has no such track to reserve -- each child is placed at its own real box size, so the
+   side column ends up flush against wherever the SVG actually renders. */
+.modal-chart #chartZoomBody .bridge-chart {
+  margin: 4px 0 2px;
+  cursor: default;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  column-gap: 10px;
+  align-items: stretch;
+}
 /* aspect-ratio (not object-fit:contain, and not the in-page width:100%;height:auto -- see the base
    .bridge-chart-svg rule) so the SVG element's own box is EXACTLY its visible content, at whichever
    of width or height is the tighter constraint here (unlike the in-page chart, height is now just
@@ -932,11 +961,31 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    letterboxing the content inside a box that keeps the flex-allocated (wrong) aspect ratio --
    wireBridgeTooltip/wireMonteCarloTooltip read the mouse position against the SVG's own
    getBoundingClientRect(), so that leftover letterboxed margin inside the element's box silently
-   shifted every hover age off from the cursor's real position. align-items:center on the parent
-   (above) centers this box when its aspect-ratio makes it narrower than the available width. */
-.modal-chart #chartZoomBody .bridge-chart-svg { flex: 1; min-height: 0; max-width: 100%; max-height: 100%; width: auto; height: auto; aspect-ratio: 640 / 240; }
+   shifted every hover age off from the cursor's real position. flex: 0 0 auto (no grow, no shrink)
+   keeps this at exactly that computed box -- flex-grow would stretch it to fill the row's leftover
+   main-axis space, ignoring the aspect-ratio the same way the abandoned grid track did. */
+.modal-chart #chartZoomBody .bridge-chart-svg {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  width: auto;
+  aspect-ratio: 640 / 240;
+}
+.modal-chart #chartZoomBody .bridge-chart-side {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  justify-content: space-between;
+}
 .modal-chart #chartZoomBody .bridge-legend,
-.modal-chart #chartZoomBody .bridge-style-key { flex: none; }
+.modal-chart #chartZoomBody .bridge-style-key {
+  flex-direction: column;
+  align-items: flex-start;
+  flex-wrap: nowrap;
+  flex: none;
+}
 /* A chart still in its normal in-page spot (not already zoomed into the modal) invites the click
    that opens it -- see addChartZoom in app.js. */
 .chart-zoomable { cursor: zoom-in; }
