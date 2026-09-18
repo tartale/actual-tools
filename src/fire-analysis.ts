@@ -89,6 +89,11 @@ export interface BridgeAccount {
   // both Actual's own Monte Carlo widget AND this app's bridge/MAGI simulation, instead of the two
   // silently disagreeing about draw order. See allocateWithdrawal below for how this is applied.
   withdrawalOrder: number | null
+  // Whether this account's own ClassifiedAccount.taxTreatment is "tax-deferred" -- set by
+  // toBridgeAccounts. simulateBridge itself has no notion of WHY this matters (fire-generate.ts's
+  // reserve-pacing search is the one caller that does -- see allocateWithdrawal's own
+  // nonTaxDeferredPaceCap parameter), it just needs to know which pots that pacing applies to.
+  isTaxDeferred: boolean
 }
 
 // Function to split one year's net withdrawal need across a set of already-reachable (accessible)
@@ -106,20 +111,7 @@ export interface BridgeAccount {
 // the moment ANY given account carries a withdrawalOrder -- otherwise proportional, today's
 // long-standing default (each pot contributes its balance-weighted share), so a plan that's never
 // touched the withdrawal-order UI keeps behaving exactly as it always has.
-export interface WithdrawalAllocation {
-  // Parallel to the accounts array passed in -- how much GROSS money (before its own tax rate) came
-  // out of each account this year.
-  grossByIndex: number[]
-  // Total NET money these accounts could produce if fully drained -- the same figure regardless of
-  // allocation order (it only depends on which accounts are reachable and their own balance/rate),
-  // so this is what the caller compares the year's net need against to detect depletion.
-  totalNetCapacity: number
-}
-export function allocateWithdrawal(
-  accounts: readonly { balance: number; withdrawalTaxRate: number; withdrawalOrder: number | null }[],
-  netNeed: number,
-): WithdrawalAllocation {
-  const totalNetCapacity = accounts.reduce((total, account) => total + account.balance * (1 - account.withdrawalTaxRate), 0)
+function coreAllocate(accounts: readonly { balance: number; withdrawalTaxRate: number; withdrawalOrder: number | null }[], netNeed: number): { grossByIndex: number[] } {
   if (accounts.some((account) => account.withdrawalOrder != null)) {
     const order = accounts.map((account, index) => ({ account, index })).sort((a, b) => (a.account.withdrawalOrder ?? Infinity) - (b.account.withdrawalOrder ?? Infinity))
     const grossByIndex: number[] = accounts.map(() => 0)
@@ -137,12 +129,81 @@ export function allocateWithdrawal(
         remaining = 0
       }
     }
-    return { grossByIndex, totalNetCapacity }
+    return { grossByIndex }
   }
   const total = accounts.reduce((sum, account) => sum + account.balance, 0)
   const netPerGross = total > 0 ? accounts.reduce((sum, account) => sum + (account.balance / total) * (1 - account.withdrawalTaxRate), 0) : 0
   const gross = netPerGross > 0 ? netNeed / netPerGross : 0
   const grossByIndex = accounts.map((account) => (total > 0 ? gross * (account.balance / total) : 0))
+  return { grossByIndex }
+}
+
+export interface WithdrawalAllocation {
+  // Parallel to the accounts array passed in -- how much GROSS money (before its own tax rate) came
+  // out of each account this year.
+  grossByIndex: number[]
+  // Total NET money these accounts could produce if fully drained -- the same figure regardless of
+  // allocation order (it only depends on which accounts are reachable and their own balance/rate),
+  // so this is what the caller compares the year's net need against to detect depletion.
+  totalNetCapacity: number
+}
+// nonTaxDeferredPaceCap (null by default): the reserve-pacing search in fire-generate.ts's one
+// caller -- when given, this is a NET dollar budget for the non-tax-deferred pots ALONE this year
+// (see simulateBridge's own nonTaxableWithdrawalCapAt), not a hard limit. Three tiers, each just a
+// sub-call into coreAllocate above (against whichever accounts are left in play, using their own
+// REMAINING balance after any earlier tier already drew from them, not their original one):
+//   1. non-tax-deferred, up to min(netNeed, nonTaxDeferredPaceCap) -- preserves the rest of this
+//      pot for future years, same reasoning as the Medicare-age pacing formula that produces the
+//      cap itself.
+//   2. tax-deferred, for whatever's left of netNeed after (1).
+//   3. non-tax-deferred AGAIN, past its own pace cap, for whatever's STILL left -- a real spending
+//      need beats a pacing target, the same "last resort" principle withdrawalOrder's own overflow
+//      already uses (see coreAllocate's sequential branch).
+export function allocateWithdrawal(
+  accounts: readonly { balance: number; withdrawalTaxRate: number; withdrawalOrder: number | null; isTaxDeferred: boolean }[],
+  netNeed: number,
+  nonTaxDeferredPaceCap: number | null = null,
+): WithdrawalAllocation {
+  const totalNetCapacity = accounts.reduce((total, account) => total + account.balance * (1 - account.withdrawalTaxRate), 0)
+  const grossByIndex: number[] = accounts.map(() => 0)
+  const remainingBalance = accounts.map((account) => account.balance)
+  const allIndices = accounts.map((_, index) => index)
+
+  // Runs coreAllocate against just the given indices' CURRENT remaining balance, merges the result
+  // into grossByIndex/remainingBalance, and returns how much NET need it actually covered (which
+  // can be less than requested once a subset's own capacity runs out). Clamps `need` to this
+  // subset's own remaining net capacity first -- coreAllocate's proportional branch doesn't cap a
+  // single sub-call to a subset's own balance (an over-request there just scales every share up
+  // past 100%, same as the top-level, pre-tiering caller already tolerated, trusting a NET-capacity
+  // check made before ever using the numbers) -- but a middle tier here has no such check of its
+  // own, so skipping the clamp would silently push a subset's remainingBalance negative.
+  const allocateAmong = (indices: number[], need: number): number => {
+    if (need <= 0 || indices.length === 0) return 0
+    const subsetCapacity = indices.reduce((sum, index) => sum + (remainingBalance[index] as number) * (1 - (accounts[index] as (typeof accounts)[number]).withdrawalTaxRate), 0)
+    const clampedNeed = Math.min(need, subsetCapacity)
+    if (clampedNeed <= 0) return 0
+    const subset = indices.map((index) => ({ ...(accounts[index] as (typeof accounts)[number]), balance: remainingBalance[index] as number }))
+    const { grossByIndex: subGross } = coreAllocate(subset, clampedNeed)
+    let covered = 0
+    indices.forEach((index, position) => {
+      const gross = subGross[position] as number
+      grossByIndex[index] = (grossByIndex[index] as number) + gross
+      remainingBalance[index] = (remainingBalance[index] as number) - gross
+      covered += gross * (1 - (accounts[index] as (typeof accounts)[number]).withdrawalTaxRate)
+    })
+    return covered
+  }
+
+  if (nonTaxDeferredPaceCap == null) {
+    allocateAmong(allIndices, netNeed)
+    return { grossByIndex, totalNetCapacity }
+  }
+  const nonTaxDeferredIdx = allIndices.filter((index) => !(accounts[index] as (typeof accounts)[number]).isTaxDeferred)
+  const taxDeferredIdx = allIndices.filter((index) => (accounts[index] as (typeof accounts)[number]).isTaxDeferred)
+  let remaining = netNeed
+  remaining -= allocateAmong(nonTaxDeferredIdx, Math.min(remaining, nonTaxDeferredPaceCap))
+  remaining -= allocateAmong(taxDeferredIdx, remaining)
+  allocateAmong(nonTaxDeferredIdx, remaining)
   return { grossByIndex, totalNetCapacity }
 }
 
@@ -268,6 +329,13 @@ export function simulateBridge(
   annualSpend: number,
   inflationMean: number,
   incomeStreams: readonly RetirementIncomeStream[] = [],
+  // Called once per withdrawal-phase year (age, that year's total non-tax-deferred BALANCE) to get
+  // a NET dollar cap on how much of this year's non-tax-deferred draw goes toward pacing a reserve
+  // rather than actually being needed -- see allocateWithdrawal's own nonTaxDeferredPaceCap
+  // parameter for the tiering this feeds into. simulateBridge has no notion of WHY a cap might be
+  // wanted (Medicare-age reserve pacing, in fire-generate.ts's one caller) -- undefined (the
+  // default) means every year passes null through, today's behavior unchanged.
+  nonTaxableWithdrawalCapAt?: (age: number, nonTaxDeferredBalance: number) => number,
 ): BridgeResult {
   const balances = accounts.map((account) => account.balance)
   const isAccessible = (account: BridgeAccount, age: number): boolean => account.accessAge == null || age >= account.accessAge
@@ -357,12 +425,16 @@ export function simulateBridge(
       // See allocateWithdrawal's own doc comment -- proportional (today's long-standing default) or
       // sequential (drain pots in withdrawalOrder), depending on whether any reachable account has
       // an order set.
+      const reachableAccounts = reachable.map((index) => accounts[index] as BridgeAccount)
+      const nonTaxDeferredBalance = reachable.reduce((total, index, position) => total + ((reachableAccounts[position] as BridgeAccount).isTaxDeferred ? 0 : (balances[index] as number)), 0)
+      const nonTaxDeferredPaceCap = nonTaxableWithdrawalCapAt != null ? nonTaxableWithdrawalCapAt(age, nonTaxDeferredBalance) : null
       const allocation = allocateWithdrawal(
         reachable.map((index) => {
           const account = accounts[index] as BridgeAccount
-          return { balance: balances[index] as number, withdrawalTaxRate: withdrawalTaxRateAt(account, age), withdrawalOrder: account.withdrawalOrder }
+          return { balance: balances[index] as number, withdrawalTaxRate: withdrawalTaxRateAt(account, age), withdrawalOrder: account.withdrawalOrder, isTaxDeferred: account.isTaxDeferred }
         }),
         spend,
+        nonTaxDeferredPaceCap,
       )
       if (allocation.totalNetCapacity < spend - FUNDING_TOLERANCE_CENTS) {
         recordDepletion(age)
@@ -565,6 +637,9 @@ export function toBridgeAccounts(
           // Same order as the account's own -- basis and growth are one user-configured pot split
           // into two synthetic entries, not two independently orderable ones.
           withdrawalOrder: account.withdrawalOrder,
+          // A Roth IRA's taxTreatment is never "tax-deferred" -- both synthetic entries share the
+          // one parent account's own value, same as withdrawalOrder above.
+          isTaxDeferred: account.taxTreatment === "tax-deferred",
         },
         {
           id: `${account.id}-growth`,
@@ -576,6 +651,7 @@ export function toBridgeAccounts(
           withdrawalTaxRate,
           earlyWithdrawalPenaltyUntilAge,
           withdrawalOrder: account.withdrawalOrder,
+          isTaxDeferred: account.taxTreatment === "tax-deferred",
         },
       ]
     }
@@ -591,6 +667,7 @@ export function toBridgeAccounts(
         withdrawalTaxRate,
         earlyWithdrawalPenaltyUntilAge,
         withdrawalOrder: account.withdrawalOrder,
+        isTaxDeferred: account.taxTreatment === "tax-deferred",
       },
     ]
   })
