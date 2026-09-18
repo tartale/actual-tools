@@ -385,7 +385,10 @@ export interface ClassifiedAccount {
   // natural (Actual account list) order for anything left null, so setting this for a handful of
   // accounts and leaving the rest alone still produces a sane, stable order. Meaningless for every
   // other withdrawal strategy (proportional/best-performer/target-mix don't read pot order at
-  // all), which is why the UI only exposes drag-to-reorder while "sequential" is selected.
+  // all), which is why the UI only exposes drag-to-reorder while "sequential" is selected. Also read
+  // by this app's OWN bridge/MAGI simulation (see allocateWithdrawal in fire-analysis.ts) -- the
+  // same field governs both, so setting an order once doesn't leave the two disagreeing about draw
+  // order the way they used to.
   withdrawalOrder: number | null
 }
 

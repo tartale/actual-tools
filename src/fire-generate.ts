@@ -14,6 +14,7 @@ import type { ClassifiedAccount } from "./fire-accounts.ts"
 import { effectiveAccessAge, portfolioAccountIds } from "./fire-dashboard.ts"
 import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 import {
+  allocateWithdrawal,
   bridgeFinding,
   calculateMortgagePayoff,
   historicalBridgeYear,
@@ -22,6 +23,7 @@ import {
   projectAccountBalance,
   simulateBridge,
   toBridgeAccounts,
+  withdrawalTaxRateAt,
 } from "./fire-analysis.ts"
 import type { BridgeResult, Finding } from "./fire-analysis.ts"
 import { runRetirementMonteCarlo } from "./fire-monte-carlo.ts"
@@ -361,48 +363,60 @@ export async function checkDashboard(
   // year's MAGI/effective-tax-rate -- see magiFinding's own doc comment for the simplifying
   // assumptions. Skipped (not an error) whenever filing status or the tax-bracket table is missing,
   // same convention as ruleOf55Boosts/debtPayoffs being empty rather than reported as broken.
-  // Share of the portfolio balance that's BOTH tax-deferred AND actually reachable at a given AGE
-  // -- e.g. a 401(k) still locked behind its own accessAge contributes 0, not its balance, exactly
-  // matching isAccessible's own check inside simulateBridge. retirementAge is separate from evalAge
-  // (the year actually being priced) because it's only what effectiveAccessAge needs to decide
-  // whether a Rule-of-55 boost applies at all (a fact fixed once per scenario); evalAge is what
-  // decides whether a given account has actually UNLOCKED by then, which -- unlike the boost
-  // eligibility itself -- keeps changing across the years a single scenario's own trajectory covers
-  // (see magiInputsAt/acaCliffCrossings below, both of which call this at more than just the
-  // retirement year itself). Using today's real balances (not a forward projection to evalAge) is a
-  // deliberate simplification -- the dominant source of error this corrects for is locked-vs-
-  // accessible (all-or-nothing per account), not the smaller effect of accounts growing at slightly
-  // different rates in between.
-  const accessibleTaxDeferredShare = (evalAge: number, retirementAge: number): number => {
-    const portfolioAccounts = accounts.filter((account) => portfolioIds.includes(account.id))
-    let accessibleTotal = 0
-    let accessibleTaxDeferred = 0
-    for (const account of portfolioAccounts) {
-      const accessAge = effectiveAccessAge(account, retirementAge)
-      if (accessAge != null && evalAge < accessAge) continue // still locked at this age
-      const balance = balances.get(account.id) ?? 0
-      accessibleTotal += balance
-      if (account.taxTreatment === "tax-deferred") accessibleTaxDeferred += balance
-    }
-    return accessibleTotal > 0 ? accessibleTaxDeferred / accessibleTotal : 0
-  }
+  // toBridgeAccounts' own id, for every portfolio account -- a Roth IRA with a basis split becomes
+  // two synthetic bridge accounts (see toBridgeAccounts's own doc comment) that share one parent's
+  // taxTreatment, so this is a small separate lookup rather than adding taxTreatment onto
+  // BridgeAccount itself, which allocateWithdrawal (simulateBridge's own concern too) has no use
+  // for.
+  const taxTreatmentByBridgeId = new Map<string, ClassifiedAccount["taxTreatment"]>(
+    accounts
+      .filter((account) => portfolioIds.includes(account.id))
+      .flatMap((account) =>
+        account.type === "roth-ira" && account.rothBasis != null && account.rothBasis > 0
+          ? ([
+              [`${account.id}-basis`, account.taxTreatment],
+              [`${account.id}-growth`, account.taxTreatment],
+            ] as const)
+          : ([[account.id, account.taxTreatment]] as const),
+      ),
+  )
 
   // Function to estimate one scenario's ordinary-income inputs at a given age -- shared by
   // magiFinding's own call below (at the retirement age only) and acaCliffCrossings (which needs
   // the same figures at every age of the trajectory to find when, if ever, MAGI crosses the ACA
-  // subsidy cliff).
+  // subsidy cliff). Runs allocateWithdrawal against the SAME toBridgeAccounts this scenario's own
+  // simulateBridge call uses (see currentBridgeAccounts above) -- an earlier version guessed a
+  // tax-deferred SHARE of the accessible balance instead of asking this same allocation, which is
+  // exactly why enabling the early-withdrawal-penalty option on a large 401(k) could spike this
+  // estimate even with a smaller, untouched taxable/cash pot still sitting there: that guess assumed
+  // every pot got drawn from proportionally, with no way to prefer one pot -- or respect a
+  // configured withdrawalOrder -- over another. retirementAge is separate from evalAge (the year
+  // actually being priced) because it's only what effectiveAccessAge needs to decide whether a
+  // Rule-of-55 boost applies at all (a fact fixed once per scenario); evalAge is what decides
+  // whether a given account has actually UNLOCKED by then, which -- unlike the boost eligibility
+  // itself -- keeps changing across the years a single scenario's own trajectory covers. Using
+  // today's real balances (not a forward projection to evalAge) is a deliberate simplification --
+  // the dominant source of error this corrects for is locked-vs-accessible (all-or-nothing per
+  // account) and draw ORDER, not the smaller effect of accounts growing at slightly different rates
+  // in between.
   const magiInputsAt = (age: number, retirementAge: number) => {
     // incomeStreams here is the FULL merged set (pension/SS + any debt-freed-up cash flow) --
     // matches simulateBridge's own netting exactly, so a paid-off mortgage correctly lowers the
     // withdrawal this estimates without also being (wrongly) treated as taxable income itself.
     const incomeAtAge = incomeStreams.filter((s) => s.startAge <= age).reduce((sum, s) => sum + s.annualAmount, 0)
     const netWithdrawalNeed = Math.max(0, projectedSpendAt(age) - incomeAtAge)
-    // Only the ACCESSIBLE tax-deferred share of that withdrawal counts here -- a locked 401(k)
-    // can't fund this year's spend at all, so assuming the whole need is tax-deferred (as an
-    // earlier version of this did) overstated MAGI for exactly the FIRE/early-retirement case this
-    // app is built around, where tax-deferred money is routinely still locked at the chosen
-    // retirement age and the real withdrawal is coming from taxable/cash/Roth money instead.
-    const grossTaxDeferredWithdrawal = Math.round(netWithdrawalNeed * accessibleTaxDeferredShare(age, retirementAge))
+    const bridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge)
+    // Only accounts actually reachable at this age -- a 401(k) still locked behind its own accessAge
+    // can't fund this year's spend at all, exactly matching isAccessible's own check inside
+    // simulateBridge.
+    const reachable = bridgeAccounts.filter((account) => account.accessAge == null || age >= account.accessAge)
+    const allocation = allocateWithdrawal(
+      reachable.map((account) => ({ balance: account.balance, withdrawalTaxRate: withdrawalTaxRateAt(account, age), withdrawalOrder: account.withdrawalOrder })),
+      netWithdrawalNeed,
+    )
+    const grossTaxDeferredWithdrawal = Math.round(
+      reachable.reduce((sum, account, index) => sum + (taxTreatmentByBridgeId.get(account.id) === "tax-deferred" ? (allocation.grossByIndex[index] as number) : 0), 0),
+    )
     // options.incomeStreams (pension/SS only, pre-merge) for the RAW figures MAGI needs as their
     // own separate ordinary-income lines -- already netted out of netWithdrawalNeed above, so
     // adding them back here (rather than re-deriving them some other way) is what keeps the total

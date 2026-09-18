@@ -25,6 +25,7 @@ function bridgeAccount(overrides: Partial<BridgeAccount> & Pick<BridgeAccount, "
     returnMean: 0,
     withdrawalTaxRate: 0,
     earlyWithdrawalPenaltyUntilAge: null,
+    withdrawalOrder: null,
     ...overrides,
   }
 }
@@ -202,6 +203,30 @@ describe("simulateBridge", () => {
   it("never adds the penalty for an account with no earlyWithdrawalPenaltyUntilAge set", () => {
     const result = simulateBridge([bridgeAccount({ id: "a1", balance: 1000, withdrawalTaxRate: 0 })], 50, 50, 100, 100, 0)
     expect(result.timeline[1]?.accessibleBalance).toBe(900)
+  })
+
+  it("drains pots strictly in withdrawalOrder once any account has one set, instead of proportionally", () => {
+    const accounts = [
+      bridgeAccount({ id: "cheap", balance: 200, withdrawalOrder: 0 }),
+      bridgeAccount({ id: "expensive", balance: 10000, withdrawalTaxRate: 0.5, withdrawalOrder: 1 }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 53, 100, 0)
+    // Ages 50-51: the tax-free "cheap" pot alone funds the full 100/yr net need, no tax owed --
+    // spent down 200 -> 100 -> 0, "expensive" untouched. Age 52 onward: "cheap" is empty, so
+    // "expensive" starts paying, now owing its own 50% tax (100 net costs 200 gross).
+    expect(result.timeline.map((point) => point.accessibleBalance)).toEqual([10200, 10100, 10000, 9800])
+  })
+
+  it("sorts an unset withdrawalOrder after every explicitly ordered pot, once any pot has one", () => {
+    const accounts = [
+      // Listed first, and far larger, but with no order set -- must still be drained LAST.
+      bridgeAccount({ id: "unordered", balance: 10000 }),
+      bridgeAccount({ id: "ordered", balance: 200, withdrawalOrder: 0 }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 53, 100, 0)
+    // Same shape as the explicit-order test above -- "ordered" (200) funds ages 50-51 alone, then
+    // "unordered" (10000) takes over from age 52.
+    expect(result.timeline.map((point) => point.accessibleBalance)).toEqual([10200, 10100, 10000, 9900])
   })
 
   it("accumulates contributions until retirement, then stops", () => {

@@ -467,6 +467,45 @@ describe("GET /api/retirement/check", () => {
     expect(magi?.detail[0]).toContain("$0.00 tax-deferred")
   })
 
+  it("respects withdrawalOrder in the MAGI estimate, favoring an ordered-first taxable pot over a proportional blend", async () => {
+    const boot0 = {
+      accounts: [
+        { id: "cash", name: "Brokerage", offbudget: true, closed: false },
+        { id: "401k", name: "Fidelity 401k", offbudget: true, closed: false },
+      ],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { cash: [{ amount: 50_000_00, transfer_id: null }], "401k": [{ amount: 500_000_00, transfer_id: null }] },
+      // $2,000/mo = $24,000/yr -- comfortably covered by the $50,000 taxable pot alone.
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    }
+    const url = await boot(boot0)
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [51], planToAge: 90, filingStatus: "single" }) })
+    await fetch(`${url}api/retirement/accounts/cash`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+    // Accepting the 10% penalty makes the 401k reachable immediately, well before its own default
+    // access age -- the exact combination that used to spike this estimate (see allocateWithdrawal's
+    // own doc comment): with no order set, the withdrawal is assumed proportional across both
+    // reachable pots even though the smaller, untouched cash pot alone could cover it.
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true }) })
+
+    const beforeOrder = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    const magiBefore = beforeOrder.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magiBefore?.detail[0]).not.toContain("$0.00 tax-deferred")
+
+    // Draining the cash pot first (order 0) before ever touching the 401k (order 1) is exactly what
+    // Actual's own Monte Carlo widget already does with this same field -- now the bridge/MAGI
+    // estimate agrees with it instead of assuming a proportional blend.
+    await fetch(`${url}api/retirement/accounts/cash`, { method: "PATCH", body: JSON.stringify({ withdrawalOrder: 0 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ withdrawalOrder: 1 }) })
+
+    const afterOrder = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    const magiAfter = afterOrder.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magiAfter?.detail[0]).toContain("$0.00 tax-deferred")
+  })
+
   const FEDERAL_POVERTY_GUIDELINES_FIXTURE = {
     guidelineYear: 2025,
     source: "https://example.com",

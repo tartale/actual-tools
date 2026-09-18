@@ -223,6 +223,20 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
+  it("shows the drag-to-reorder handle once there are 2+ portfolio accounts, regardless of the Monte Carlo widget's own withdrawal strategy", async () => {
+    // Regression: the reorder handle used to only appear once the Monte Carlo widget's own
+    // "Drain pots in order" strategy was selected -- now that this app's own bridge/MAGI simulation
+    // reads the same withdrawalOrder field (see allocateWithdrawal in fire-analysis.ts), the handle
+    // has to be available whenever there's more than one portfolio account to order, independent of
+    // that widget setting (left at its default here -- never set to "sequential").
+    const { page: ui, errors } = await openRetirementPage([50])
+    await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
+
+    const handles = await ui.evaluate(() => document.querySelectorAll("#accountsList .drag-handle").length)
+    expect(handles).toBe(2)
+    expect(errors).toEqual([])
+  }, 60000)
+
   it("compares two retirement ages on one chart, with a legend and independent lines", async () => {
     const { page: ui, errors } = await openRetirementPage([50, 65])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
