@@ -496,7 +496,7 @@ export async function patchTransactionNotes(config: ActualConfig, transactionId:
 // Function to prepend a "#tag " label to a transaction's notes, unless it's already there
 export function addTagToNotes(notes: string | null, tag: string): string {
   const existing = notes ?? ""
-  if (existing === tag || existing.startsWith(`${tag} `)) {
+  if (existing.split(/\s+/).includes(tag)) {
     return existing
   }
   return existing ? `${tag} ${existing}` : tag

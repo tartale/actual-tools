@@ -847,9 +847,11 @@ describe("addTagToNotes", () => {
   it("doesn't duplicate a tag that's already present", () => {
     expect(addTagToNotes("#anomaly-high Groceries run", "#anomaly-high")).toBe("#anomaly-high Groceries run")
     expect(addTagToNotes("#anomaly-high", "#anomaly-high")).toBe("#anomaly-high")
+    expect(addTagToNotes("Groceries #anomaly-high run", "#anomaly-high")).toBe("Groceries #anomaly-high run")
   })
 
   it("doesn't confuse a different tag for a duplicate", () => {
     expect(addTagToNotes("#anomaly-low Groceries run", "#anomaly-high")).toBe("#anomaly-high #anomaly-low Groceries run")
+    expect(addTagToNotes("Groceries #anomaly-highish", "#anomaly-high")).toBe("#anomaly-high Groceries #anomaly-highish")
   })
 })
