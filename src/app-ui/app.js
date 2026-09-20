@@ -1514,12 +1514,11 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
     const fraction = Math.min(1, Math.max(0, (svgX - scale.margin.left) / scale.plotWidth))
     const age = Math.round(scale.minAge + fraction * (scale.maxAge - scale.minAge))
 
+    // Past a windowed scenario's own arrowhead (see BRIDGE_WINDOW_YEARS), byAge has no entry for
+    // this age -- but the crosshair should still land there and show what age it is, since that's
+    // the whole point of hovering there in the first place. Only the per-scenario metric rows,
+    // which need real data, drop out for a scenario with nothing at this age.
     const rows = scenarios.map(({ result }, index) => ({ result, index, point: byAge[index].get(age) })).filter((row) => row.point)
-    if (rows.length === 0) {
-      tooltip.hidden = true
-      setSvgHidden(crosshair, true)
-      return
-    }
 
     setSvgHidden(crosshair, false)
     crosshair.setAttribute("x1", scale.scaleX(age).toFixed(1))
