@@ -412,35 +412,12 @@ export async function checkDashboard(
     return Math.round(lo)
   }
 
-  // Simulated once per retirement age and kept in full -- bridgeFindings below is prose derived
-  // from these results, not a second computation, so the two can never disagree. history is real,
-  // not simulated, so it's computed here rather than inside simulateBridge itself (which only ever
-  // sees a single snapshot balance per account, not a series of them) -- effectiveAccessAge (via
-  // toBridgeAccounts) still depends on retirementAge, so it's resolved per scenario like everything
-  // else here, not shared across them the way monteCarloHistory above is.
-  const bridgeResults = options.retirementAges.map((retirementAge) => {
-    const currentBridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge)
-    const result = simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams, taxDeferredCapAt)
-    // Ends on a real point at currentAge itself (today's live balance, not a historical one) --
-    // ties the last real-history year to "now" so the chart has something to draw a line between
-    // even with only one year of lookback, and (for a retirementAge equal to currentAge) meets
-    // timeline's own first point exactly rather than leaving a one-year gap right before it.
-    const history = [
-      ...historicalAges.map((age) => historicalBridgeYear(toBridgeAccounts(accounts, historicalBalancesByAge.get(age) as Map<string, number>, contributionsAnnualByAccount, retirementAge), age, projectedSpendAt(age))),
-      ...(historicalAges.length > 0 ? [historicalBridgeYear(currentBridgeAccounts, options.currentAge, projectedSpendAt(options.currentAge))] : []),
-    ]
-    return { ...result, history }
-  })
-  // A second finding per scenario, right after its own funding-status finding, estimating that
-  // year's MAGI/effective-tax-rate -- see magiFinding's own doc comment for the simplifying
-  // assumptions. Skipped (not an error) whenever filing status or the tax-bracket table is missing,
-  // same convention as ruleOf55Boosts/debtPayoffs being empty rather than reported as broken.
-  //
   // Function to read one scenario's ordinary-income inputs at a given age -- shared by
-  // magiFinding's own call below (at the retirement age only) and acaCliffCrossings (which needs
-  // the same figures at every age of the trajectory to find when, if ever, MAGI crosses the ACA
-  // subsidy cliff). grossTaxDeferredWithdrawal comes straight off result.timeline -- the REAL
-  // figure this scenario's own simulateBridge call already worked out against that year's real,
+  // magiFinding's own call below (at the retirement age only), acaCliffCrossings (which needs the
+  // same figures at every age of the trajectory to find when, if ever, MAGI crosses the ACA
+  // subsidy cliff), and attachMagi below (the Bridge table's own per-row MAGI/%FPL).
+  // grossTaxDeferredWithdrawal comes straight off result.timeline -- the REAL figure this
+  // scenario's own simulateBridge call already worked out against that year's real,
   // already-evolved account balances -- rather than this function re-deriving its own guess from
   // today's un-depleted balances. An earlier version did exactly that (rebuilding its own
   // allocateWithdrawal call from today's balances at every age), which quietly diverged from the
@@ -460,6 +437,57 @@ export async function checkDashboard(
     return { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit }
   }
 
+  // Function to set magi/pctFPL directly on each of a scenario's own timeline points (mutating in
+  // place, same pattern simulateBridge itself uses for grossTaxDeferredWithdrawal) -- the Bridge
+  // table's per-row MAGI/%FPL columns, computed here rather than inside simulateBridge (which has
+  // no notion of tax brackets or poverty guidelines) by reusing the exact same
+  // magiInputsAt/estimateMagi/inflateGuideline pipeline the MAGI finding and ACA cliff crossing
+  // below already use, so a table row can never disagree with either. A no-op (leaves every point
+  // as simulateBridge left it) whenever filing status or the tax-bracket table isn't loaded, same
+  // "absent, not an error" convention as the rest of this file; pctFPL specifically also needs
+  // household size and the poverty guidelines table.
+  const attachMagi = (result: BridgeResult): BridgeResult => {
+    if (options.filingStatus == null || options.federalTaxBrackets == null) return result
+    const filingStatus = options.filingStatus
+    const federalTaxBrackets = options.federalTaxBrackets
+    const baseGuideline = options.householdSize != null && options.federalPovertyGuidelines != null ? federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines) : null
+    for (const point of result.timeline) {
+      // grossTaxDeferredWithdrawal undefined means no real withdrawal was ever computed for this
+      // point (the final ending-balance-only point of a funded scenario, or a depletion year that
+      // never reached the allocation -- see BridgeYear's own doc comment) -- magi/pctFPL stay
+      // undefined for exactly the same reason: there's no real income to estimate one from.
+      if (point.grossTaxDeferredWithdrawal === undefined) continue
+      const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(point.age, result)
+      const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, filingStatus, federalTaxBrackets)
+      point.magi = estimate.magi
+      if (baseGuideline != null) point.pctFPL = (estimate.magi / inflateGuideline(baseGuideline, point.age)) * 100
+    }
+    return result
+  }
+
+  // Simulated once per retirement age and kept in full -- bridgeFindings below is prose derived
+  // from these results, not a second computation, so the two can never disagree. history is real,
+  // not simulated, so it's computed here rather than inside simulateBridge itself (which only ever
+  // sees a single snapshot balance per account, not a series of them) -- effectiveAccessAge (via
+  // toBridgeAccounts) still depends on retirementAge, so it's resolved per scenario like everything
+  // else here, not shared across them the way monteCarloHistory above is.
+  const bridgeResults = options.retirementAges.map((retirementAge) => {
+    const currentBridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge)
+    const result = simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams, taxDeferredCapAt)
+    // Ends on a real point at currentAge itself (today's live balance, not a historical one) --
+    // ties the last real-history year to "now" so the chart has something to draw a line between
+    // even with only one year of lookback, and (for a retirementAge equal to currentAge) meets
+    // timeline's own first point exactly rather than leaving a one-year gap right before it.
+    const history = [
+      ...historicalAges.map((age) => historicalBridgeYear(toBridgeAccounts(accounts, historicalBalancesByAge.get(age) as Map<string, number>, contributionsAnnualByAccount, retirementAge), age, projectedSpendAt(age))),
+      ...(historicalAges.length > 0 ? [historicalBridgeYear(currentBridgeAccounts, options.currentAge, projectedSpendAt(options.currentAge))] : []),
+    ]
+    return attachMagi({ ...result, history })
+  })
+  // A second finding per scenario, right after its own funding-status finding, estimating that
+  // year's MAGI/effective-tax-rate -- see magiFinding's own doc comment for the simplifying
+  // assumptions. Skipped (not an error) whenever filing status or the tax-bracket table is missing,
+  // same convention as ruleOf55Boosts/debtPayoffs being empty rather than reported as broken.
   const bridgeFindings = bridgeResults.flatMap((result) => {
     const findings = [bridgeFinding(result, options.planToAge)]
     if (options.filingStatus != null && options.federalTaxBrackets != null) {

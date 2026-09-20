@@ -29,6 +29,7 @@ function bridgeAccount(overrides: Partial<BridgeAccount> & Pick<BridgeAccount, "
     earlyWithdrawalPenaltyUntilAge: null,
     withdrawalOrder: null,
     isTaxDeferred: false,
+    taxTreatment: "none",
     ...overrides,
   }
 }
@@ -117,7 +118,10 @@ describe("simulateBridge", () => {
 
   it("records one timeline point per year, ending at zero the year the reachable pool runs dry", () => {
     const result = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
-    expect(result.timeline).toEqual([
+    // toMatchObject, not toEqual -- this spot-checks the aggregate balance/depletion-timing shape
+    // specifically; balancesByAccountId/withdrawalsByAccountId etc. have their own dedicated tests
+    // below rather than needing every BridgeYear field enumerated here too.
+    expect(result.timeline).toMatchObject([
       { age: 50, accessibleBalance: 1000, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
       { age: 51, accessibleBalance: 900, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
       { age: 52, accessibleBalance: 800, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
@@ -135,7 +139,7 @@ describe("simulateBridge", () => {
     // The first point is exactly the retirement-age split, and the last is the depletion age --
     // the same two facts BridgeResult's own summary fields already assert, restated here as the
     // shape the chart actually draws from.
-    expect(result.timeline[0]).toEqual({
+    expect(result.timeline[0]).toMatchObject({
       age: result.retirementAge,
       accessibleBalance: result.accessibleAtRetirement,
       lockedBalance: result.lockedAtRetirement,
@@ -143,6 +147,39 @@ describe("simulateBridge", () => {
       grossTaxDeferredWithdrawal: 0,
     })
     expect(result.timeline.at(-1)?.age).toBe(result.depletionAge)
+  })
+
+  it("records each account's own balance and that year's withdrawal from it, alongside the aggregate split", () => {
+    const accounts = [
+      bridgeAccount({ id: "cash", balance: 300, isTaxDeferred: false, withdrawalOrder: 0 }),
+      bridgeAccount({ id: "401k", balance: 1000, isTaxDeferred: true, withdrawalOrder: 1 }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 52, 100, 0)
+    const byAge = new Map(result.timeline.map((year) => [year.age, year]))
+    // Age 50: cash alone (300) covers the year's 100 need -- fully non-tax-deferred.
+    expect(byAge.get(50)?.balancesByAccountId).toEqual({ cash: 300, "401k": 1000 })
+    expect(byAge.get(50)?.withdrawalsByAccountId).toEqual({ cash: 100, "401k": 0 })
+    expect(byAge.get(50)?.grossTaxDeferredWithdrawal).toBe(0)
+    expect(byAge.get(50)?.grossNonTaxDeferredWithdrawal).toBe(100)
+    // Age 51: cash has 200 left, still covers the year alone.
+    expect(byAge.get(51)?.balancesByAccountId).toEqual({ cash: 200, "401k": 1000 })
+    // Age 52 (the final planToAge point): an ending-balance snapshot only -- no withdrawal was
+    // ever computed for it, so withdrawalsByAccountId/grossTaxDeferredWithdrawal stay unset, same
+    // as the depletion-year case above.
+    expect(byAge.get(52)?.balancesByAccountId).toEqual({ cash: 100, "401k": 1000 })
+    expect(byAge.get(52)?.withdrawalsByAccountId).toBeUndefined()
+  })
+
+  it("exposes a slim per-account projection on the result, in the same order as the accounts passed in", () => {
+    const accounts = [
+      bridgeAccount({ id: "cash", name: "Brokerage", balance: 100, isTaxDeferred: false, taxTreatment: "taxable", accessAge: null }),
+      bridgeAccount({ id: "401k", name: "401k", balance: 100, isTaxDeferred: true, taxTreatment: "tax-deferred", accessAge: 59 }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 51, 10, 0)
+    expect(result.accounts).toEqual([
+      { id: "cash", name: "Brokerage", isTaxDeferred: false, taxTreatment: "taxable", accessAge: null },
+      { id: "401k", name: "401k", isTaxDeferred: true, taxTreatment: "tax-deferred", accessAge: 59 },
+    ])
   })
 
   it("records through planToAge, inclusive, when the scenario never depletes", () => {
@@ -161,9 +198,9 @@ describe("simulateBridge", () => {
     const result = simulateBridge(accounts, 50, 50, 100, 100, 0)
     const byAge = new Map(result.timeline.map((year) => [year.age, year]))
     // The year before it unlocks: still split, locked sitting untouched at its starting balance.
-    expect(byAge.get(52)).toEqual({ age: 52, accessibleBalance: 300, lockedBalance: 500, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 })
+    expect(byAge.get(52)).toMatchObject({ age: 52, accessibleBalance: 300, lockedBalance: 500, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 })
     // The unlock year itself: the whole 500 has moved over, before that year's own withdrawal.
-    expect(byAge.get(53)).toEqual({ age: 53, accessibleBalance: 700, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 })
+    expect(byAge.get(53)).toMatchObject({ age: 53, accessibleBalance: 700, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 })
     // Never locked again once unlocked.
     expect(result.timeline.filter((year) => year.age >= 53).every((year) => year.lockedBalance === 0)).toBe(true)
   })
@@ -322,6 +359,7 @@ function bridgeResult(overrides: Partial<BridgeResult> & Pick<BridgeResult, "ret
     timeline: [],
     history: [],
     accumulation: [],
+    accounts: [],
     ...overrides,
   }
 }

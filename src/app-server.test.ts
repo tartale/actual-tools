@@ -656,6 +656,32 @@ describe("GET /api/retirement/check", () => {
     expect(body.acaCliffCrossings).toHaveLength(1)
     expect(body.acaCliffCrossings[0]).toMatchObject({ retirementAge: 65, crossesAtAge: 65 })
     expect(body.acaCliffCrossings[0]?.pctFPL).toBeGreaterThan(400)
+    // The Bridge table's own per-row magi/pctFPL (added for issue #25) reuse the exact same
+    // pipeline the crossing above was computed from -- they can never disagree.
+    const crossingYear = body.bridgeResults[0]?.timeline.find((point) => point.age === 65)
+    expect(crossingYear?.pctFPL).toBeCloseTo(body.acaCliffCrossings[0]?.pctFPL as number, 1)
+    // $120,000/yr net spend, fully tax-deferred -- comfortably over $100,000 gross.
+    expect(crossingYear?.magi).toBeGreaterThan(100_000_00)
+  })
+
+  it("leaves magi/pctFPL unset on Bridge table rows when filing status or tax brackets aren't loaded", async () => {
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Inherited IRA", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { ira: [{ amount: 500_000_00, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    // No FEDERAL_TAX_BRACKETS_FIXTURE/FEDERAL_POVERTY_GUIDELINES_FIXTURE written this time.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.bridgeResults[0]?.timeline.every((point) => point.magi === undefined && point.pctFPL === undefined)).toBe(true)
   })
 
   it("reports no cliff crossing when a scenario's MAGI stays under 400% FPL the whole way", async () => {
@@ -744,6 +770,14 @@ describe("GET /api/retirement/check", () => {
     const bridge = body.bridgeFindings.find((f) => f.title.startsWith("age 65"))
     expect(bridge?.title).toContain("runs out at age 75")
     expect(body.acaCliffCrossings).toEqual([])
+    // The Bridge table's own per-row magi/pctFPL leave the depletion year itself unset -- no real
+    // withdrawal was ever computed for it (it never reached the allocation), so there's nothing
+    // real to base a MAGI estimate on. The year right before it still gets a real figure.
+    const depletionYear = body.bridgeResults[0]?.timeline.find((point) => point.age === 75)
+    expect(depletionYear?.magi).toBeUndefined()
+    expect(depletionYear?.pctFPL).toBeUndefined()
+    const lastFundedYear = body.bridgeResults[0]?.timeline.find((point) => point.age === 74)
+    expect(lastFundedYear?.magi).toBeGreaterThan(0)
   })
 
   it("reports no cliff crossing when household size isn't set, even with poverty guidelines available", async () => {

@@ -1480,6 +1480,383 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
   return addChartZoom(wrap, "Bridge burndown chart")
 }
 
+// Which scenario the Bridge table is currently showing, when more than one retirement age is
+// selected -- module-level (not per-render state) so re-rendering after a scenario change (the
+// picker below) or a privacy toggle doesn't reset back to the first one. Not persisted across a
+// reload the way the chart/table view itself is (see applyBridgeTableView) -- simple enough to
+// just default back to the first scenario each fresh load.
+let selectedBridgeTableScenarioIndex = 0
+
+// Whether the Bridge table's own column-picker popover is open -- module-level, not per-render
+// state, for the same reason closeHelpPopover's own open/closed state is: a document-level
+// click-outside-closes-it listener (wired once, below) needs to reach it regardless of which
+// renderBridgeTable call most recently rebuilt the table, and needs to stay in sync with
+// whatever renderAll draws next even though closing it from outside doesn't itself call renderAll.
+let bridgeTableColumnsPopoverOpen = false
+function closeBridgeTableColumnsPopover() {
+  if (!bridgeTableColumnsPopoverOpen) return
+  bridgeTableColumnsPopoverOpen = false
+  // Direct DOM manipulation, not a re-render -- there's only ever one .bridge-table live at a
+  // time (addChartZoom/openChartZoom reparent the same node rather than cloning it), and closing
+  // a popover shouldn't have to rebuild the whole table underneath it.
+  document.querySelectorAll(".bridge-table-columns-popover").forEach((el) => (el.hidden = true))
+  document.querySelectorAll(".bridge-table-columns-btn").forEach((btn) => btn.setAttribute("aria-expanded", "false"))
+}
+document.addEventListener("click", (e) => {
+  if (bridgeTableColumnsPopoverOpen && !e.target.closest(".bridge-table-columns")) closeBridgeTableColumnsPopover()
+})
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && bridgeTableColumnsPopoverOpen) closeBridgeTableColumnsPopover()
+})
+
+// Every column the Bridge table can show, beyond Age (always shown -- it's the row key, not a
+// toggleable column). "kind" drives both bridgeTableHeaderCell/bridgeTableDataCell below; the
+// "account" columns are one per this plan's own portfolio accounts, so the full list has to be
+// rebuilt from a real BridgeResult rather than living as a fixed constant. Built from usable[0]
+// (see renderBridgeTable) regardless of which scenario is currently selected -- every scenario
+// simulates the SAME portfolio, just at a different retirement age, so the account list itself
+// doesn't vary between them.
+function bridgeTableColumnDefs(result) {
+  return [
+    { id: "taxDeferred", label: "Tax-deferred", kind: "taxDeferred" },
+    { id: "nonTaxable", label: "Non-taxable", kind: "nonTaxable" },
+    { id: "pctFPL", label: "%FPL", kind: "pctFPL" },
+    { id: "magi", label: "MAGI", kind: "magi" },
+    { id: "expenses", label: "Expenses", kind: "expenses" },
+    ...result.accounts.map((account) => ({ id: `account:${account.id}`, label: account.name, kind: "account", account })),
+  ]
+}
+
+// Function to read the Bridge table's own column order + visibility -- persisted the same
+// getCookie/setCookie way the chart/table toggle itself is (see applyBridgeTableView), as one
+// ordered, comma-joined list where a `-` prefix means "in the picker's list, but not currently
+// shown" (so one cookie value carries both the full picker order AND the visible subset, rather
+// than needing two separate ones that could drift out of sync with each other). A column id no
+// longer present in defs (an account renamed or removed since) is silently dropped; one that's
+// never been seen before (a brand new account, on a saved cookie from before it existed) is
+// appended at the end, unselected, so it's discoverable in the picker without silently widening
+// the table underneath whoever's looking at it right now. A first-ever visit (no cookie yet)
+// defaults to every column, all selected, in bridgeTableColumnDefs' own order -- the table's own
+// horizontal scroll (and the picker itself, to trim it back down) is what absorbs a wide portfolio
+// from there, rather than a narrower default guessing which few columns matter most.
+function bridgeTableColumnState(defs) {
+  const validIds = new Set(defs.map((col) => col.id))
+  let saved = null
+  try {
+    const raw = getCookie("bridgeTableColumns")
+    if (raw !== null) saved = raw === "" ? [] : raw.split(",")
+  } catch {
+    // Cookies disabled -- falls through to the defaults below, same as everywhere else on this
+    // page that reads a cookie.
+  }
+  const order = []
+  const selected = new Set()
+  ;(saved ?? defs.map((col) => col.id)).forEach((entry) => {
+    const isSelected = !entry.startsWith("-")
+    const id = isSelected ? entry : entry.slice(1)
+    if (!validIds.has(id) || order.includes(id)) return
+    order.push(id)
+    if (isSelected) selected.add(id)
+  })
+  defs.forEach((col) => {
+    if (!order.includes(col.id)) order.push(col.id)
+  })
+  return { order, selected }
+}
+function saveBridgeTableColumnState(order, selected) {
+  try {
+    setCookie("bridgeTableColumns", order.map((id) => (selected.has(id) ? id : `-${id}`)).join(","))
+  } catch {
+    // Cookies disabled -- the picker still works for this page view, it just won't be remembered.
+  }
+}
+
+// Function to build one column's own header <th> -- an account column additionally carries its
+// tax-treatment chip (see the account-head CSS for why that lives on an inner span, not the <th>
+// itself).
+function bridgeTableHeaderCell(col) {
+  if (col.kind === "account") {
+    return `<th class="bt-account-head"><span class="bt-account-head-inner"><span class="bt-account-name">${escapeHtml(col.label)}</span><span class="chip ${col.account.taxTreatment}">${col.account.taxTreatment}</span></span></th>`
+  }
+  // Tax-deferred/non-taxable are GROSS (pre-tax) withdrawal figures, same as every account
+  // column's own balance -- can legitimately exceed that year's Expenses once an account's own
+  // tax rate (and any early-withdrawal penalty) is backed out, since covering $60,000 of real
+  // spend from a 22%-taxed account means actually withdrawing ~$76,900 gross. Not obvious just
+  // from the column name, so it gets a title tooltip the other (need- rather than tax-rate-
+  // driven) columns don't.
+  const title = col.kind === "taxDeferred" || col.kind === "nonTaxable" ? ` title="Gross (pre-tax) withdrawal -- can exceed Expenses once the account's own tax rate is backed out"` : ""
+  return `<th${title}>${escapeHtml(col.label)}</th>`
+}
+// Function to build one column's own <td> for a given row -- isPrivate only matters for the
+// account column's own title-attribute withdrawal tooltip (see its own doc comment on why that
+// one can't just rely on the usual .money CSS-blur convention every dollar cell here otherwise
+// uses).
+function bridgeTableDataCell(col, point, isPrivate) {
+  switch (col.kind) {
+    case "expenses":
+      return `<td class="bt-num">${point.projectedSpend != null ? moneySpan(point.projectedSpend) : "—"}</td>`
+    case "account": {
+      const balance = point.balancesByAccountId?.[col.account.id]
+      if (balance == null) return `<td class="bt-num">—</td>`
+      const locked = col.account.accessAge != null && point.age < col.account.accessAge
+      const withdrawn = point.withdrawalsByAccountId?.[col.account.id]
+      // Native title attribute -- the lightest existing per-cell tooltip mechanism (matches the
+      // budget table's own bt-flagged convention), showing what came out of THIS account during
+      // THIS age (which is what reduces it by the time next age's row is reached), rather than a
+      // whole new positioned-tooltip system for one figure.
+      const title = withdrawn != null ? ` title="Withdrawn this year: ${escapeHtml(moneyMaskText(usd(withdrawn), isPrivate))}"` : ""
+      return `<td class="bt-num${locked ? " bt-locked" : ""}"${title}>${moneySpan(balance)}</td>`
+    }
+    case "taxDeferred":
+    case "nonTaxable": {
+      const gross = col.kind === "taxDeferred" ? point.grossTaxDeferredWithdrawal : point.grossNonTaxDeferredWithdrawal
+      if (gross == null) return `<td class="bt-num">—</td>`
+      // This figure is GROSS (pre-tax) -- it can legitimately exceed Expenses (what's actually
+      // available to spend, after tax) once the tax owed on withdrawing it is backed out. Spelled
+      // out with this row's own real numbers, not just the column header's generic version,
+      // since that's the more natural place to look once a specific figure looks surprising.
+      const title =
+        point.projectedSpend != null
+          ? ` title="Gross (pre-tax) withdrawal -- this year's Expenses (what's actually available to spend, after tax): ${escapeHtml(moneyMaskText(usd(point.projectedSpend), isPrivate))}. The difference covers the tax owed on this withdrawal."`
+          : ""
+      return `<td class="bt-num"${title}>${moneySpan(gross)}</td>`
+    }
+    case "pctFPL":
+      return `<td class="bt-num">${point.pctFPL != null ? `<span class="money">${(Math.round(point.pctFPL * 10) / 10).toLocaleString()}</span>%` : "—"}</td>`
+    case "magi":
+      return `<td class="bt-num">${point.magi != null ? moneySpan(point.magi) : "—"}</td>`
+    default:
+      return `<td class="bt-num">—</td>`
+  }
+}
+
+// Function to find which column row a dragged one should land BEFORE, based on vertical mouse
+// position -- the same standard vanilla-JS drag-reorder technique (and near-identical code) as
+// dragAfterElement above, just scoped to .bridge-table-column-row instead of .account-row; kept
+// separate rather than generalizing the one function over both, since the two lists live in
+// entirely different parts of the page with no shared lifecycle to couple them through one helper.
+function bridgeTableColumnAfterElement(list, y) {
+  const rows = [...list.querySelectorAll(".bridge-table-column-row:not(.dragging)")]
+  return rows.reduce(
+    (closest, row) => {
+      const box = row.getBoundingClientRect()
+      const offset = y - box.top - box.height / 2
+      return offset < 0 && offset > closest.offset ? { offset, element: row } : closest
+    },
+    { offset: Number.NEGATIVE_INFINITY, element: null },
+  ).element
+}
+
+// Function to render the Bridge chart's own per-age/per-account numbers as a table instead of a
+// line -- toggled via #bridgeViewToggle (see applyBridgeTableView), issue #25. Same "usable"
+// filter and addChartZoom wiring as renderBridgeChart so the two views are interchangeable from
+// the same call site (renderCheckResult) and equally available zoomed or not. Deliberately a much
+// simpler function than renderBridgeChart: no scaling/axes/windowing to compute, just formatting
+// numbers simulateBridge and fire-generate.ts's attachMagi already produced.
+function renderBridgeTable(bridgeResults, currentAge, planToAge) {
+  const usable = bridgeResults.filter((result) => result.timeline.length > 0 && result.accessibleAtRetirement + result.lockedAtRetirement > 0)
+  if (usable.length === 0) return null
+  // Read once, not per-row -- see renderBridgeChart's own isPrivate for why (this table uses the
+  // normal moneySpan/.money CSS-blur convention for its dollar cells, which reacts to body.privacy
+  // live and so doesn't itself need isPrivate; it's only needed here for the title-attribute
+  // withdrawal tooltip below, a NATIVE tooltip with no CSS/DOM to blur and no re-render hook of its
+  // own to react to a later privacy toggle -- same reasoning as the chart's own moneyMaskText).
+  const isPrivate = document.body.classList.contains("privacy")
+
+  // One row per age from currentAge through wherever this scenario's own real data actually ends
+  // (planToAge if funded, its own depletion age otherwise) -- unlike the chart's own line, this
+  // is NOT windowed (see BRIDGE_WINDOW_YEARS): a table of numbers has no "runs off-scale and
+  // misleads the eye" problem to avoid, so it shows the real figures all the way through. Shared
+  // by the rendered table and its CSV export below, so the two can never disagree about which
+  // rows exist.
+  const rowsForScenario = (result) => {
+    const pointsByAge = new Map()
+    result.accumulation.forEach((point) => pointsByAge.set(point.age, point))
+    result.timeline.forEach((point) => pointsByAge.set(point.age, point))
+    const rows = []
+    for (let age = currentAge; age <= planToAge; age++) {
+      const point = pointsByAge.get(age)
+      if (point) rows.push(point)
+    }
+    return rows
+  }
+
+  const renderScenarioTable = (result, rows, columns) => {
+    const headHtml = columns.map(bridgeTableHeaderCell).join("")
+    const rowsHtml = rows
+      .map((point) => `<tr><td class="bt-age">${point.age}</td>${columns.map((col) => bridgeTableDataCell(col, point, isPrivate)).join("")}</tr>`)
+      .join("")
+
+    return `<div class="bridge-table-wrap">
+      <table class="bridge-table-el">
+        <thead>
+          <tr>
+            <th class="bt-age">Age</th>
+            ${headHtml}
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`
+  }
+
+  const wrap = document.createElement("div")
+  wrap.className = "bridge-table"
+  let draggingColumnRow = null
+
+  const renderAll = () => {
+    const index = Math.min(selectedBridgeTableScenarioIndex, usable.length - 1)
+    const result = usable[index]
+    const defs = bridgeTableColumnDefs(usable[0])
+    const { order, selected } = bridgeTableColumnState(defs)
+    const allColumns = order.map((id) => defs.find((col) => col.id === id)).filter((col) => col != null)
+    const visibleColumns = allColumns.filter((col) => selected.has(col.id))
+
+    const picker =
+      usable.length > 1
+        ? `<div class="bridge-table-scenario-picker">
+            <label for="bridgeTableScenario">Scenario</label>
+            <select id="bridgeTableScenario" class="bridge-table-scenario-select">
+              ${usable.map((r, i) => `<option value="${i}"${i === index ? " selected" : ""}>Retire at ${r.retirementAge}</option>`).join("")}
+            </select>
+          </div>`
+        : ""
+    const columnsPopover = `<div class="bridge-table-columns">
+      <button type="button" class="bridge-table-columns-btn" aria-haspopup="true" aria-expanded="${bridgeTableColumnsPopoverOpen}">Columns</button>
+      <div class="bridge-table-columns-popover"${bridgeTableColumnsPopoverOpen ? "" : " hidden"}>
+        ${allColumns
+          .map(
+            (col) => `<div class="bridge-table-column-row" draggable="true" data-col-id="${escapeHtml(col.id)}">
+              <span class="bt-col-drag-handle" aria-hidden="true">⣶</span>
+              <label><input type="checkbox" data-col-id="${escapeHtml(col.id)}"${selected.has(col.id) ? " checked" : ""}> ${escapeHtml(col.label)}</label>
+            </div>`,
+          )
+          .join("")}
+      </div>
+    </div>`
+    const toolbar = `<div class="bridge-table-toolbar">${picker}<div class="bridge-table-toolbar-right">${columnsPopover}<button type="button" class="bridge-table-export">Export CSV</button></div></div>`
+    wrap.innerHTML = toolbar + renderScenarioTable(result, rowsForScenario(result), visibleColumns)
+  }
+  renderAll()
+
+  wrap.addEventListener("change", (e) => {
+    if (e.target.matches(".bridge-table-scenario-select")) {
+      selectedBridgeTableScenarioIndex = Number(e.target.value)
+      renderAll()
+      return
+    }
+    if (e.target.matches(".bridge-table-column-row input")) {
+      const defs = bridgeTableColumnDefs(usable[0])
+      const { order, selected } = bridgeTableColumnState(defs)
+      if (e.target.checked) selected.add(e.target.dataset.colId)
+      else selected.delete(e.target.dataset.colId)
+      saveBridgeTableColumnState(order, selected)
+      renderAll()
+    }
+  })
+  wrap.addEventListener("click", (e) => {
+    // The toolbar (scenario picker, columns popover, export button) lives inside the same wrap
+    // addChartZoom below makes click-anywhere-to-zoom -- stopImmediatePropagation (not
+    // stopPropagation; addChartZoom's own listener is on this SAME element, not an ancestor) keeps
+    // using any of them from also zooming.
+    if (e.target.closest(".bridge-table-toolbar")) e.stopImmediatePropagation()
+    if (e.target.closest(".bridge-table-export")) {
+      const index = Math.min(selectedBridgeTableScenarioIndex, usable.length - 1)
+      const result = usable[index]
+      // Every column, in bridgeTableColumnDefs' own canonical order -- deliberately ignoring the
+      // picker's own current show/hide and reordering (unlike the rendered table itself): a CSV
+      // is a data export, not a screenshot of the current view, so it should be complete every
+      // time regardless of whatever subset happens to be on screen right now.
+      downloadBridgeTableCsv(result, rowsForScenario(result), bridgeTableColumnDefs(usable[0]))
+    }
+    if (e.target.closest(".bridge-table-columns-btn")) {
+      bridgeTableColumnsPopoverOpen = !bridgeTableColumnsPopoverOpen
+      renderAll()
+    }
+  })
+  // Drag-reorder for the columns popover's own list -- same technique (and near-identical code,
+  // see bridgeTableColumnAfterElement's own doc comment) as the Accounts list's reorder-by-drag
+  // handle elsewhere on this page. Delegated on wrap, not bound per-row, since renderAll rebuilds
+  // the popover's rows on every change rather than mutating them in place.
+  wrap.addEventListener("dragstart", (e) => {
+    const row = e.target.closest(".bridge-table-column-row")
+    if (!row) return
+    draggingColumnRow = row
+    row.classList.add("dragging")
+  })
+  wrap.addEventListener("dragover", (e) => {
+    if (!draggingColumnRow) return
+    const list = e.target.closest(".bridge-table-columns-popover")
+    if (!list) return
+    e.preventDefault()
+    const afterElement = bridgeTableColumnAfterElement(list, e.clientY)
+    if (afterElement == null) list.appendChild(draggingColumnRow)
+    else if (afterElement !== draggingColumnRow) list.insertBefore(draggingColumnRow, afterElement)
+  })
+  wrap.addEventListener("dragend", (e) => {
+    const row = e.target.closest(".bridge-table-column-row")
+    if (!row) return
+    row.classList.remove("dragging")
+    draggingColumnRow = null
+    const list = wrap.querySelector(".bridge-table-columns-popover")
+    const newOrder = [...list.querySelectorAll(".bridge-table-column-row")].map((r) => r.dataset.colId)
+    const defs = bridgeTableColumnDefs(usable[0])
+    const { selected } = bridgeTableColumnState(defs)
+    saveBridgeTableColumnState(newOrder, selected)
+    renderAll()
+  })
+
+  return addChartZoom(wrap, "Bridge burndown table")
+}
+
+// Escapes one CSV field -- quoted (with internal quotes doubled) only when it actually needs to
+// be (contains a comma, quote, or newline), matching the common convention of leaving simple
+// fields unquoted for readability rather than quoting everything unconditionally.
+function csvField(value) {
+  const str = String(value)
+  return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+}
+
+// Function to save one Bridge table scenario as a CSV file -- the same rows renderBridgeTable
+// itself draws (rowsForScenario), but EVERY column (see its own call site for why this
+// deliberately ignores the picker's current show/hide and reordering), reformatted as plain
+// numbers (no $/commas -- a comma inside an unquoted field would corrupt the CSV, and a
+// spreadsheet reads a bare number as currency-ready on its own) rather than parsed back out of
+// the rendered HTML. Always exports the real, unmasked figures regardless of privacy mode -- this
+// is an explicit local save-to-disk action by
+// the account owner, not something shown on screen to a stranger, so there's nothing for privacy
+// mode to protect here the way there is for the rendered table/chart.
+function downloadBridgeTableCsv(result, rows, columns) {
+  const dollars = (cents) => (cents == null ? "" : (cents / 100).toFixed(2))
+  const csvValue = (col, point) => {
+    switch (col.kind) {
+      case "expenses":
+        return dollars(point.projectedSpend)
+      case "account":
+        return dollars(point.balancesByAccountId?.[col.account.id])
+      case "taxDeferred":
+        return dollars(point.grossTaxDeferredWithdrawal)
+      case "nonTaxable":
+        return dollars(point.grossNonTaxDeferredWithdrawal)
+      case "pctFPL":
+        return point.pctFPL != null ? (Math.round(point.pctFPL * 10) / 10).toFixed(1) : ""
+      case "magi":
+        return dollars(point.magi)
+      default:
+        return ""
+    }
+  }
+  const header = ["Age", ...columns.map((col) => col.label)]
+  const dataRows = rows.map((point) => [point.age, ...columns.map((col) => csvValue(col, point))])
+  const csv = [header, ...dataRows].map((row) => row.map(csvField).join(",")).join("\r\n")
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }))
+  const link = document.createElement("a")
+  link.href = url
+  link.download = `bridge-retire-at-${result.retirementAge}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 // Function to show/hide an SVG element via the `hidden` ATTRIBUTE directly, not the `.hidden` IDL
 // property -- confirmed live that setting `.hidden` on an SVGElement (unlike an HTMLElement) does
 // not reliably remove the attribute in this browser, so the CSS `[hidden] { display: none }` rule
@@ -1949,6 +2326,52 @@ function renderChartSkeleton(ariaLabel, currentAge, planToAge, retirementAges, p
   return wrap
 }
 
+// Function to render the Bridge table's own loading placeholder, when the table view (not the
+// chart) is active -- an empty table with the SAME columns (order and selection, from the
+// persisted cookie bridgeTableColumnState reads) and row age labels the real table
+// (renderBridgeTable) will show once /api/retirement/check actually returns, so the panel doesn't
+// visibly reflow once real data lands -- the same reasoning renderChartSkeleton's own doc comment
+// gives for drawing everything that doesn't truly depend on the response for real. Account
+// columns use portfolioAccounts (id/name only, from skeletonInputsFrom) rather than a real
+// BridgeResult's own accounts projection, which doesn't exist yet -- so these headers skip the
+// tax-treatment chip a real column would carry; a loading placeholder doesn't need it, and
+// tax-treatment isn't known this early anyway.
+function renderBridgeTableSkeleton(currentAge, planToAge, portfolioAccounts) {
+  const defs = [
+    { id: "taxDeferred", label: "Tax-deferred", kind: "static" },
+    { id: "nonTaxable", label: "Non-taxable", kind: "static" },
+    { id: "pctFPL", label: "%FPL", kind: "static" },
+    { id: "magi", label: "MAGI", kind: "static" },
+    { id: "expenses", label: "Expenses", kind: "static" },
+    ...portfolioAccounts.map((account) => ({ id: `account:${account.id}`, label: account.name, kind: "account" })),
+  ]
+  const { order, selected } = bridgeTableColumnState(defs)
+  const columns = order.map((id) => defs.find((col) => col.id === id)).filter((col) => col != null && selected.has(col.id))
+
+  const headHtml = columns
+    .map((col) =>
+      col.kind === "account"
+        ? `<th class="bt-account-head"><span class="bt-account-head-inner"><span class="bt-account-name">${escapeHtml(col.label)}</span></span></th>`
+        : `<th>${escapeHtml(col.label)}</th>`,
+    )
+    .join("")
+  const cellsHtml = columns.map(() => `<td class="bt-num"><span class="skeleton-bar" style="width:70%"></span></td>`).join("")
+  const rowsHtml = []
+  for (let age = currentAge; age <= planToAge; age++) {
+    rowsHtml.push(`<tr><td class="bt-age">${age}</td>${cellsHtml}</tr>`)
+  }
+
+  const wrap = document.createElement("div")
+  wrap.className = "bridge-table"
+  wrap.innerHTML = `<div class="bridge-table-wrap">
+    <table class="bridge-table-el">
+      <thead><tr><th class="bt-age">Age</th>${headHtml}</tr></thead>
+      <tbody>${rowsHtml.join("")}</tbody>
+    </table>
+  </div>`
+  return wrap
+}
+
 // localStorage, not the plan itself -- purely a same-browser hint so the very FIRST paint of a
 // fresh page load (before STATE has round-tripped through Actual's own API, ~3.7s in practice) can
 // still show a real skeleton instead of the bare LOADING_MARKUP fallback, on the extremely common
@@ -1971,6 +2394,11 @@ function skeletonInputsFrom(state) {
     // A real guess (does any portfolio account still have a locked accessAge?), not a placeholder
     // -- real accounts, real ages, just not run through the actual Bridge simulation yet.
     hasLockedAccounts: portfolioAccounts.some((account) => account.accessAge != null && account.accessAge > state.currentAge),
+    // id/name only (not the full account record) -- just enough for renderBridgeTableSkeleton's
+    // own column headers when the Bridge table view is active; real tax-treatment/access-age
+    // aren't known this early (that's still simulateBridge's own job), so those headers skip the
+    // chip a real BridgeResult-backed column would carry.
+    portfolioAccounts: portfolioAccounts.map((account) => ({ id: account.id, name: account.name })),
   }
 }
 
@@ -2006,7 +2434,7 @@ function renderLoadingSkeleton() {
     return
   }
   container.innerHTML = ""
-  const { currentAge, planToAge, retirementAges, inflationMean, simulationCount, portfolioTotal, hasLockedAccounts } = inputs
+  const { currentAge, planToAge, retirementAges, inflationMean, simulationCount, portfolioTotal, hasLockedAccounts, portfolioAccounts } = inputs
   // Same style-key markup renderBridgeChart/renderMonteCarloChart themselves emit -- see
   // renderChartSkeleton's own doc comment on why Bridge's is conditional and Monte Carlo's isn't.
   const bridgeStyleKey = hasLockedAccounts
@@ -2035,7 +2463,11 @@ function renderLoadingSkeleton() {
   const bridgeGroup = document.createElement("div")
   bridgeGroup.className = "findings-group"
   bridgeGroup.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(inflationMean * 1000) / 10}% inflation</div>`
-  bridgeGroup.appendChild(renderChartSkeleton("Bridge burndown", currentAge, planToAge, retirementAges, portfolioTotal, bridgeStyleKey))
+  bridgeGroup.appendChild(
+    isBridgeTableView()
+      ? renderBridgeTableSkeleton(currentAge, planToAge, portfolioAccounts ?? []) // ?? [] guards a stale pre-portfolioAccounts SKELETON_CACHE_KEY entry from an older version of this page
+      : renderChartSkeleton("Bridge burndown", currentAge, planToAge, retirementAges, portfolioTotal, bridgeStyleKey),
+  )
   bridgeGroup.insertAdjacentHTML("beforeend", retirementAges.map(() => findingSkeleton(1)).join(""))
   container.appendChild(bridgeGroup)
 
@@ -2088,7 +2520,9 @@ function renderCheckResult(result) {
     const group = document.createElement("div")
     group.className = "findings-group"
     group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
-    const chart = renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams, result.acaCliffCrossings)
+    const chart = isBridgeTableView()
+      ? renderBridgeTable(result.bridgeResults, result.currentAge, result.planToAge)
+      : renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams, result.acaCliffCrossings)
     if (chart) group.appendChild(chart)
     result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
     container.appendChild(group)
@@ -2335,7 +2769,10 @@ function openChartZoom() {
   // need restoring on close.
   const groups = [...document.querySelectorAll("#checkResult .findings-group")]
     .map((group) => ({
-      chart: group.querySelector(".bridge-chart"),
+      // .bridge-table too -- the Bridge group's own view toggle (see applyBridgeTableView) can
+      // swap what's actually live here for a table instead of the chart; whichever it currently
+      // is gets reparented into the modal the same way.
+      chart: group.querySelector(".bridge-chart, .bridge-table"),
       findings: [...group.querySelectorAll(".finding")],
       label: group.querySelector(".group-label")?.textContent ?? "",
     }))
@@ -3467,6 +3904,39 @@ try {
 } catch {
   applyPrivacyMode(false)
 }
+
+// Whether the Bridge chart currently shows as a table instead of its line (issue #25) -- Monte
+// Carlo is unaffected. Persisted the same getCookie/setCookie way fold state is (see that
+// function's own doc comment for why a cookie over localStorage).
+function isBridgeTableView() {
+  return getCookie("bridgeTableView") === "table"
+}
+// The button's own icon shows what clicking it will switch TO, not the current view -- a table
+// icon while looking at the chart, a chart icon while looking at the table -- matching
+// title/aria-label, which already say "View as X" for the same reason.
+const BRIDGE_VIEW_TABLE_ICON = `<rect x="3" y="4" width="18" height="16" rx="1.5"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="9" y1="10" x2="9" y2="20"/>`
+const BRIDGE_VIEW_CHART_ICON = `<path d="M4 4v15a1 1 0 0 0 1 1h16"/><path d="M7 15l4-5 3 3 5-7"/>`
+function applyBridgeTableView(isTable) {
+  const btn = document.getElementById("bridgeViewToggle")
+  const label = isTable ? "View as chart" : "View as table"
+  btn.setAttribute("aria-pressed", String(isTable))
+  btn.title = label
+  btn.setAttribute("aria-label", label)
+  btn.querySelector("svg").innerHTML = isTable ? BRIDGE_VIEW_CHART_ICON : BRIDGE_VIEW_TABLE_ICON
+  // Same reasoning as applyPrivacyMode's own re-render -- only if a check has actually completed;
+  // runCheck's own first render already reads isBridgeTableView() fresh.
+  if (lastCheckResult) renderCheckResult(lastCheckResult)
+}
+document.getElementById("bridgeViewToggle").addEventListener("click", () => {
+  const isTable = !isBridgeTableView()
+  try {
+    setCookie("bridgeTableView", isTable ? "table" : "chart")
+  } catch {
+    // Cookies disabled -- the toggle still works for this page view, it just won't be remembered.
+  }
+  applyBridgeTableView(isTable)
+})
+applyBridgeTableView(isBridgeTableView())
 
 // .retirement-live-sticky's own top/height (see style.css) has to leave exactly enough room for
 // .retirement-toolbar above it, but that panel's height isn't a constant the way the topbar's is --
