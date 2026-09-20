@@ -6,7 +6,11 @@ on:
   pull_request:
 
 jobs:
+  # PR-only: the merge to main below skips straight to publish, so this is the only place tests
+  # (and the build-only Dockerfile check) actually run -- re-running them on the merge push itself
+  # would just be re-checking a commit that already passed here unchanged.
   test:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +42,7 @@ jobs:
       - run: ./actual test
 
   docker-build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,8 +59,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # No `needs` here on purpose -- test/docker-build are PR-only gates above, already satisfied
+  # before this merged. A push to main just builds this same commit for real and pushes it.
   publish:
-    needs: [test, docker-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
