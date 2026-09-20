@@ -333,6 +333,27 @@ main:has(#page-retirement.active) { max-width: none; }
     column-gap: 10px;
     align-items: stretch;
   }
+  /* Unlike .bridge-chart above (whose SVG always fits a fixed 640x240 aspect ratio), the Bridge
+     table's own row count varies with the plan's horizon -- it needs to actually SCROLL within
+     whatever height findings-group's own flex layout allocates it, rather than being silently
+     clipped by that ancestor's overflow:hidden (see the doc comment a few rules up). flex:1 (not
+     0 1 auto) claims the same full share of that space .bridge-chart's grid otherwise would; the
+     toolbar above the table (scenario picker + CSV export) takes only its own natural height, so
+     the table proper still gets whatever's left. */
+  .retirement-live-sticky .bridge-table {
+    flex: 1;
+    min-height: 160px;
+    display: flex;
+    flex-direction: column;
+  }
+  .retirement-live-sticky .bridge-table-toolbar {
+    flex: 0 0 auto;
+  }
+  .retirement-live-sticky .bridge-table-wrap {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
   .retirement-live-sticky .bridge-chart-svg,
   .retirement-live-sticky .chart-svg-wrap {
     grid-column: 1;
@@ -471,6 +492,10 @@ main:has(#page-retirement.active) { max-width: none; }
 
 .card { background: var(--surface); border: 1px solid var(--card-border); border-radius: var(--radius-md); margin-bottom: 18px; }
 .card-head { padding: 12px 16px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; justify-content: space-between; }
+/* Groups multiple icon-btns at the card-head's own right edge as one unit -- without this,
+   .card-head's own justify-content:space-between would spread three-or-more direct children
+   (the heading plus each button) evenly across the row instead of keeping the buttons together. */
+.card-head-actions { display: flex; align-items: center; gap: 6px; }
 .card-head h2 { font-size: 13px; font-weight: 500; margin: 0; color: var(--ink-strong); }
 .card-head .hint { font-size: 11.5px; color: var(--ink-faint); }
 /* Tighter than a plain .card-head -- every pixel reclaimed here goes straight to the Bridge/Monte
@@ -813,6 +838,82 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .bridge-tooltip-metric { color: var(--ink-soft); }
 .bridge-tooltip-sep { color: var(--line); }
 
+/* Bridge table view (issue #25) -- the same per-age/per-account numbers the Bridge chart's own
+   simulation already computes, as an actual <table> instead of a line. Copies .budget-table-el's
+   own base declarations (font size, cell padding, zebra striping, row hover) under a new class
+   rather than reusing that one directly, so this stays free to diverge without touching the
+   budget grid's own filmstrip/roll behavior. Unlike that grid (which limits itself to a fixed
+   visible-month window sized to its container, so it never actually overflows), the account count
+   here isn't bounded the same way -- .bridge-table-wrap scrolls horizontally for real, with the
+   Age column pinned via position:sticky rather than a JS-driven roll. */
+.bridge-table-wrap { overflow-x: auto; border: 1px solid var(--card-border); border-radius: var(--radius-sm); }
+/* auto, not fixed -- every column (the Age column especially) sizes to its own real content
+   instead of splitting the table's width evenly, which is what let a 2-3 digit age sit in a
+   column as wide as a dollar figure, and truncated dollar figures that didn't fit an even share.
+   .bridge-table-wrap's own overflow-x:auto (below) is what absorbs the resulting width once
+   there are enough columns to not all fit -- scrolling, not truncating, is the tradeoff. */
+.bridge-table-el { width: auto; min-width: 100%; table-layout: auto; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.bridge-table-el th, .bridge-table-el td { padding: 6px 9px; white-space: nowrap; text-align: right; }
+/* Sticky top too, not just the Age column's own sticky left (below) -- now that the table can
+   scroll vertically within its own box (see the wide-viewport .bridge-table-wrap rule), the
+   header row would otherwise scroll out of view along with the data. */
+.bridge-table-el thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-2); color: var(--ink-soft); font-weight: 500; border-bottom: 1px solid var(--line-soft); vertical-align: bottom; }
+.bridge-table-el tbody tr { border-top: 1px solid color-mix(in srgb, var(--line-soft) 45%, transparent); }
+.bridge-table-el tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface-2) 35%, transparent); }
+.bridge-table-el tbody tr:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.bridge-table-el .bt-age { text-align: left; font-variant-numeric: tabular-nums; }
+.bridge-table-el th.bt-age, .bridge-table-el td.bt-age { position: sticky; left: 0; z-index: 1; background: var(--surface); }
+.bridge-table-el thead th.bt-age { z-index: 2; background: var(--surface-2); }
+.bridge-table-el .bt-num { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+/* An account header stays one line, same as every other header -- the name ellipsizes if it
+   doesn't fit, while the type chip next to it never truncates (a cut-off "Tax-defer…" chip would
+   misread as a different, real treatment name). The flex row lives on this INNER span, not the
+   <th> itself, matching the budget table's own bt-group-name doc comment: display:flex directly
+   on a table cell stops it generating a table-cell box at all. */
+.bridge-table-el .bt-account-head { text-align: center; }
+.bridge-table-el .bt-account-head-inner { display: flex; align-items: center; justify-content: center; gap: 5px; overflow: hidden; }
+.bridge-table-el .bt-account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bridge-table-el .bt-account-head .chip { flex: none; }
+/* A locked account's cell for that age -- dashed border + dimmed fill echoes the chart's own
+   solid/dashed line convention (see bridge-key-dashed above) so the two views read consistently:
+   the same account looks "locked" the same way whichever view you're in. */
+.bridge-table-el .bt-locked { border: 1px dashed var(--line); background: color-mix(in srgb, var(--ink-faint) 8%, transparent); color: var(--ink-faint); }
+/* Account tax-treatment chips -- a categorical identity, deliberately its own small palette rather
+   than reusing .chip's fail/warn/info/ok (those are semantic status colors, not a "type") or
+   BRIDGE_SERIES_COLORS (that's scenario/retirement-age identity, a different dimension shown in
+   the same chart/table). */
+.chip.tax-deferred { color: #8fa8e8; background: color-mix(in srgb, #8fa8e8 16%, transparent); }
+.chip.tax-free { color: #8fbf6b; background: color-mix(in srgb, #8fbf6b 16%, transparent); }
+.chip.taxable { color: #d9a066; background: color-mix(in srgb, #d9a066 16%, transparent); }
+.chip.none { color: var(--ink-faint); background: color-mix(in srgb, var(--ink-faint) 16%, transparent); }
+.bridge-table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 8px; }
+.bridge-table-scenario-picker { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-soft); }
+.bridge-table-scenario-picker select { font: inherit; background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 3px 6px; }
+.bridge-table-export { font: inherit; font-size: 11.5px; background: var(--surface-2); color: var(--ink-soft); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 9px; cursor: pointer; }
+.bridge-table-export:hover { color: var(--ink-strong); border-color: var(--accent); }
+.bridge-table-toolbar-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+/* The Columns button + its popover -- position:relative anchors the popover (position:absolute)
+   directly under the button without any JS repositioning math, unlike .help-popover (position:
+   fixed, repositioned in app.js against whichever icon was clicked) -- that's needed there
+   because a help icon can be anywhere on a long scrolling page; this button and its popover
+   travel together as one unit (both live inside .bridge-table, which addChartZoom/openChartZoom
+   simply reparents whole), so a simple anchored child is enough. */
+.bridge-table-columns { position: relative; }
+.bridge-table-columns-btn { font: inherit; font-size: 11.5px; background: var(--surface-2); color: var(--ink-soft); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 9px; cursor: pointer; }
+.bridge-table-columns-btn:hover, .bridge-table-columns-btn[aria-expanded="true"] { color: var(--ink-strong); border-color: var(--accent); }
+.bridge-table-columns-popover {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 10; width: 220px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45); padding: 6px; max-height: 320px; overflow-y: auto;
+}
+.bridge-table-columns-popover[hidden] { display: none; }
+.bridge-table-column-row { display: flex; align-items: center; gap: 6px; padding: 4px 4px; border-radius: var(--radius-sm); }
+.bridge-table-column-row:hover { background: var(--surface-2); }
+.bridge-table-column-row.dragging { opacity: 0.4; }
+.bt-col-drag-handle { cursor: grab; color: var(--ink-faint); flex: none; font-size: 11px; line-height: 1; }
+.bridge-table-column-row label { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; font-size: 12px; color: var(--ink); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bridge-table-column-row input { accent-color: var(--accent); margin: 0; flex: none; }
+
 .empty-note { padding: 14px 16px; font-size: 12.5px; color: var(--ink-faint); font-style: italic; }
 
 /* Analysis's own loading state (.chart-loading below) sizes itself off two 640:240 chart-shaped
@@ -1003,6 +1104,25 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
   width: auto;
   height: auto;
   aspect-ratio: 640 / 240;
+}
+/* The Bridge table's own zoomed-modal equivalent of the two rules above -- same reasoning as the
+   .retirement-live-sticky version (see that rule's own doc comment): row count varies with the
+   plan's horizon, so it needs to actually scroll within chart-zoom-section's own overflow:hidden
+   rather than being silently clipped, which .bridge-chart's fixed-aspect-ratio SVG never had to
+   deal with. */
+.modal-chart #chartZoomBody .bridge-table {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.modal-chart #chartZoomBody .bridge-table-toolbar {
+  flex: 0 0 auto;
+}
+.modal-chart #chartZoomBody .bridge-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 /* Grid, not flex+space-between -- see .retirement-live-sticky .bridge-chart-side's own doc comment
    for why a 10% row (matching the chart SVG's own margin.bottom, always 24 of its 240 viewBox

@@ -1,6 +1,6 @@
 import { addMonthsToDate, formatUsd } from "./actual-helpers.ts"
 import { isPortfolioCategory } from "./fire-accounts.ts"
-import type { ClassifiedAccount } from "./fire-accounts.ts"
+import type { ClassifiedAccount, TaxTreatment } from "./fire-accounts.ts"
 import { ALLOCATION_PRESET_RETURNS, EARLY_WITHDRAWAL_PENALTY_RATE, effectiveAccessAge, withdrawalTaxRateFor } from "./fire-dashboard.ts"
 import type { RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
@@ -92,6 +92,11 @@ export interface BridgeAccount {
   // %FPL ceiling is the one caller that does -- see allocateWithdrawal's own taxDeferredCap
   // parameter), it just needs to know which pots that cap applies to.
   isTaxDeferred: boolean
+  // The account's own full ClassifiedAccount.taxTreatment (isTaxDeferred above is just the one
+  // boolean slice of this the withdrawal-tiering logic cares about) -- carried through purely for
+  // BridgeResult's own accounts projection, so the Bridge table can show a real type badge
+  // (tax-deferred/tax-free/taxable/none) instead of a collapsed boolean.
+  taxTreatment: TaxTreatment
 }
 
 // Function to split one year's net withdrawal need across a set of already-reachable (accessible)
@@ -308,6 +313,12 @@ export interface BridgeResult {
   // chart can join the two into one line the same way. A single point (nothing to connect) when
   // retirementAge equals currentAge.
   accumulation: BridgeYear[]
+  // A slim projection of this scenario's own accounts (not the full internal BridgeAccount shape)
+  // -- lets a client build per-account table columns/headers (see BridgeYear's own
+  // balancesByAccountId/withdrawalsByAccountId) without a second round trip for account metadata.
+  // Same order every time (accounts' own array order), so a column layout built from this once
+  // stays valid across every point in timeline/accumulation.
+  accounts: { id: string; name: string; isTaxDeferred: boolean; taxTreatment: TaxTreatment; accessAge: number | null }[]
 }
 
 export interface BridgeYear {
@@ -332,6 +343,31 @@ export interface BridgeYear {
   // the final planToAge point when the scenario funds all the way through (that point is just an
   // ending-balance snapshot, one year past the last one a withdrawal was ever computed for).
   grossTaxDeferredWithdrawal?: number
+  // The direct counterpart of grossTaxDeferredWithdrawal above, same computation with
+  // isTaxDeferred inverted -- set (or left undefined) at exactly the same points, for exactly the
+  // same reasons.
+  grossNonTaxDeferredWithdrawal?: number
+  // Every account's own balance at this point, keyed by BridgeAccount.id -- set alongside
+  // accessibleBalance/lockedBalance at both the accumulation and withdrawal-phase push sites (the
+  // same `balances` array simulateBridge already tracks, just also exposed per-account instead of
+  // only as the aggregate accessible/locked split). See BridgeResult's own `accounts` field for
+  // each id's name/type/accessAge.
+  balancesByAccountId?: Record<string, number>
+  // How much was actually withdrawn from each account THIS year, keyed by BridgeAccount.id -- the
+  // per-account breakdown of grossTaxDeferredWithdrawal/grossNonTaxDeferredWithdrawal above, from
+  // the same allocation. Undefined under the same conditions as grossTaxDeferredWithdrawal
+  // (accumulation/history points, and the final funded scenario's own ending-balance snapshot).
+  withdrawalsByAccountId?: Record<string, number>
+  // Estimated MAGI for this year, and that MAGI as a percent of the (inflation-adjusted) federal
+  // poverty guideline -- set by fire-generate.ts's own enrichment pass once a scenario's timeline
+  // is built (simulateBridge itself has no notion of tax brackets or poverty guidelines), reusing
+  // the exact same magiInputsAt/estimateMagi/inflateGuideline this scenario's own MAGI finding and
+  // ACA cliff crossing already use, so this can never disagree with either. magi is set whenever
+  // filing status and the tax-bracket table are loaded; pctFPL additionally needs household size
+  // and the poverty guidelines table -- both undefined otherwise, same "absent, not an error"
+  // convention as the rest of the ACA/MAGI machinery.
+  magi?: number
+  pctFPL?: number
 }
 
 // Function to split a one-shot snapshot of accounts (a historical balance as of some past age, or
@@ -391,6 +427,9 @@ export function simulateBridge(
   taxDeferredWithdrawalCapAt?: (age: number) => number | null,
 ): BridgeResult {
   const balances = accounts.map((account) => account.balance)
+  // Every account's own current balance, keyed by id -- snapshotted onto each BridgeYear alongside
+  // the aggregate accessible/locked split (see BridgeYear's own balancesByAccountId doc comment).
+  const balancesByAccountId = (): Record<string, number> => Object.fromEntries(accounts.map((account, index) => [account.id, balances[index] as number]))
   const isAccessible = (account: BridgeAccount, age: number): boolean => account.accessAge == null || age >= account.accessAge
   // Shared by the retirement-age split below and the timeline recording further down, so the two
   // never disagree about what "accessible at this age" means.
@@ -450,22 +489,23 @@ export function simulateBridge(
       const split = splitAt(age)
       accessibleAtRetirement = split.accessible
       lockedAtRetirement = split.locked
-      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend })
+      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend, balancesByAccountId: balancesByAccountId() })
       capturedSplit = true
     }
 
     // Recorded every year of the withdrawal phase, not just at the moments the summary fields
     // above care about -- this is the actual line the chart draws. Kept as a reference (not just
     // pushed and forgotten) so the withdrawal-phase branch below can fill in this same point's own
-    // grossTaxDeferredWithdrawal once the allocation for the year is actually known.
+    // grossTaxDeferredWithdrawal/grossNonTaxDeferredWithdrawal/withdrawalsByAccountId once the
+    // allocation for the year is actually known.
     let thisYearBridge: BridgeYear | null = null
     if (age >= retirementAge) {
       const split = splitAt(age)
-      thisYearBridge = { age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend }
+      thisYearBridge = { age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend, balancesByAccountId: balancesByAccountId() }
       timeline.push(thisYearBridge)
     } else {
       const split = splitAt(age)
-      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend })
+      accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend, balancesByAccountId: balancesByAccountId() })
     }
 
     if (age < retirementAge) {
@@ -500,6 +540,13 @@ export function simulateBridge(
           (sum, index, position) => sum + ((accounts[index] as BridgeAccount).isTaxDeferred ? (allocation.grossByIndex[position] as number) : 0),
           0,
         )
+        thisYearBridge.grossNonTaxDeferredWithdrawal = reachable.reduce(
+          (sum, index, position) => sum + ((accounts[index] as BridgeAccount).isTaxDeferred ? 0 : (allocation.grossByIndex[position] as number)),
+          0,
+        )
+        thisYearBridge.withdrawalsByAccountId = Object.fromEntries(
+          reachable.map((index, position) => [(accounts[index] as BridgeAccount).id, allocation.grossByIndex[position] as number]),
+        )
       }
       reachable.forEach((index, position) => {
         balances[index] = (balances[index] as number) - (allocation.grossByIndex[position] as number)
@@ -520,7 +567,7 @@ export function simulateBridge(
   // a year the simulation never actually ran.
   if (depletionAge === null) {
     const split = splitAt(planToAge)
-    timeline.push({ age: planToAge, accessibleBalance: split.accessible, lockedBalance: split.locked })
+    timeline.push({ age: planToAge, accessibleBalance: split.accessible, lockedBalance: split.locked, balancesByAccountId: balancesByAccountId() })
   }
 
   return {
@@ -537,6 +584,7 @@ export function simulateBridge(
     // snapshot balance per account) -- the caller (checkDashboard) fills this in itself, the same
     // way it already attaches retirementAge-independent data like ruleOf55Boosts.
     history: [],
+    accounts: accounts.map((account) => ({ id: account.id, name: account.name, isTaxDeferred: account.isTaxDeferred, taxTreatment: account.taxTreatment, accessAge: account.accessAge })),
   }
 }
 
@@ -706,6 +754,7 @@ export function toBridgeAccounts(
           // A Roth IRA's taxTreatment is never "tax-deferred" -- both synthetic entries share the
           // one parent account's own value, same as withdrawalOrder above.
           isTaxDeferred: account.taxTreatment === "tax-deferred",
+          taxTreatment: account.taxTreatment,
         },
         {
           id: `${account.id}-growth`,
@@ -718,6 +767,7 @@ export function toBridgeAccounts(
           earlyWithdrawalPenaltyUntilAge,
           withdrawalOrder: account.withdrawalOrder,
           isTaxDeferred: account.taxTreatment === "tax-deferred",
+          taxTreatment: account.taxTreatment,
         },
       ]
     }
@@ -734,6 +784,7 @@ export function toBridgeAccounts(
         earlyWithdrawalPenaltyUntilAge,
         withdrawalOrder: account.withdrawalOrder,
         isTaxDeferred: account.taxTreatment === "tax-deferred",
+          taxTreatment: account.taxTreatment,
       },
     ]
   })
