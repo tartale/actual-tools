@@ -480,12 +480,21 @@ export interface DashboardConfig {
   // filingStatus. Independent of filingStatus itself (a married couple can have any number of
   // dependents), so it isn't derived from it.
   householdSize: number | null
-  // Age Medicare eligibility begins (typically 65) -- when set, the bridge/MAGI simulation paces
-  // non-tax-deferred withdrawals to last until this age instead of draining them by plain
-  // withdrawalOrder, since that's what actually avoids the ACA subsidy cliff for as many years as
-  // possible (Medicare replaces the need for ACA marketplace coverage entirely). See
-  // simulateBridge's own nonTaxableWithdrawalCapAt parameter and fire-generate.ts's pacing search.
-  // Null (the default) skips pacing entirely -- today's plain order/proportional allocation.
+  // Target %FPL ceiling for the bridge/MAGI simulation -- THIS is what turns on ceiling-aware
+  // withdrawal allocation (not medicareAge below): once set (and the other ACA prerequisites --
+  // householdSize, filingStatus, the tax-bracket/poverty-guideline files -- are all present too),
+  // non-tax-deferred money is drawn first, uncapped (it never raises MAGI, so there's no reason to
+  // hold it back), and tax-deferred is capped at whatever this %FPL implies, overflowing past that
+  // cap only once non-taxable is ALSO exhausted and the year's real spending need still isn't met.
+  // The ACA marketplace subsidy cliff is 400% FPL under current law, so a value a little under
+  // that (e.g. 395) leaves a buffer. Null (the default) skips the cap entirely -- today's plain
+  // order/proportional allocation. See allocateWithdrawal's own taxDeferredCap parameter and
+  // fire-generate.ts's taxDeferredCapAt.
+  acaTargetPctFpl: number | null
+  // Age Medicare eligibility begins (typically 65) -- optional secondary bound on the ceiling
+  // above: once reached, the cap stops applying, since Medicare replaces the need for ACA
+  // marketplace coverage entirely. Meaningless without acaTargetPctFpl also set. Null (the
+  // default) means the ceiling (if any) applies for the whole plan, with no age cutoff.
   medicareAge: number | null
   // Cents/mo, null until entered. A pension with no start age (or vice versa) isn't applied --
   // see retirementIncomeStreams in fire-dashboard.ts.
@@ -558,6 +567,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   planToAge: DEFAULT_PLAN_TO_AGE,
   filingStatus: null,
   householdSize: null,
+  acaTargetPctFpl: null,
   medicareAge: null,
   pensionStartAge: null,
   pensionMonthlyAmount: null,
@@ -1158,6 +1168,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.householdSize != null && (typeof dashboardSource.householdSize !== "number" || dashboardSource.householdSize <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.householdSize must be a positive number, or null.`)
   }
+  if (dashboardSource.acaTargetPctFpl != null && (typeof dashboardSource.acaTargetPctFpl !== "number" || dashboardSource.acaTargetPctFpl <= 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.acaTargetPctFpl must be a positive number, or null.`)
+  }
   if (dashboardSource.medicareAge != null && (typeof dashboardSource.medicareAge !== "number" || dashboardSource.medicareAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.medicareAge must be a positive number, or null.`)
   }
@@ -1254,6 +1267,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       planToAge: dashboardSource.planToAge ?? DEFAULT_DASHBOARD_CONFIG.planToAge,
       filingStatus: dashboardSource.filingStatus ?? DEFAULT_DASHBOARD_CONFIG.filingStatus,
       householdSize: dashboardSource.householdSize ?? DEFAULT_DASHBOARD_CONFIG.householdSize,
+      acaTargetPctFpl: dashboardSource.acaTargetPctFpl ?? DEFAULT_DASHBOARD_CONFIG.acaTargetPctFpl,
       medicareAge: dashboardSource.medicareAge ?? DEFAULT_DASHBOARD_CONFIG.medicareAge,
       pensionStartAge: dashboardSource.pensionStartAge ?? DEFAULT_DASHBOARD_CONFIG.pensionStartAge,
       pensionMonthlyAmount: dashboardSource.pensionMonthlyAmount ?? DEFAULT_DASHBOARD_CONFIG.pensionMonthlyAmount,

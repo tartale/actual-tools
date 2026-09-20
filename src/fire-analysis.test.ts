@@ -14,6 +14,7 @@ import type { ClassifiedAccount } from "./fire-accounts.ts"
 import type { RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
 import type { FederalTaxBrackets } from "./federal-tax-brackets.ts"
+import { federalPovertyGuideline } from "./federal-poverty-guidelines.ts"
 import type { FederalPovertyGuidelines } from "./federal-poverty-guidelines.ts"
 
 // Function to build a bridge account with inert defaults -- no growth, no contributions, no tax --
@@ -117,16 +118,18 @@ describe("simulateBridge", () => {
   it("records one timeline point per year, ending at zero the year the reachable pool runs dry", () => {
     const result = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
     expect(result.timeline).toEqual([
-      { age: 50, accessibleBalance: 1000, lockedBalance: 0, projectedSpend: 100 },
-      { age: 51, accessibleBalance: 900, lockedBalance: 0, projectedSpend: 100 },
-      { age: 52, accessibleBalance: 800, lockedBalance: 0, projectedSpend: 100 },
-      { age: 53, accessibleBalance: 700, lockedBalance: 0, projectedSpend: 100 },
-      { age: 54, accessibleBalance: 600, lockedBalance: 0, projectedSpend: 100 },
-      { age: 55, accessibleBalance: 500, lockedBalance: 0, projectedSpend: 100 },
-      { age: 56, accessibleBalance: 400, lockedBalance: 0, projectedSpend: 100 },
-      { age: 57, accessibleBalance: 300, lockedBalance: 0, projectedSpend: 100 },
-      { age: 58, accessibleBalance: 200, lockedBalance: 0, projectedSpend: 100 },
-      { age: 59, accessibleBalance: 100, lockedBalance: 0, projectedSpend: 100 },
+      { age: 50, accessibleBalance: 1000, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 51, accessibleBalance: 900, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 52, accessibleBalance: 800, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 53, accessibleBalance: 700, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 54, accessibleBalance: 600, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 55, accessibleBalance: 500, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 56, accessibleBalance: 400, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 57, accessibleBalance: 300, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 58, accessibleBalance: 200, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      { age: 59, accessibleBalance: 100, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 },
+      // The depletion year itself never reaches the allocation, so grossTaxDeferredWithdrawal stays
+      // unset here -- there's no real withdrawal to report for a year that didn't actually fund.
       { age: 60, accessibleBalance: 0, lockedBalance: 0, projectedSpend: 100 },
     ])
     // The first point is exactly the retirement-age split, and the last is the depletion age --
@@ -137,6 +140,7 @@ describe("simulateBridge", () => {
       accessibleBalance: result.accessibleAtRetirement,
       lockedBalance: result.lockedAtRetirement,
       projectedSpend: 100,
+      grossTaxDeferredWithdrawal: 0,
     })
     expect(result.timeline.at(-1)?.age).toBe(result.depletionAge)
   })
@@ -157,9 +161,9 @@ describe("simulateBridge", () => {
     const result = simulateBridge(accounts, 50, 50, 100, 100, 0)
     const byAge = new Map(result.timeline.map((year) => [year.age, year]))
     // The year before it unlocks: still split, locked sitting untouched at its starting balance.
-    expect(byAge.get(52)).toEqual({ age: 52, accessibleBalance: 300, lockedBalance: 500, projectedSpend: 100 })
+    expect(byAge.get(52)).toEqual({ age: 52, accessibleBalance: 300, lockedBalance: 500, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 })
     // The unlock year itself: the whole 500 has moved over, before that year's own withdrawal.
-    expect(byAge.get(53)).toEqual({ age: 53, accessibleBalance: 700, lockedBalance: 0, projectedSpend: 100 })
+    expect(byAge.get(53)).toEqual({ age: 53, accessibleBalance: 700, lockedBalance: 0, projectedSpend: 100, grossTaxDeferredWithdrawal: 0 })
     // Never locked again once unlocked.
     expect(result.timeline.filter((year) => year.age >= 53).every((year) => year.lockedBalance === 0)).toBe(true)
   })
@@ -244,45 +248,58 @@ describe("simulateBridge", () => {
     expect(inflated.depletionAge).toBeLessThan(flat.depletionAge as number)
   })
 
-  it("caps the non-tax-deferred draw at nonTaxableWithdrawalCapAt, forcing tax-deferred to cover the rest sooner", () => {
+  it("caps the tax-deferred draw at taxDeferredWithdrawalCapAt, once non-taxable alone can't cover the need", () => {
     const accounts = [
-      bridgeAccount({ id: "cash", balance: 1000, isTaxDeferred: false }),
+      bridgeAccount({ id: "cash", balance: 30, isTaxDeferred: false }),
       bridgeAccount({ id: "401k", balance: 1_000_000, withdrawalTaxRate: 0.5, isTaxDeferred: true }),
     ]
-    const paced = simulateBridge(accounts, 50, 50, 51, 100, 0, [], (_age, nonTaxDeferredBalance) => nonTaxDeferredBalance / 20)
-    // Age 50: cap = 1000/20 = 50, so only 50 (not the full 100 net need) comes from cash; the other
-    // 50 net comes from the 50%-taxed 401k, costing 100 gross -- combined balance drops by
-    // 50 (cash) + 100 (401k gross) = 150, not the 100 it would if cash alone covered the year (as
-    // it would with no cap at all, since cash alone can afford the whole need).
-    expect(paced.timeline[1]?.accessibleBalance).toBe(1_001_000 - 150)
+    const capped = simulateBridge(accounts, 50, 50, 51, 100, 0, [], () => 40)
+    // Age 50: cash (30) covers 30 of the 100 net need, uncapped -- it never raises MAGI, so
+    // there's no reason to hold any of it back. The remaining 70 net would ordinarily need 140
+    // gross from the 50%-taxed 401k; capped at 40 gross (netting 20), the last 50 net comes from
+    // the 401k again, past its own cap, as overflow (100 more gross). Combined balance drops by
+    // 30 (cash) + 40 (capped tier) + 100 (overflow) = 170.
+    expect(capped.timeline[1]?.accessibleBalance).toBe(1_000_030 - 170)
   })
 })
 
 describe("allocateWithdrawal", () => {
-  it("caps non-tax-deferred draws at nonTaxDeferredPaceCap, covering the rest from tax-deferred", () => {
+  it("never touches tax-deferred at all when non-taxable alone covers the need, regardless of the cap", () => {
     const accounts = [
       { balance: 1000, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
-      { balance: 1000, withdrawalTaxRate: 0.2, withdrawalOrder: null, isTaxDeferred: true },
+      { balance: 1000, withdrawalTaxRate: 0.5, withdrawalOrder: null, isTaxDeferred: true },
     ]
-    const allocation = allocateWithdrawal(accounts, 300, 100)
-    // 100 (the cap) from the non-tax-deferred pot; the remaining 200 net needs 250 gross from the
-    // 20%-taxed tax-deferred pot.
-    expect(allocation.grossByIndex).toEqual([100, 250])
+    // The whole point of this design: non-taxable is drawn UNCAPPED, so a cap here (however
+    // small) never forces an unnecessary tax-deferred draw the way the earlier reserve-pacing
+    // design did.
+    const allocation = allocateWithdrawal(accounts, 100, 40)
+    expect(allocation.grossByIndex).toEqual([100, 0])
   })
 
-  it("draws non-tax-deferred past its own cap once tax-deferred is exhausted, rather than under-funding the year", () => {
+  it("caps tax-deferred at taxDeferredCap once non-taxable alone can't cover the need", () => {
     const accounts = [
-      { balance: 1000, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
-      { balance: 50, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: true }, // a tiny tax-deferred pot
+      { balance: 30, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
+      { balance: 1000, withdrawalTaxRate: 0.5, withdrawalOrder: null, isTaxDeferred: true },
     ]
-    const allocation = allocateWithdrawal(accounts, 300, 100)
-    // Tier 1: 100 (the cap) from non-tax-deferred. Tier 2: only 50 available from tax-deferred --
-    // its entire balance. Tier 3 (overflow): the remaining 150 comes back out of non-tax-deferred,
-    // past its own cap, since the year's real spending need still has to be met.
-    expect(allocation.grossByIndex).toEqual([250, 50])
+    const allocation = allocateWithdrawal(accounts, 100, 40)
+    // 30 from non-taxable (uncapped, all it has). The remaining 70 net would need 140 gross from
+    // the 50%-taxed tax-deferred pot -- capped at 40 gross (netting 20) -- the last 50 net comes
+    // from tax-deferred again, past its own cap, as overflow (100 more gross): 40 + 100 = 140.
+    expect(allocation.grossByIndex).toEqual([30, 140])
   })
 
-  it("allocates proportionally across accounts when no order or pace cap is given (today's default)", () => {
+  it("doesn't cap tax-deferred when the real need-driven gross already stays under the cap", () => {
+    const accounts = [
+      { balance: 10, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
+      { balance: 1000, withdrawalTaxRate: 0.5, withdrawalOrder: null, isTaxDeferred: true },
+    ]
+    // 10 from non-taxable, remaining 90 net needs 180 gross -- well under a 1000 cap, so this
+    // covers the real need normally rather than manufacturing a smaller, capped draw.
+    const allocation = allocateWithdrawal(accounts, 100, 1000)
+    expect(allocation.grossByIndex).toEqual([10, 180])
+  })
+
+  it("allocates proportionally across accounts when no order or cap is given (today's default)", () => {
     const accounts = [
       { balance: 300, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
       { balance: 700, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: true },
@@ -374,7 +391,7 @@ describe("magiFinding", () => {
 
   it("adds %FPL to the title when aca context is given", () => {
     // MAGI $77,000 / $21,150 (household of 2: $15,650 + $5,500) = 364.07% -> 364.1%.
-    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE, { householdSize: 2, guidelines: POVERTY_TABLE })
+    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE, { targetGuideline: federalPovertyGuideline(2, POVERTY_TABLE) })
     expect(finding.title).toBe("age 59 -- est. MAGI $77,000.00 (364.1% FPL) puts you in the 22% federal bracket (10.5% effective).")
     // The detail lines are unaffected by aca -- the cliff itself is a chart marker, not text here.
     expect(finding.detail).toHaveLength(2)

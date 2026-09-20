@@ -506,7 +506,22 @@ describe("GET /api/retirement/check", () => {
     expect(magiAfter?.detail[0]).toContain("$0.00 tax-deferred")
   })
 
-  it("paces non-tax-deferred withdrawals toward a set medicareAge without ever missing plan-to-age", async () => {
+  const FEDERAL_POVERTY_GUIDELINES_FIXTURE = {
+    guidelineYear: 2025,
+    source: "https://example.com",
+    base: 1565000, // $15,650
+    perAdditionalPerson: 550000, // $5,500
+    subsidyCliffAt400Pct: true,
+  }
+
+  it("finds the ACA cliff crossing where the trajectory actually depletes non-taxable, not where today's un-depleted balance alone would hide it", async () => {
+    // Regression: magiInputsAt used to rebuild its own withdrawal allocation from TODAY's real
+    // account balances at every age, rather than reading the real trajectory simulateBridge already
+    // computed. $300,000 cash comfortably covers any SINGLE year's $96,000 spend on its own, so a
+    // fresh one-year check re-run at every age (the old bug) always found the cash pot sufficient and
+    // reported $0 tax-deferred forever -- even though the real, cumulative trajectory drains that
+    // same $300,000 in a little over 3 years and has to draw six figures a year of tax-deferred money
+    // from age 54 on, comfortably over the ACA cliff.
     const url = await boot({
       accounts: [
         { id: "cash", name: "Brokerage", offbudget: true, closed: false },
@@ -515,39 +530,41 @@ describe("GET /api/retirement/check", () => {
       categoryGroups: [
         { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
       ],
-      // Sized so that full, unthrottled pacing (spreading the $450,000 cash pot evenly across all
-      // 15 pre-Medicare years) would touch the 401k earlier than plain sequential order does,
-      // forgoing enough of ITS OWN growth to actually deplete before plan-to-age -- confirmed by
-      // direct exploration against simulateBridge itself (matching the real 3% fallback inflation
-      // and the 401k's own 10%-penalty-until-59 window this endpoint applies), not guessed. Plain
-      // sequential order alone still funds the plan fine -- the pacing search is what's supposed to
-      // notice full pacing would break it and throttle back automatically.
-      transactionsByAccount: { cash: [{ amount: 450_000_00, transfer_id: null }], "401k": [{ amount: 200_000_00, transfer_id: null }] },
-      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2500_00, balance: 0, carryover: false }],
+      transactionsByAccount: { cash: [{ amount: 300_000_00, transfer_id: null }], "401k": [{ amount: 2_000_000_00, transfer_id: null }] },
+      // $8,000/mo = $96,000/yr -- well within a single year of the $300,000 cash pot alone, but the
+      // cash pot only actually covers a little over 3 years cumulatively.
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -8000_00, balance: 0, carryover: false }],
       dashboardRows: [],
     })
     writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
-    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1976-01-01", retirementAges: [50], planToAge: 70, filingStatus: "single", medicareAge: 65 }) })
-    await fetch(`${url}api/retirement/accounts/cash`, {
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
       method: "PATCH",
-      body: JSON.stringify({ type: "brokerage", withdrawalOrder: 0, customReturnMean: 0, customWithdrawalTaxRate: 0 }),
+      body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [51], planToAge: 90, filingStatus: "single", householdSize: 1 }),
     })
-    await fetch(`${url}api/retirement/accounts/401k`, {
-      method: "PATCH",
-      body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true, withdrawalOrder: 1, customReturnMean: 0.06, customWithdrawalTaxRate: 0.22 }),
-    })
+    await fetch(`${url}api/retirement/accounts/cash`, { method: "PATCH", body: JSON.stringify({ type: "brokerage", withdrawalOrder: 0 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true, withdrawalOrder: 1 }) })
 
     const res = await fetch(`${url}api/retirement/check`)
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
-    const bridge = body.bridgeFindings.find((f) => f.title.startsWith("age 50"))
-    // Not "runs out" -- the search found (or fell back to) a pacing strength that still funds the
-    // whole plan, rather than blindly applying full pacing and letting it deplete early.
-    expect(bridge?.title).toContain("funds every year until age 70")
+    expect(body.acaCliffCrossings).toHaveLength(1)
+    // The $300,000 cash pot covers ages 51-53 in full (~$96,000/yr each), running out partway
+    // through age 54 -- the rest of that year's spend (and the tax gross-up on withdrawing it)
+    // has to come from the 401k, comfortably over 400% of a household-of-1 FPL ($62,600) on its
+    // own. The old bug reported this scenario as never crossing at all.
+    expect(body.acaCliffCrossings).toEqual([{ retirementAge: 51, crossesAtAge: 54, pctFPL: 902.1 }])
   })
 
-  it("shows a nonzero, paced tax-deferred draw in the MAGI finding once medicareAge makes full pacing worthwhile and affordable", async () => {
-    const boot0 = {
+  it("keeps the MAGI finding's tax-deferred draw at $0 once a %FPL ceiling is set, even with no explicit withdrawalOrder", async () => {
+    // Regression: an earlier reserve-pacing design (medicareAge-triggered) always spread the WHOLE
+    // non-taxable pot evenly across every pre-Medicare year regardless of whether that helped --
+    // when non-taxable was small relative to spend, that forced a tax-deferred draw in EVERY year
+    // instead of none, moving a real ACA cliff crossing from age 97 to age 53 in live data. This
+    // design has no such failure mode: non-taxable is drawn first, fully, uncapped -- exactly the
+    // same "prefer non-taxable" behavior withdrawalOrder gives explicitly, but automatic the moment
+    // a ceiling is set, since using it never raises MAGI.
+    const url = await boot({
       accounts: [
         { id: "cash", name: "Brokerage", offbudget: true, closed: false },
         { id: "401k", name: "Fidelity 401k", offbudget: true, closed: false },
@@ -555,46 +572,62 @@ describe("GET /api/retirement/check", () => {
       categoryGroups: [
         { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
       ],
-      // Comfortably funds the plan either way -- large enough that full pacing (spreading the cash
-      // pot over all 15 pre-Medicare years) is easily affordable, so the search settles on it
-      // outright rather than throttling back.
-      transactionsByAccount: { cash: [{ amount: 400_000_00, transfer_id: null }], "401k": [{ amount: 800_000_00, transfer_id: null }] },
-      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2500_00, balance: 0, carryover: false }],
+      transactionsByAccount: { cash: [{ amount: 50_000_00, transfer_id: null }], "401k": [{ amount: 500_000_00, transfer_id: null }] },
+      // $2,000/mo = $24,000/yr -- comfortably covered by the $50,000 taxable pot alone.
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
       dashboardRows: [],
-    }
-    const url = await boot(boot0)
+    })
     writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
-    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1976-01-01", retirementAges: [50], planToAge: 95, filingStatus: "single" }) })
-    await fetch(`${url}api/retirement/accounts/cash`, {
-      method: "PATCH",
-      body: JSON.stringify({ type: "brokerage", withdrawalOrder: 0, customReturnMean: 0, customWithdrawalTaxRate: 0 }),
-    })
-    await fetch(`${url}api/retirement/accounts/401k`, {
-      method: "PATCH",
-      body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true, withdrawalOrder: 1, customReturnMean: 0.06, customWithdrawalTaxRate: 0.22 }),
-    })
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [51], planToAge: 90, filingStatus: "single", householdSize: 1 }) })
+    await fetch(`${url}api/retirement/accounts/cash`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+    // Accepting the 10% penalty makes the 401k reachable immediately -- no withdrawalOrder set on
+    // either account, so without a ceiling this would fall back to proportional (a blended draw
+    // from both, per the withdrawalOrder tests elsewhere in this file).
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true }) })
 
-    // No medicareAge yet -- plain sequential order, cash alone comfortably covers the first year.
-    const beforePacing = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
-    const magiBefore = beforePacing.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
-    expect(magiBefore?.detail[0]).toContain("$0.00 tax-deferred")
+    const beforeCeiling = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    const magiBefore = beforeCeiling.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magiBefore?.detail[0]).not.toContain("$0.00 tax-deferred")
 
-    // Once medicareAge is set, the first year draws only a paced SLICE of cash (spread across 15
-    // years) rather than the whole year's need -- the shortfall comes from the 401k, so its MAGI
-    // finding now shows a real, nonzero tax-deferred draw where before it showed none.
-    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ medicareAge: 65 }) })
-    const afterPacing = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
-    const magiAfter = afterPacing.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
-    expect(magiAfter?.detail[0]).not.toContain("$0.00 tax-deferred")
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ acaTargetPctFpl: 300 }) })
+    const afterCeiling = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    const magiAfter = afterCeiling.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magiAfter?.detail[0]).toContain("$0.00 tax-deferred")
   })
 
-  const FEDERAL_POVERTY_GUIDELINES_FIXTURE = {
-    guidelineYear: 2025,
-    source: "https://example.com",
-    base: 1565000, // $15,650
-    perAdditionalPerson: 550000, // $5,500
-    subsidyCliffAt400Pct: true,
-  }
+  it("lets tax-deferred exceed the %FPL ceiling as a last resort, rather than falsely reporting a funding shortfall", async () => {
+    const url = await boot({
+      accounts: [{ id: "401k", name: "Fidelity 401k", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      // No non-taxable pot at all -- the 100% FPL ceiling below ($15,650 for a household of 1)
+      // can't possibly be honored against a $60,000/yr need, so the overflow tier has to cover the
+      // whole shortfall from tax-deferred anyway.
+      transactionsByAccount: { "401k": [{ amount: 1_000_000_00, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -5000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1, acaTargetPctFpl: 100 }),
+    })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    const bridge = body.bridgeFindings.find((f) => f.title.startsWith("age 65"))
+    // Not a false "runs out" -- the cap only limits WHERE the withdrawal nominally comes from, not
+    // whether the year actually gets funded.
+    expect(bridge?.title).toContain("funds every year until age 90")
+    // The ceiling genuinely can't be honored here -- correctly still reported as a crossing, not
+    // silently hidden by the cap.
+    expect(body.acaCliffCrossings.length).toBeGreaterThan(0)
+  })
 
   it("marks the age a scenario's MAGI crosses the ACA subsidy cliff", async () => {
     const url = await boot({
@@ -641,6 +674,38 @@ describe("GET /api/retirement/check", () => {
     await fetch(`${url}api/retirement/plan`, {
       method: "PATCH",
       body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1 }),
+    })
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.acaCliffCrossings).toEqual([])
+  })
+
+  it("doesn't manufacture a crossing decades out purely from nominal inflation on an unchanging real %FPL", async () => {
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Inherited IRA", offbudget: true, closed: false }],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      // Large enough that 30 years of a withdrawal need growing at the plan's own 3% default
+      // inflationMean never depletes it -- isolates the guideline-inflation fix from the unrelated
+      // depletion-cutoff behavior covered by the test below.
+      transactionsByAccount: { ira: [{ amount: 2_000_000_00, transfer_id: null }] },
+      // $2,600/mo = $31,200/yr, about 199% of a household-of-1 FPL ($15,650) at retirement -- well
+      // under the 400% cliff, and stays exactly that far under it in REAL terms for the plan's whole
+      // 30-year horizon (nothing here ever actually changes real affordability). Before the fix, the
+      // static (non-inflated) guideline this was compared against made the ratio drift upward by
+      // nominal inflation alone, crossing 400% around age 72 despite nothing real having changed.
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2600_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 95, filingStatus: "single", householdSize: 1 }),
     })
     await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
 

@@ -6,8 +6,6 @@ import type { RetirementIncomeStream } from "./fire-dashboard.ts"
 import type { MonteCarloSummary } from "./fire-monte-carlo.ts"
 import { estimateMagi } from "./federal-tax-brackets.ts"
 import type { FederalTaxBrackets, FilingStatus } from "./federal-tax-brackets.ts"
-import { federalPovertyGuideline } from "./federal-poverty-guidelines.ts"
-import type { FederalPovertyGuidelines } from "./federal-poverty-guidelines.ts"
 
 export type FindingLevel = "fail" | "warn" | "info" | "ok"
 
@@ -91,8 +89,8 @@ export interface BridgeAccount {
   withdrawalOrder: number | null
   // Whether this account's own ClassifiedAccount.taxTreatment is "tax-deferred" -- set by
   // toBridgeAccounts. simulateBridge itself has no notion of WHY this matters (fire-generate.ts's
-  // reserve-pacing search is the one caller that does -- see allocateWithdrawal's own
-  // nonTaxDeferredPaceCap parameter), it just needs to know which pots that pacing applies to.
+  // %FPL ceiling is the one caller that does -- see allocateWithdrawal's own taxDeferredCap
+  // parameter), it just needs to know which pots that cap applies to.
   isTaxDeferred: boolean
 }
 
@@ -138,6 +136,30 @@ function coreAllocate(accounts: readonly { balance: number; withdrawalTaxRate: n
   return { grossByIndex }
 }
 
+// Function to split a FIXED gross dollar budget across accounts, by withdrawalOrder (sequential)
+// or balance share (proportional) -- same preference coreAllocate uses, but the number handed in
+// is already a gross figure to divide, not a net need to gross up (so, unlike coreAllocate, this
+// doesn't need withdrawalTaxRate at all). Used only by allocateWithdrawal's own taxDeferredCap
+// tier, where the cap is inherently a gross ceiling (a %FPL/MAGI ceiling is a function of gross
+// withdrawal, from estimateMagi), not a net one.
+function coreAllocateGrossBudget(accounts: readonly { balance: number; withdrawalOrder: number | null }[], grossBudget: number): { grossByIndex: number[] } {
+  if (accounts.some((account) => account.withdrawalOrder != null)) {
+    const order = accounts.map((account, index) => ({ account, index })).sort((a, b) => (a.account.withdrawalOrder ?? Infinity) - (b.account.withdrawalOrder ?? Infinity))
+    const grossByIndex: number[] = accounts.map(() => 0)
+    let remaining = grossBudget
+    for (const { account, index } of order) {
+      if (remaining <= 0) break
+      const draw = Math.min(account.balance, remaining)
+      grossByIndex[index] = draw
+      remaining -= draw
+    }
+    return { grossByIndex }
+  }
+  const total = accounts.reduce((sum, account) => sum + account.balance, 0)
+  const grossByIndex = accounts.map((account) => (total > 0 ? grossBudget * (account.balance / total) : 0))
+  return { grossByIndex }
+}
+
 export interface WithdrawalAllocation {
   // Parallel to the accounts array passed in -- how much GROSS money (before its own tax rate) came
   // out of each account this year.
@@ -147,22 +169,22 @@ export interface WithdrawalAllocation {
   // so this is what the caller compares the year's net need against to detect depletion.
   totalNetCapacity: number
 }
-// nonTaxDeferredPaceCap (null by default): the reserve-pacing search in fire-generate.ts's one
-// caller -- when given, this is a NET dollar budget for the non-tax-deferred pots ALONE this year
-// (see simulateBridge's own nonTaxableWithdrawalCapAt), not a hard limit. Three tiers, each just a
-// sub-call into coreAllocate above (against whichever accounts are left in play, using their own
-// REMAINING balance after any earlier tier already drew from them, not their original one):
-//   1. non-tax-deferred, up to min(netNeed, nonTaxDeferredPaceCap) -- preserves the rest of this
-//      pot for future years, same reasoning as the Medicare-age pacing formula that produces the
-//      cap itself.
-//   2. tax-deferred, for whatever's left of netNeed after (1).
-//   3. non-tax-deferred AGAIN, past its own pace cap, for whatever's STILL left -- a real spending
-//      need beats a pacing target, the same "last resort" principle withdrawalOrder's own overflow
+// taxDeferredCap (null by default): the %FPL-ceiling caller in fire-generate.ts -- when given,
+// this is a GROSS dollar ceiling on tax-deferred withdrawal ALONE this year (see simulateBridge's
+// own taxDeferredWithdrawalCapAt), not a hard limit. Three tiers:
+//   1. non-tax-deferred, UNCAPPED -- draws as much of netNeed as it can cover. Never throttled:
+//      using it never raises MAGI, so there's no reason to hold any of it back.
+//   2. tax-deferred, up to taxDeferredCap GROSS, for whatever's left of netNeed after (1) -- only
+//      actually capped when the need-driven gross would exceed it; otherwise this just covers the
+//      real need normally, same as an uncapped tier would (never draws MORE than needed just
+//      because the cap allows it).
+//   3. tax-deferred AGAIN, past its own cap, for whatever's STILL left -- a real spending need
+//      beats a MAGI target, the same "last resort" principle withdrawalOrder's own overflow
 //      already uses (see coreAllocate's sequential branch).
 export function allocateWithdrawal(
   accounts: readonly { balance: number; withdrawalTaxRate: number; withdrawalOrder: number | null; isTaxDeferred: boolean }[],
   netNeed: number,
-  nonTaxDeferredPaceCap: number | null = null,
+  taxDeferredCap: number | null = null,
 ): WithdrawalAllocation {
   const totalNetCapacity = accounts.reduce((total, account) => total + account.balance * (1 - account.withdrawalTaxRate), 0)
   const grossByIndex: number[] = accounts.map(() => 0)
@@ -194,16 +216,39 @@ export function allocateWithdrawal(
     return covered
   }
 
-  if (nonTaxDeferredPaceCap == null) {
+  // Same idea as allocateAmong above, but for a FIXED gross budget rather than a net need -- see
+  // coreAllocateGrossBudget's own doc comment for why this tier needs its own variant.
+  const allocateAmongGrossCapped = (indices: number[], grossBudget: number): number => {
+    if (grossBudget <= 0 || indices.length === 0) return 0
+    const subsetBalance = indices.reduce((sum, index) => sum + (remainingBalance[index] as number), 0)
+    const clampedGross = Math.min(grossBudget, subsetBalance)
+    if (clampedGross <= 0) return 0
+    const subset = indices.map((index) => ({ balance: remainingBalance[index] as number, withdrawalOrder: (accounts[index] as (typeof accounts)[number]).withdrawalOrder }))
+    const { grossByIndex: subGross } = coreAllocateGrossBudget(subset, clampedGross)
+    let coveredNet = 0
+    indices.forEach((index, position) => {
+      const gross = subGross[position] as number
+      grossByIndex[index] = (grossByIndex[index] as number) + gross
+      remainingBalance[index] = (remainingBalance[index] as number) - gross
+      coveredNet += gross * (1 - (accounts[index] as (typeof accounts)[number]).withdrawalTaxRate)
+    })
+    return coveredNet
+  }
+
+  if (taxDeferredCap == null) {
     allocateAmong(allIndices, netNeed)
     return { grossByIndex, totalNetCapacity }
   }
   const nonTaxDeferredIdx = allIndices.filter((index) => !(accounts[index] as (typeof accounts)[number]).isTaxDeferred)
   const taxDeferredIdx = allIndices.filter((index) => (accounts[index] as (typeof accounts)[number]).isTaxDeferred)
   let remaining = netNeed
-  remaining -= allocateAmong(nonTaxDeferredIdx, Math.min(remaining, nonTaxDeferredPaceCap))
-  remaining -= allocateAmong(taxDeferredIdx, remaining)
-  allocateAmong(nonTaxDeferredIdx, remaining)
+  remaining -= allocateAmong(nonTaxDeferredIdx, remaining)
+  // Only actually cap tier 2 when the need-driven gross would exceed taxDeferredCap -- otherwise
+  // covering the real (smaller) need normally already stays under it, with nothing to clamp.
+  const taxDeferredSubset = taxDeferredIdx.map((index) => ({ ...(accounts[index] as (typeof accounts)[number]), balance: remainingBalance[index] as number }))
+  const neededGrossTotal = coreAllocate(taxDeferredSubset, remaining).grossByIndex.reduce((sum, gross) => sum + gross, 0)
+  remaining -= neededGrossTotal <= taxDeferredCap ? allocateAmong(taxDeferredIdx, remaining) : allocateAmongGrossCapped(taxDeferredIdx, taxDeferredCap)
+  allocateAmong(taxDeferredIdx, remaining) // tier 3: overflow past the cap
   return { grossByIndex, totalNetCapacity }
 }
 
@@ -279,6 +324,14 @@ export interface BridgeYear {
   // simulateBridge/historicalBridgeYear alike; optional only because a caller that never passes
   // one (a test fixture, say) shouldn't be forced to fabricate a figure it doesn't have.
   projectedSpend?: number
+  // How much of THIS year's real withdrawal (as simulateBridge's own allocateWithdrawal call
+  // actually split it, against this year's real, already-evolved account balances) came from a
+  // tax-deferred account -- the authoritative figure fire-generate.ts's magiInputsAt reads for the
+  // MAGI finding and the ACA cliff crossings, rather than that code re-deriving its own guess.
+  // Undefined for accumulation/history points (no withdrawal happens before retirement) and for
+  // the final planToAge point when the scenario funds all the way through (that point is just an
+  // ending-balance snapshot, one year past the last one a withdrawal was ever computed for).
+  grossTaxDeferredWithdrawal?: number
 }
 
 // Function to split a one-shot snapshot of accounts (a historical balance as of some past age, or
@@ -329,13 +382,13 @@ export function simulateBridge(
   annualSpend: number,
   inflationMean: number,
   incomeStreams: readonly RetirementIncomeStream[] = [],
-  // Called once per withdrawal-phase year (age, that year's total non-tax-deferred BALANCE) to get
-  // a NET dollar cap on how much of this year's non-tax-deferred draw goes toward pacing a reserve
-  // rather than actually being needed -- see allocateWithdrawal's own nonTaxDeferredPaceCap
-  // parameter for the tiering this feeds into. simulateBridge has no notion of WHY a cap might be
-  // wanted (Medicare-age reserve pacing, in fire-generate.ts's one caller) -- undefined (the
-  // default) means every year passes null through, today's behavior unchanged.
-  nonTaxableWithdrawalCapAt?: (age: number, nonTaxDeferredBalance: number) => number,
+  // Called once per withdrawal-phase year (age) to get a GROSS dollar cap on this year's
+  // tax-deferred draw -- see allocateWithdrawal's own taxDeferredCap parameter for the tiering
+  // this feeds into (non-tax-deferred drawn first, uncapped; tax-deferred capped at this).
+  // simulateBridge has no notion of WHY a cap might be wanted (a %FPL/MAGI ceiling, in
+  // fire-generate.ts's one caller) -- undefined (the default), or the callback returning null for
+  // a given age, both mean that year passes null through, today's behavior unchanged.
+  taxDeferredWithdrawalCapAt?: (age: number) => number | null,
 ): BridgeResult {
   const balances = accounts.map((account) => account.balance)
   const isAccessible = (account: BridgeAccount, age: number): boolean => account.accessAge == null || age >= account.accessAge
@@ -402,10 +455,14 @@ export function simulateBridge(
     }
 
     // Recorded every year of the withdrawal phase, not just at the moments the summary fields
-    // above care about -- this is the actual line the chart draws.
+    // above care about -- this is the actual line the chart draws. Kept as a reference (not just
+    // pushed and forgotten) so the withdrawal-phase branch below can fill in this same point's own
+    // grossTaxDeferredWithdrawal once the allocation for the year is actually known.
+    let thisYearBridge: BridgeYear | null = null
     if (age >= retirementAge) {
       const split = splitAt(age)
-      timeline.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend })
+      thisYearBridge = { age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend }
+      timeline.push(thisYearBridge)
     } else {
       const split = splitAt(age)
       accumulation.push({ age, accessibleBalance: split.accessible, lockedBalance: split.locked, projectedSpend: grossSpend })
@@ -425,20 +482,24 @@ export function simulateBridge(
       // See allocateWithdrawal's own doc comment -- proportional (today's long-standing default) or
       // sequential (drain pots in withdrawalOrder), depending on whether any reachable account has
       // an order set.
-      const reachableAccounts = reachable.map((index) => accounts[index] as BridgeAccount)
-      const nonTaxDeferredBalance = reachable.reduce((total, index, position) => total + ((reachableAccounts[position] as BridgeAccount).isTaxDeferred ? 0 : (balances[index] as number)), 0)
-      const nonTaxDeferredPaceCap = nonTaxableWithdrawalCapAt != null ? nonTaxableWithdrawalCapAt(age, nonTaxDeferredBalance) : null
+      const taxDeferredCap = taxDeferredWithdrawalCapAt != null ? taxDeferredWithdrawalCapAt(age) : null
       const allocation = allocateWithdrawal(
         reachable.map((index) => {
           const account = accounts[index] as BridgeAccount
           return { balance: balances[index] as number, withdrawalTaxRate: withdrawalTaxRateAt(account, age), withdrawalOrder: account.withdrawalOrder, isTaxDeferred: account.isTaxDeferred }
         }),
         spend,
-        nonTaxDeferredPaceCap,
+        taxDeferredCap,
       )
       if (allocation.totalNetCapacity < spend - FUNDING_TOLERANCE_CENTS) {
         recordDepletion(age)
         break
+      }
+      if (thisYearBridge != null) {
+        thisYearBridge.grossTaxDeferredWithdrawal = reachable.reduce(
+          (sum, index, position) => sum + ((accounts[index] as BridgeAccount).isTaxDeferred ? (allocation.grossByIndex[position] as number) : 0),
+          0,
+        )
       }
       reachable.forEach((index, position) => {
         balances[index] = (balances[index] as number) - (allocation.grossByIndex[position] as number)
@@ -533,12 +594,17 @@ export function magiFinding(
   grossTaxDeferredWithdrawal: number,
   filingStatus: FilingStatus,
   table: FederalTaxBrackets,
-  aca: { householdSize: number; guidelines: FederalPovertyGuidelines } | null,
+  // A single dollar figure, not the raw table/householdSize -- the caller (fire-generate.ts) is the
+  // one that knows this age's distance from currentAge, and so is the one that inflates the
+  // published (fixed, single-year) guideline forward to THIS age's nominal dollars before handing
+  // it here; this function only ever formats a ratio, never decides what the guideline is worth at
+  // a given age.
+  aca: { targetGuideline: number } | null,
 ): Finding {
   const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, filingStatus, table)
   const marginalPct = Math.round(estimate.marginalRate * 1000) / 10
   const effectivePct = Math.round(estimate.effectiveRate * 1000) / 10
-  const fplNote = aca ? ` (${Math.round((estimate.magi / federalPovertyGuideline(aca.householdSize, aca.guidelines)) * 1000) / 10}% FPL)` : ""
+  const fplNote = aca ? ` (${Math.round((estimate.magi / aca.targetGuideline) * 1000) / 10}% FPL)` : ""
   return {
     level: "info",
     title: `age ${retirementAge} -- est. MAGI ${formatUsd(estimate.magi)}${fplNote} puts you in the ${marginalPct}% federal bracket (${effectivePct}% effective).`,

@@ -241,6 +241,7 @@ function renderPlan() {
   const planInput = document.getElementById("planToAge")
   const filingStatusInput = document.getElementById("filingStatus")
   const householdSizeInput = document.getElementById("householdSize")
+  const acaTargetPctFplInput = document.getElementById("acaTargetPctFpl")
   const medicareAgeInput = document.getElementById("medicareAge")
   // Only overwrite a field the user isn't actively editing -- avoids clobbering keystrokes if a
   // response from one field's PATCH arrives while another is still focused.
@@ -249,6 +250,7 @@ function renderPlan() {
   if (document.activeElement !== planInput) planInput.value = STATE.dashboard.planToAge
   if (document.activeElement !== filingStatusInput) filingStatusInput.value = STATE.dashboard.filingStatus ?? ""
   if (document.activeElement !== householdSizeInput) householdSizeInput.value = STATE.dashboard.householdSize ?? ""
+  if (document.activeElement !== acaTargetPctFplInput) acaTargetPctFplInput.value = STATE.dashboard.acaTargetPctFpl ?? ""
   if (document.activeElement !== medicareAgeInput) medicareAgeInput.value = STATE.dashboard.medicareAge ?? ""
   document.getElementById("ageDerived").textContent = STATE.currentAge ?? "—"
 }
@@ -1512,12 +1514,11 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
     const fraction = Math.min(1, Math.max(0, (svgX - scale.margin.left) / scale.plotWidth))
     const age = Math.round(scale.minAge + fraction * (scale.maxAge - scale.minAge))
 
+    // Past a windowed scenario's own arrowhead (see BRIDGE_WINDOW_YEARS), byAge has no entry for
+    // this age -- but the crosshair should still land there and show what age it is, since that's
+    // the whole point of hovering there in the first place. Only the per-scenario metric rows,
+    // which need real data, drop out for a scenario with nothing at this age.
     const rows = scenarios.map(({ result }, index) => ({ result, index, point: byAge[index].get(age) })).filter((row) => row.point)
-    if (rows.length === 0) {
-      tooltip.hidden = true
-      setSvgHidden(crosshair, true)
-      return
-    }
 
     setSvgHidden(crosshair, false)
     crosshair.setAttribute("x1", scale.scaleX(age).toFixed(1))
@@ -2155,6 +2156,11 @@ document.getElementById("filingStatus").addEventListener("change", (e) => runExc
 document.getElementById("householdSize").addEventListener("change", (e) => {
   const size = e.target.value === "" ? null : parseFloat(e.target.value)
   runExclusive(() => patchPlan({ householdSize: size === null || size <= 0 ? null : size }, "savedHouseholdSize"))
+})
+
+document.getElementById("acaTargetPctFpl").addEventListener("change", (e) => {
+  const pct = e.target.value === "" ? null : parseFloat(e.target.value)
+  runExclusive(() => patchPlan({ acaTargetPctFpl: pct === null || pct <= 0 ? null : pct }, "savedAcaTargetPctFpl"))
 })
 
 document.getElementById("medicareAge").addEventListener("change", (e) => {
