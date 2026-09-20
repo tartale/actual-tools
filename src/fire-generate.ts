@@ -14,7 +14,6 @@ import type { ClassifiedAccount } from "./fire-accounts.ts"
 import { effectiveAccessAge, portfolioAccountIds } from "./fire-dashboard.ts"
 import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 import {
-  allocateWithdrawal,
   bridgeFinding,
   calculateMortgagePayoff,
   historicalBridgeYear,
@@ -23,9 +22,8 @@ import {
   projectAccountBalance,
   simulateBridge,
   toBridgeAccounts,
-  withdrawalTaxRateAt,
 } from "./fire-analysis.ts"
-import type { BridgeAccount, BridgeResult, Finding } from "./fire-analysis.ts"
+import type { BridgeResult, Finding } from "./fire-analysis.ts"
 import { runRetirementMonteCarlo } from "./fire-monte-carlo.ts"
 import type { MonteCarloResultEntry, MonteCarloSummary } from "./fire-monte-carlo.ts"
 import { estimateMagi } from "./federal-tax-brackets.ts"
@@ -178,9 +176,13 @@ export interface CheckOptions {
   // same convention.
   householdSize: number | null
   federalPovertyGuidelines: FederalPovertyGuidelines | null
-  // Age Medicare eligibility begins -- when set (and later than a given scenario's own
-  // retirementAge), the bridge/MAGI simulation paces non-tax-deferred withdrawals to last until
-  // this age instead of draining them by plain withdrawalOrder. See the pacing search below.
+  // Target %FPL ceiling -- when set (plus the four fields above), the bridge/MAGI simulation caps
+  // tax-deferred withdrawals at whatever this %FPL implies instead of draining accounts by plain
+  // withdrawalOrder alone. See taxDeferredCapAt below.
+  acaTargetPctFpl: number | null
+  // Age Medicare eligibility begins -- optional secondary bound on the ceiling above: once
+  // reached, the cap stops applying (Medicare replaces the need for ACA marketplace coverage).
+  // Meaningless without acaTargetPctFpl also set.
   medicareAge: number | null
 }
 
@@ -344,66 +346,70 @@ export async function checkDashboard(
     }
   }
 
-  // Function to find the strongest non-tax-deferred reserve pacing (see allocateWithdrawal's own
-  // nonTaxDeferredPaceCap) a scenario can afford without missing plan-to-age. "Pacing" here means
-  // spreading whatever's left of the non-tax-deferred pot evenly across the years remaining until
-  // medicareAge (a level draw, like an RMD) instead of letting it fund the full need until it's
-  // gone -- the whole point per the user's own framing: touching tax-deferred money in smaller,
-  // steadier amounts for MORE years beats a lumpy "$0 tax-deferred, then the entire need" shape for
-  // maximizing how many years stay under whatever MAGI/ACA cliff threshold applies, since a smaller
-  // steady draw is far more likely to land under a threshold a full lump sum blows past.
-  //
-  // That pacing isn't free, though: it means touching tax-deferred money SOONER (smaller amounts,
-  // starting immediately) rather than leaving it untouched until non-tax-deferred runs out --
-  // whichever pot earns the higher return forgoes more of its own compounding the sooner it's
-  // drawn down, so aggressive pacing CAN cost real plan-to-age runway. `t` in [0, 1] blends between
-  // "no pacing at all" (t=0 -- the ordinary unpaced allocation, today's exact behavior, a no-op cap
-  // since a cap set to the CURRENT balance never actually restricts anything) and "full pacing"
-  // (t=1 -- the true even level-draw). depletionAge is monotonic in t (more pacing never HELPS
-  // plan-to-age, only costs the same or more), so binary search finds the largest feasible t in
-  // ~24 steps, each just one more (cheap, closed-form) simulateBridge call.
-  const resolveReservePacing = (
-    currentBridgeAccounts: BridgeAccount[],
-    retirementAge: number,
-  ): { result: BridgeResult; capAt: ((age: number, nonTaxDeferredBalance: number) => number) | undefined } => {
-    const runPlain = () => simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams)
-    if (options.medicareAge == null || options.medicareAge <= retirementAge) {
-      return { result: runPlain(), capAt: undefined }
+  // Function to look up one age's guaranteed ordinary income (pension/Social Security, pre-merge
+  // with the rest of incomeStreams) -- shared by magiInputsAt and taxDeferredCapAt below, both of
+  // which need the SAME raw figures as their own separate MAGI inputs.
+  const ordinaryIncomeAt = (age: number): { pensionIncome: number; socialSecurityBenefit: number } => ({
+    pensionIncome: options.incomeStreams.find((s) => s.id === "pension" && s.startAge <= age)?.annualAmount ?? 0,
+    socialSecurityBenefit: options.incomeStreams.find((s) => s.id === "social-security" && s.startAge <= age)?.annualAmount ?? 0,
+  })
+
+  // Function to carry a published (fixed, single-year) FPL guideline forward to a future age's
+  // NOMINAL dollars, the same way projectedSpendAt already does for spend -- MAGI at a future age is
+  // derived from a withdrawal need that's already grown at inflationMean every year since today, so
+  // comparing it against the guideline's raw, un-grown figure silently mixes real (today's) dollars
+  // against nominal ones, understating %FPL more and more the further out the age (a household
+  // spending comfortably under 400% FPL today would only cross it decades out from inflation alone,
+  // with no real change in spending power). inflationMean (not some separate FPL-specific rate) is
+  // the right growth rate to reuse here, not just a convenient stand-in: HHS itself updates the
+  // guideline annually off CPI-U, the standard general-inflation index this app's own inflationMean
+  // assumption already represents (confirmed against published FPL history -- ~1.9%/yr 2006-2016,
+  // ~3.0%/yr 2016-2026 -- in the same range as this app's own 3% default). Takes the base guideline
+  // as a parameter, not householdSize/the table themselves, so every call site keeps its own
+  // already-checked (TS-narrowed) `options.householdSize`/`options.federalPovertyGuidelines` access
+  // rather than this needing to re-check and return null itself.
+  const inflateGuideline = (baseGuideline: number, age: number): number => baseGuideline * Math.pow(1 + inflationMean, age - options.currentAge)
+
+  // Function to cap tax-deferred withdrawals at whatever this plan's target %FPL implies for a
+  // given age -- see allocateWithdrawal's own taxDeferredCap parameter for how this is applied
+  // (non-tax-deferred drawn first, uncapped, since it never raises MAGI; tax-deferred capped at
+  // this; tax-deferred again past the cap only as a last resort, once non-taxable is ALSO
+  // exhausted and the year's real spending need still isn't met -- a real need beats a MAGI
+  // target). Built once here (not per scenario -- the formula only depends on age plus fixed
+  // prerequisites, never on retirementAge), reused by every scenario's own simulateBridge call AND
+  // by magiInputsAt, so the MAGI/ACA-cliff prose can never disagree with what the chart's own
+  // simulation actually did (the same consistency guarantee withdrawalOrder already has). Returns
+  // null (uncapped -- today's plain order/proportional allocation) whenever a prerequisite is
+  // missing, or once medicareAge is reached (if set): Medicare replaces the need for ACA
+  // marketplace coverage, so there's nothing left worth capping for. MAGI is monotonically
+  // non-decreasing in grossTaxDeferredWithdrawal (see estimateMagi/taxableSocialSecurity -- both
+  // are non-decreasing step functions), so a plain integer binary search over cents (~40
+  // iterations, cheap closed-form calls, no trajectory simulation needed) is simpler and more
+  // robust here than inverting the piecewise SS-taxability formula algebraically.
+  const taxDeferredCapAt = (age: number): number | null => {
+    if (
+      options.acaTargetPctFpl == null ||
+      options.householdSize == null ||
+      options.federalPovertyGuidelines == null ||
+      options.filingStatus == null ||
+      options.federalTaxBrackets == null
+    ) {
+      return null
     }
-    const medicareAge = options.medicareAge
-    const baseline = runPlain()
-    if (baseline.depletionAge !== null) {
-      // Doesn't fund to plan-to-age even with NO pacing -- the cheapest any pacing strength could
-      // ever be. More pacing only costs MORE forgone compounding, so no search could fix this;
-      // report the plain result, the same depletion finding any other underfunded scenario gets.
-      return { result: baseline, capAt: undefined }
+    if (options.medicareAge != null && age >= options.medicareAge) {
+      return null
     }
-    const capAt = (t: number) => (age: number, nonTaxDeferredBalance: number): number => {
-      const yearsRemaining = Math.max(1, medicareAge - age)
-      const effectiveYears = 1 + t * (yearsRemaining - 1) // t=0 -> 1 (no real cap); t=1 -> yearsRemaining (full pacing)
-      return nonTaxDeferredBalance / effectiveYears
-    }
-    const runWith = (t: number) => simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams, capAt(t))
-    const full = runWith(1)
-    if (full.depletionAge === null) {
-      return { result: full, capAt: capAt(1) } // full pacing is affordable outright -- best case
-    }
-    let lo = 0 // known feasible (t=0 matches the baseline above)
-    let hi = 1 // known infeasible
-    let best = baseline
-    let bestT = 0
-    for (let i = 0; i < 24; i++) {
+    const targetMagi = inflateGuideline(federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines), age) * (options.acaTargetPctFpl / 100)
+    const { pensionIncome, socialSecurityBenefit } = ordinaryIncomeAt(age)
+    let lo = 0
+    let hi = 100_000_000_000 // $1B in cents -- comfortably past any real withdrawal; binary search converges regardless
+    for (let i = 0; i < 40; i++) {
       const mid = (lo + hi) / 2
-      const candidate = runWith(mid)
-      if (candidate.depletionAge === null) {
-        lo = mid
-        best = candidate
-        bestT = mid
-      } else {
-        hi = mid
-      }
+      const magi = estimateMagi({ grossTaxDeferredWithdrawal: mid, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, options.filingStatus, options.federalTaxBrackets).magi
+      if (magi <= targetMagi) lo = mid
+      else hi = mid
     }
-    return { result: best, capAt: capAt(bestT) }
+    return Math.round(lo)
   }
 
   // Simulated once per retirement age and kept in full -- bridgeFindings below is prose derived
@@ -412,11 +418,9 @@ export async function checkDashboard(
   // sees a single snapshot balance per account, not a series of them) -- effectiveAccessAge (via
   // toBridgeAccounts) still depends on retirementAge, so it's resolved per scenario like everything
   // else here, not shared across them the way monteCarloHistory above is.
-  const capAtByRetirementAge = new Map<number, ((age: number, nonTaxDeferredBalance: number) => number) | undefined>()
   const bridgeResults = options.retirementAges.map((retirementAge) => {
     const currentBridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge)
-    const { result, capAt } = resolveReservePacing(currentBridgeAccounts, retirementAge)
-    capAtByRetirementAge.set(retirementAge, capAt)
+    const result = simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams, taxDeferredCapAt)
     // Ends on a real point at currentAge itself (today's live balance, not a historical one) --
     // ties the last real-history year to "now" so the chart has something to draw a line between
     // even with only one year of lookback, and (for a retirementAge equal to currentAge) meets
@@ -432,59 +436,38 @@ export async function checkDashboard(
   // assumptions. Skipped (not an error) whenever filing status or the tax-bracket table is missing,
   // same convention as ruleOf55Boosts/debtPayoffs being empty rather than reported as broken.
   //
-  // Function to estimate one scenario's ordinary-income inputs at a given age -- shared by
+  // Function to read one scenario's ordinary-income inputs at a given age -- shared by
   // magiFinding's own call below (at the retirement age only) and acaCliffCrossings (which needs
   // the same figures at every age of the trajectory to find when, if ever, MAGI crosses the ACA
-  // subsidy cliff). Runs allocateWithdrawal against the SAME toBridgeAccounts, and the SAME
-  // resolved reserve-pacing cap (see capAtByRetirementAge above), this scenario's own
-  // simulateBridge call already used -- an earlier version guessed a tax-deferred SHARE of the
-  // accessible balance instead of asking this same allocation, which is exactly why enabling the
-  // early-withdrawal-penalty option on a large 401(k) could spike this estimate even with a
-  // smaller, untouched taxable/cash pot still sitting there. retirementAge is separate from evalAge
-  // (the year actually being priced) because it's only what effectiveAccessAge needs to decide
-  // whether a Rule-of-55 boost applies at all (a fact fixed once per scenario); evalAge is what
-  // decides whether a given account has actually UNLOCKED by then, which -- unlike the boost
-  // eligibility itself -- keeps changing across the years a single scenario's own trajectory
-  // covers. Using today's real balances (not a forward projection to evalAge) is a deliberate
-  // simplification -- the dominant source of error this corrects for is locked-vs-accessible
-  // (all-or-nothing per account) and draw order/pacing, not the smaller effect of accounts growing
-  // at slightly different rates in between; the pacing cap itself inherits that same simplification
-  // (it's handed today's non-tax-deferred balance at every age, not a forward projection of it).
-  const magiInputsAt = (age: number, retirementAge: number) => {
-    // incomeStreams here is the FULL merged set (pension/SS + any debt-freed-up cash flow) --
-    // matches simulateBridge's own netting exactly, so a paid-off mortgage correctly lowers the
-    // withdrawal this estimates without also being (wrongly) treated as taxable income itself.
-    const incomeAtAge = incomeStreams.filter((s) => s.startAge <= age).reduce((sum, s) => sum + s.annualAmount, 0)
-    const netWithdrawalNeed = Math.max(0, projectedSpendAt(age) - incomeAtAge)
-    const bridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge)
-    // Only accounts actually reachable at this age -- a 401(k) still locked behind its own accessAge
-    // can't fund this year's spend at all, exactly matching isAccessible's own check inside
-    // simulateBridge.
-    const reachable = bridgeAccounts.filter((account) => account.accessAge == null || age >= account.accessAge)
-    const capAt = capAtByRetirementAge.get(retirementAge)
-    const nonTaxDeferredBalance = reachable.reduce((sum, account) => sum + (account.isTaxDeferred ? 0 : account.balance), 0)
-    const allocation = allocateWithdrawal(
-      reachable.map((account) => ({ balance: account.balance, withdrawalTaxRate: withdrawalTaxRateAt(account, age), withdrawalOrder: account.withdrawalOrder, isTaxDeferred: account.isTaxDeferred })),
-      netWithdrawalNeed,
-      capAt != null ? capAt(age, nonTaxDeferredBalance) : null,
-    )
-    const grossTaxDeferredWithdrawal = Math.round(
-      reachable.reduce((sum, account, index) => sum + (account.isTaxDeferred ? (allocation.grossByIndex[index] as number) : 0), 0),
-    )
+  // subsidy cliff). grossTaxDeferredWithdrawal comes straight off result.timeline -- the REAL
+  // figure this scenario's own simulateBridge call already worked out against that year's real,
+  // already-evolved account balances -- rather than this function re-deriving its own guess from
+  // today's un-depleted balances. An earlier version did exactly that (rebuilding its own
+  // allocateWithdrawal call from today's balances at every age), which quietly diverged from the
+  // real trajectory more and more the further an age sat from today: every account here either
+  // grows or drains over decades, so "what would today's balances do" and "what did the real,
+  // already-decades-deep trajectory actually do" are two different questions once any real time
+  // has passed -- confirmed live against real data, where the real trajectory had been drawing
+  // five and six figures a year of tax-deferred money since the late 50s while this function kept
+  // reporting $0 all the way to the 90s. Undefined (no point recorded for this age, or the
+  // scenario's real withdrawal-phase computation never set a figure for it -- see BridgeYear's own
+  // doc comment) reads as $0, same "nothing withdrawn" meaning as an explicit zero would have.
+  const magiInputsAt = (age: number, result: BridgeResult) => {
+    const grossTaxDeferredWithdrawal = result.timeline.find((point) => point.age === age)?.grossTaxDeferredWithdrawal ?? 0
     // options.incomeStreams (pension/SS only, pre-merge) for the RAW figures MAGI needs as their
-    // own separate ordinary-income lines -- already netted out of netWithdrawalNeed above, so
-    // adding them back here (rather than re-deriving them some other way) is what keeps the total
-    // modeled income correct instead of double-subtracting them.
-    const pensionIncome = options.incomeStreams.find((s) => s.id === "pension" && s.startAge <= age)?.annualAmount ?? 0
-    const socialSecurityBenefit = options.incomeStreams.find((s) => s.id === "social-security" && s.startAge <= age)?.annualAmount ?? 0
+    // own separate ordinary-income lines.
+    const { pensionIncome, socialSecurityBenefit } = ordinaryIncomeAt(age)
     return { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit }
   }
 
   const bridgeFindings = bridgeResults.flatMap((result) => {
     const findings = [bridgeFinding(result, options.planToAge)]
     if (options.filingStatus != null && options.federalTaxBrackets != null) {
-      const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(result.retirementAge, result.retirementAge)
-      const aca = options.householdSize != null && options.federalPovertyGuidelines != null ? { householdSize: options.householdSize, guidelines: options.federalPovertyGuidelines } : null
+      const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(result.retirementAge, result)
+      const aca =
+        options.householdSize != null && options.federalPovertyGuidelines != null
+          ? { targetGuideline: inflateGuideline(federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines), result.retirementAge) }
+          : null
       findings.push(magiFinding(result.retirementAge, pensionIncome, socialSecurityBenefit, grossTaxDeferredWithdrawal, options.filingStatus, options.federalTaxBrackets, aca))
     }
     return findings
@@ -501,16 +484,19 @@ export async function checkDashboard(
   // at depletionAge, exclusive, when the scenario runs dry before planToAge -- magiInputsAt always
   // answers "what withdrawal WOULD this year need," with no notion of whether the portfolio still
   // has anything left to give, so past the age the money's actually gone there's no real withdrawal
-  // (and so no real MAGI hit) for a marker to describe.
+  // (and so no real MAGI hit) for a marker to describe. The guideline itself is inflated forward to
+  // each age's own nominal dollars (see inflateGuideline) to match the nominal MAGI it's compared
+  // against -- otherwise a crossing decades out would mostly be measuring inflation eroding the
+  // guideline's real value rather than any actual change in spending power.
   const acaCliffCrossings: { retirementAge: number; crossesAtAge: number; pctFPL: number }[] = []
   if (options.filingStatus != null && options.federalTaxBrackets != null && options.householdSize != null && options.federalPovertyGuidelines != null && options.federalPovertyGuidelines.subsidyCliffAt400Pct) {
-    const guideline = federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines)
+    const baseGuideline = federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines)
     for (const result of bridgeResults) {
       const lastFundedAge = result.depletionAge != null ? result.depletionAge - 1 : options.planToAge
       for (let age = result.retirementAge; age <= Math.min(options.planToAge, lastFundedAge); age++) {
-        const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(age, result.retirementAge)
+        const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(age, result)
         const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, options.filingStatus, options.federalTaxBrackets)
-        const pctFPL = (estimate.magi / guideline) * 100
+        const pctFPL = (estimate.magi / inflateGuideline(baseGuideline, age)) * 100
         if (pctFPL > 400) {
           acaCliffCrossings.push({ retirementAge: result.retirementAge, crossesAtAge: age, pctFPL: Math.round(pctFPL * 10) / 10 })
           break

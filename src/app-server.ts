@@ -438,6 +438,7 @@ function requirePlan(fireConfig: FireConfig): {
   spendHistoryMonths: number
   filingStatus: FilingStatus | null
   householdSize: number | null
+  acaTargetPctFpl: number | null
   medicareAge: number | null
 } {
   if (fireConfig.dashboard.birthDate === null) {
@@ -461,6 +462,7 @@ function requirePlan(fireConfig: FireConfig): {
     spendHistoryMonths: spendHistoryMonthsWithOverride(fireConfig.dashboard),
     filingStatus: fireConfig.dashboard.filingStatus,
     householdSize: fireConfig.dashboard.householdSize,
+    acaTargetPctFpl: fireConfig.dashboard.acaTargetPctFpl,
     medicareAge: fireConfig.dashboard.medicareAge,
   }
 }
@@ -800,6 +802,12 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             throw new Error("householdSize must be a positive number or null.")
           }
           dashboard.householdSize = body.householdSize
+        }
+        if ("acaTargetPctFpl" in body) {
+          if (body.acaTargetPctFpl !== null && (typeof body.acaTargetPctFpl !== "number" || body.acaTargetPctFpl <= 0)) {
+            throw new Error("acaTargetPctFpl must be a positive number or null.")
+          }
+          dashboard.acaTargetPctFpl = body.acaTargetPctFpl
         }
         if ("medicareAge" in body) {
           if (body.medicareAge !== null && (typeof body.medicareAge !== "number" || body.medicareAge <= 0)) {
