@@ -269,6 +269,73 @@ describe("simulateBridge", () => {
     expect(withIncome.depletionAge).toBe(65)
   })
 
+  it("nets an inflating expense adjustment into spend before inflating, the same as annualSpend/income", () => {
+    const result = simulateBridge(
+      [bridgeAccount({ id: "a1", balance: 100000 })],
+      50,
+      50,
+      60,
+      100,
+      0.1,
+      [],
+      undefined,
+      undefined,
+      (age) => (age >= 55 ? { inflating: 50, fixed: 0 } : { inflating: 0, fixed: 0 }),
+    )
+    const byAge = new Map(result.timeline.map((year) => [year.age, year]))
+    // Before the adjustment starts: plain 10%-inflated spend, unaffected.
+    expect(byAge.get(54)?.projectedSpend).toBeCloseTo(100 * 1.1 ** 4)
+    // From 55 on: netted in BEFORE inflating, so it scales with the SAME factor as everything else.
+    expect(byAge.get(55)?.projectedSpend).toBeCloseTo((100 + 50) * 1.1 ** 5)
+    expect(byAge.get(59)?.projectedSpend).toBeCloseTo((100 + 50) * 1.1 ** 9)
+  })
+
+  it("adds a fixed expense adjustment AFTER inflating, so it stays flat rather than growing every year", () => {
+    const result = simulateBridge(
+      [bridgeAccount({ id: "a1", balance: 100000 })],
+      50,
+      50,
+      60,
+      100,
+      0.1,
+      [],
+      undefined,
+      undefined,
+      (age) => (age >= 55 ? { inflating: 0, fixed: 50 } : { inflating: 0, fixed: 0 }),
+    )
+    const byAge = new Map(result.timeline.map((year) => [year.age, year]))
+    expect(byAge.get(55)?.projectedSpend).toBeCloseTo(100 * 1.1 ** 5 + 50)
+    // Age 59's own adjustment is the exact same flat +50 -- unlike the inflating case above, this
+    // does NOT keep growing relative to the base spend.
+    expect(byAge.get(59)?.projectedSpend).toBeCloseTo(100 * 1.1 ** 9 + 50)
+  })
+
+  it("floors projectedSpend at 0 rather than going negative when a fixed reduction outweighs spend", () => {
+    const result = simulateBridge([bridgeAccount({ id: "a1", balance: 100000 })], 50, 50, 51, 10, 0, [], undefined, undefined, () => ({ inflating: 0, fixed: -1000 }))
+    expect(result.timeline[0]?.projectedSpend).toBe(0)
+  })
+
+  it("actually draws down the portfolio faster for an expense adjustment, not just the displayed projectedSpend figure", () => {
+    const withoutAdjustment = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
+    expect(withoutAdjustment.depletionAge).toBe(60)
+
+    // +50/yr from age 55 on shortens the runway, the same way the existing income-stream test
+    // above shows a LATER-starting income stream extending it.
+    const withAdjustment = simulateBridge(
+      [bridgeAccount({ id: "a1", balance: 1000 })],
+      50,
+      50,
+      100,
+      100,
+      0,
+      [],
+      undefined,
+      undefined,
+      (age) => (age >= 55 ? { inflating: 50, fixed: 0 } : { inflating: 0, fixed: 0 }),
+    )
+    expect(withAdjustment.depletionAge).toBeLessThan(60)
+  })
+
   it("never withdraws (and so never depletes) once income alone covers spend", () => {
     const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 50, annualAmount: 1000 }
     const result = simulateBridge([bridgeAccount({ id: "a1", balance: 100 })], 50, 50, 100, 100, 0, [pension])

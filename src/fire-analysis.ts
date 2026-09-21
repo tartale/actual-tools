@@ -325,15 +325,16 @@ export interface BridgeYear {
   age: number
   accessibleBalance: number
   lockedBalance: number
-  // The plan's own cost of living that age -- inflation applied, but income (pension/Social
-  // Security/debt payoff) NOT netted out, so this reads as a stable, ever-growing expenses figure
-  // rather than one that mysteriously drops the moment a pension starts (or, for an age before
-  // currentAge, the same formula run backward -- what expenses were worth in this plan's terms back
-  // then, not a claim about what was really spent). Income still reduces the portfolio withdrawal
-  // that drives the balance line itself -- see simulateBridge's own netAnnualSpend -- this field
-  // just isn't where that reduction shows up. Set on every point going forward from
-  // simulateBridge/historicalBridgeYear alike; optional only because a caller that never passes
-  // one (a test fixture, say) shouldn't be forced to fabricate a figure it doesn't have.
+  // The plan's own cost of living that age -- inflation and every configured ExpenseAdjustment
+  // applied, but income (pension/Social Security/debt payoff) NOT netted out, so this reads as a
+  // stable, ever-growing expenses figure rather than one that mysteriously drops the moment a
+  // pension starts (or, for an age before currentAge, the same formula run backward -- what
+  // expenses were worth in this plan's terms back then, not a claim about what was really spent).
+  // Income still reduces the portfolio withdrawal that drives the balance line itself -- see
+  // simulateBridge's own spend calculation -- this field just isn't where that reduction shows up.
+  // Set on every point going forward from simulateBridge/historicalBridgeYear alike; optional only
+  // because a caller that never passes one (a test fixture, say) shouldn't be forced to fabricate a
+  // figure it doesn't have.
   projectedSpend?: number
   // How much of THIS year's real withdrawal (as simulateBridge's own allocateWithdrawal call
   // actually split it, against this year's real, already-evolved account balances) came from a
@@ -448,6 +449,17 @@ export function simulateBridge(
   // tax-deferred balance is actually reachable that year; undefined (the default), or the callback
   // returning 0, both mean no conversion happens.
   rothConversionAmountAt?: (age: number, grossTaxDeferredWithdrawal: number) => number,
+  // Called once per year (accumulation and withdrawal phases alike -- a known future expense
+  // change is just as real before retirement as after) to get that age's own net effect of every
+  // configured ExpenseAdjustment, split the same way annualSpend/incomeStreams already are:
+  // `inflating` is a today's-dollars figure netted in BEFORE the year's inflationFactor is
+  // applied (same treatment annualSpend/incomeStreams already get, so it grows in step with
+  // everything else); `fixed` is a nominal figure added AFTER, untouched, for an adjustment that
+  // shouldn't grow with inflation (a fixed loan payment, say). Both signed: positive increases
+  // spend, negative reduces it. simulateBridge has no notion of what an "adjustment" represents,
+  // same reasoning as taxDeferredWithdrawalCapAt above -- undefined (the default) means no
+  // adjustment any year, unchanged from before this parameter existed.
+  expenseAdjustmentAt?: (age: number) => { inflating: number; fixed: number },
 ): BridgeResult {
   const balances = accounts.map((account) => account.balance)
   // Every account's own current balance, keyed by id -- snapshotted onto each BridgeYear alongside
@@ -503,10 +515,15 @@ export function simulateBridge(
     // point recorded this iteration (the capturedSplit snapshot below included) carries as its own
     // projectedSpend (see BridgeYear's own doc comment for why that one stays gross).
     const incomeAtAge = incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount, 0)
-    const netAnnualSpend = Math.max(0, annualSpend - incomeAtAge)
+    // See expenseAdjustmentAt's own doc comment above for why this splits into an inflating (today's-
+    // dollars, netted in here) and a fixed (nominal, added after inflating below) part.
+    const { inflating: inflatingAdjustment, fixed: fixedAdjustment } = expenseAdjustmentAt != null ? expenseAdjustmentAt(age) : { inflating: 0, fixed: 0 }
     const inflationFactor = Math.pow(1 + inflationMean, age - currentAge)
-    const spend = netAnnualSpend * inflationFactor
-    const grossSpend = annualSpend * inflationFactor
+    // Floored at 0 AFTER fixedAdjustment (not before) -- a large enough fixed reduction (a
+    // downsize, a payoff) can only ever bring real spend down to zero, never negative, the same
+    // as annualSpend/income already could before this parameter existed.
+    const spend = Math.max(0, (annualSpend + inflatingAdjustment - incomeAtAge) * inflationFactor + fixedAdjustment)
+    const grossSpend = Math.max(0, (annualSpend + inflatingAdjustment) * inflationFactor + fixedAdjustment)
 
     if (!capturedSplit && age >= retirementAge) {
       const split = splitAt(age)

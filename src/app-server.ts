@@ -33,6 +33,7 @@ import type {
   ClassifiedAccount,
   ContributionLimitGroup,
   EmployerContributionSummary,
+  ExpenseAdjustment,
   FireAccountOverride,
   FireConfig,
   MonteCarloAllocationPreset,
@@ -441,6 +442,7 @@ function requirePlan(fireConfig: FireConfig): {
   acaTargetPctFpl: number | null
   medicareAge: number | null
   acaFloorPctFpl: 100 | 138 | null
+  expenseAdjustments: ExpenseAdjustment[]
 } {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
@@ -466,6 +468,7 @@ function requirePlan(fireConfig: FireConfig): {
     acaTargetPctFpl: fireConfig.dashboard.acaTargetPctFpl,
     medicareAge: fireConfig.dashboard.medicareAge,
     acaFloorPctFpl: fireConfig.dashboard.acaFloorPctFpl,
+    expenseAdjustments: fireConfig.dashboard.expenseAdjustments,
   }
 }
 
@@ -858,6 +861,28 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             }
             dashboard[field] = value
           }
+        }
+        if ("expenseAdjustments" in body) {
+          const adjustments = body.expenseAdjustments
+          if (!Array.isArray(adjustments)) {
+            throw new Error("expenseAdjustments must be an array.")
+          }
+          for (const adjustment of adjustments as unknown[]) {
+            const a = adjustment as { id?: unknown; name?: unknown; annualAmount?: unknown; startAge?: unknown; endAge?: unknown; inflate?: unknown }
+            if (
+              typeof a !== "object" ||
+              a === null ||
+              typeof a.id !== "string" ||
+              typeof a.name !== "string" ||
+              typeof a.annualAmount !== "number" ||
+              typeof a.startAge !== "number" ||
+              (a.endAge !== null && typeof a.endAge !== "number") ||
+              typeof a.inflate !== "boolean"
+            ) {
+              throw new Error("Each expenseAdjustments entry must have a string id/name, numeric annualAmount/startAge, endAge (number or null), and boolean inflate.")
+            }
+          }
+          dashboard.expenseAdjustments = adjustments as ExpenseAdjustment[]
         }
         if ("monteCarloWithdrawalStrategy" in body) {
           if (body.monteCarloWithdrawalStrategy !== null && !MONTE_CARLO_WITHDRAWAL_STRATEGIES.includes(body.monteCarloWithdrawalStrategy as MonteCarloWithdrawalStrategy)) {

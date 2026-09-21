@@ -653,6 +653,15 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .tax-band-row .field { margin: 0; }
 .tax-band-remove { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-faint); font-size: 16px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .tax-band-remove:hover { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
+/* Same row-of-fields-plus-remove-button layout as .tax-band-row above, just with more columns of
+   its own (name/sign/amount/start/end/inflate) -- an explicit column template rather than
+   auto-fit/minmax, so every row lines up under the same headings rather than each row's own
+   fields independently sizing to their own content. */
+.expense-adjustment-row { display: grid; grid-template-columns: 1.4fr 1.3fr 1fr 0.7fr 0.7fr 1fr auto; gap: 12px; align-items: end; margin-bottom: 8px; }
+.expense-adjustment-row .field { margin: 0; }
+.ea-inflate-field { padding-bottom: 8px; }
+.ea-remove { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-faint); font-size: 14px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
+.ea-remove:hover { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
 #addTaxBandBtn { margin-top: 4px; }
 .income-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 /* Expense Projection's own income-grid only ever holds two fields (Expense Adjustment, Spend
