@@ -10,6 +10,7 @@ import { loadActualSession, writeActualSession } from "./actual-session.ts"
 import { loadFileDataSourceSession } from "./data-source-session.ts"
 import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
 import type { CheckResult } from "./fire-generate.ts"
+import type { SuggestionsResult } from "./fire-suggestions.ts"
 
 interface ErrorBody {
   error: string
@@ -1010,6 +1011,217 @@ describe("GET /api/retirement/check", () => {
     const body = await readJson<CheckResult>(res)
     expect(body.annualSpend).toBe(1200000) // 100000 x 12 -- cat-b, not the live widget's cat-a
     expect(body.spendBasis).toContain("Plan section selection")
+  })
+})
+
+describe("GET /api/retirement/suggestions", () => {
+  // Shared across every test below -- a real, nonzero spend need is what makes a locked-until-59
+  // account's balance actually matter (a $0 spend need would never deplete anything, locked or
+  // not, and every what-if would look identical to baseline).
+  const categoryGroupsFixture = [
+    { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+  ]
+  const monthCategoriesFixture = [
+    { id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -4000_00, balance: 0, carryover: false }, // $48,000/yr
+  ]
+
+  it("suggests Rule of 55 for an eligible account whose unused early-access option would help", async () => {
+    const url = await boot({
+      accounts: [{ id: "401k", name: "Fidelity 401k", offbudget: true, closed: false }],
+      categoryGroups: categoryGroupsFixture,
+      transactionsByAccount: { "401k": [{ amount: 100_000_00, transfer_id: null }] }, // $100,000
+      monthCategories: monthCategoriesFixture,
+      dashboardRows: [],
+    })
+    // Retiring at 55 -- the 401k's own default access age (59) locks the entire portfolio until
+    // then, so the bridge runs dry immediately at retirement unless Rule of 55 unlocks it early.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k" }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    expect(res.status).toBe(200)
+    const body = await readJson<SuggestionsResult>(res)
+    expect(body.targetRetirementAge).toBe(55)
+    // A traditional-401k independently qualifies for both mechanisms (Rule of 55 AND SEPP are not
+    // mutually exclusive -- see effectiveAccessAge's own doc comment), and unlocking the account
+    // either way helps here, so both are suggested. No IRS life-expectancy table is loaded in this
+    // test, so the SEPP suggestion's own amounts come back null (absent, not an error).
+    expect(body.suggestions).toEqual([
+      { kind: "rule-of-55", accountId: "401k", accountName: "Fidelity 401k" },
+      {
+        kind: "sepp",
+        accountId: "401k",
+        accountName: "Fidelity 401k",
+        methodOptions: [
+          { method: "rmd", annualAmount: null },
+          { method: "amortization", annualAmount: null },
+        ],
+      },
+    ])
+  })
+
+  it("does not suggest Rule of 55 once a separation age is already set", async () => {
+    const url = await boot({
+      accounts: [{ id: "401k", name: "Fidelity 401k", offbudget: true, closed: false }],
+      categoryGroups: categoryGroupsFixture,
+      transactionsByAccount: { "401k": [{ amount: 100_000_00, transfer_id: null }] },
+      monthCategories: monthCategoriesFixture,
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    // A separation age is already set -- 57, worse than the 55 this route would otherwise suggest,
+    // so this also confirms the route doesn't try to suggest IMPROVING an existing election, only
+    // ever electing one that isn't set at all (see generateSuggestions' own gate). SEPP is a
+    // separate, independent election (still unset), and DOES still get suggested since electing it
+    // would unlock the account even earlier (55) than the existing Rule of 55 setting (57) does.
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", ruleOf55SeparationAge: 57 }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    const body = await readJson<SuggestionsResult>(res)
+    expect(body.suggestions).toEqual([
+      {
+        kind: "sepp",
+        accountId: "401k",
+        accountName: "Fidelity 401k",
+        methodOptions: [
+          { method: "rmd", annualAmount: null },
+          { method: "amortization", annualAmount: null },
+        ],
+      },
+    ])
+  })
+
+  it("does not suggest Rule of 55 for an account type that isn't eligible for it", async () => {
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Vanguard IRA", offbudget: true, closed: false }],
+      categoryGroups: categoryGroupsFixture,
+      transactionsByAccount: { ira: [{ amount: 100_000_00, transfer_id: null }] },
+      monthCategories: monthCategoriesFixture,
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    // traditional-ira is tax-deferred (so still SEPP-eligible below) but not Rule of 55-eligible --
+    // no employer plan to separate from.
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "traditional-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    const body = await readJson<SuggestionsResult>(res)
+    expect(body.suggestions.every((s) => s.kind !== "rule-of-55")).toBe(true)
+  })
+
+  it("does not suggest SEPP once a method is already elected", async () => {
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Vanguard IRA", offbudget: true, closed: false }],
+      categoryGroups: categoryGroupsFixture,
+      transactionsByAccount: { ira: [{ amount: 100_000_00, transfer_id: null }] },
+      monthCategories: monthCategoriesFixture,
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    // A SEPP election is already made -- start age 58, worse than the 55 this route would otherwise
+    // suggest -- so this confirms the route doesn't try to suggest IMPROVING an existing election,
+    // same as the Rule of 55 case above (traditional-ira isn't Rule of 55-eligible, so this isolates
+    // the SEPP gate specifically -- no other suggestion is possible here either way).
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "traditional-ira", seppMethod: "rmd", seppStartAge: 58 }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    const body = await readJson<SuggestionsResult>(res)
+    expect(body.suggestions).toEqual([])
+  })
+
+  it("suggests a SEPP election for a tax-deferred account whose unused early-access option would help, with both methods' amounts computed", async () => {
+    writeFileSync(irsLifeExpectancyPath, JSON.stringify({ tableRevisionYear: 2022, source: "test", factorByAge: [36.2] }))
+    const url = await boot({
+      accounts: [{ id: "ira", name: "Vanguard IRA", offbudget: true, closed: false }],
+      categoryGroups: categoryGroupsFixture,
+      transactionsByAccount: { ira: [{ amount: 100_000_000, transfer_id: null }] }, // $1,000,000
+      monthCategories: monthCategoriesFixture,
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "traditional-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    const body = await readJson<SuggestionsResult>(res)
+    // $1,000,000 / 36.2 = $27,624.31 -- both methods land on the same figure here since no
+    // seppInterestRate is set (amortization's rate defaults to 0, collapsing to the same plain
+    // division as RMD).
+    expect(body.suggestions).toEqual([
+      {
+        kind: "sepp",
+        accountId: "ira",
+        accountName: "Vanguard IRA",
+        methodOptions: [
+          { method: "rmd", annualAmount: 2762431 },
+          { method: "amortization", annualAmount: 2762431 },
+        ],
+      },
+    ])
+  })
+
+  it("does not suggest anything for an account with nothing left to unlock", async () => {
+    const url = await boot({
+      accounts: [{ id: "inh", name: "Inherited IRA", offbudget: true, closed: false }],
+      categoryGroups: categoryGroupsFixture,
+      transactionsByAccount: { inh: [{ amount: 100_000_00, transfer_id: null }] },
+      monthCategories: monthCategoriesFixture,
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55], planToAge: 90 }) })
+    // An inherited IRA has no accessAge at all (unconditionally accessible) -- neither mechanism has
+    // anything left to grant.
+    await fetch(`${url}api/retirement/accounts/inh`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    const body = await readJson<SuggestionsResult>(res)
+    expect(body.suggestions).toEqual([])
+  })
+
+  it("does not suggest anything when the account is already accessible by the target retirement age", async () => {
+    const url = await boot({
+      accounts: [{ id: "401k", name: "Fidelity 401k", offbudget: true, closed: false }],
+      categoryGroups: categoryGroupsFixture,
+      transactionsByAccount: { "401k": [{ amount: 100_000_00, transfer_id: null }] },
+      monthCategories: monthCategoriesFixture,
+      dashboardRows: [],
+    })
+    // Retiring at 60 -- past the 401k's own default access age (59) already, so there's no locked
+    // period left for either mechanism to improve on.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [60], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k" }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    const body = await readJson<SuggestionsResult>(res)
+    expect(body.suggestions).toEqual([])
+  })
+
+  it("targets only the lowest of multiple configured retirement ages", async () => {
+    const url = await boot({
+      accounts: [{ id: "401k", name: "Fidelity 401k", offbudget: true, closed: false }],
+      categoryGroups: categoryGroupsFixture,
+      transactionsByAccount: { "401k": [{ amount: 100_000_00, transfer_id: null }] },
+      monthCategories: monthCategoriesFixture,
+      dashboardRows: [],
+    })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [55, 65], planToAge: 90 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k" }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    const body = await readJson<SuggestionsResult>(res)
+    expect(body.targetRetirementAge).toBe(55)
+    // Same independent-eligibility reasoning as the first test in this block above.
+    expect(body.suggestions).toEqual([
+      { kind: "rule-of-55", accountId: "401k", accountName: "Fidelity 401k" },
+      {
+        kind: "sepp",
+        accountId: "401k",
+        accountName: "Fidelity 401k",
+        methodOptions: [
+          { method: "rmd", annualAmount: null },
+          { method: "amortization", annualAmount: null },
+        ],
+      },
+    ])
   })
 })
 

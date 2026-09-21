@@ -59,6 +59,7 @@ import type { SeppMethod } from "./fire-sepp.ts"
 import { calculateMortgagePayoff, projectAccountBalance, toBridgeAccounts } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
 import { checkDashboard } from "./fire-generate.ts"
+import { generateSuggestions } from "./fire-suggestions.ts"
 import {
   ALLOCATION_PRESET_RETURNS,
   WITHDRAWAL_TAX_RATES,
@@ -1115,6 +1116,32 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           federalPovertyGuidelines,
         })
         sendJson(res, 200, result)
+        return
+      }
+
+      // Issue #28: "you're eligible for an early-access option you haven't set, and it would
+      // help" suggestions (Rule of 55 / SEPP) -- see fire-suggestions.ts's own doc comment for
+      // the full reasoning. Same input assembly as /api/retirement/check above (this route runs
+      // several extra what-if checkDashboard calls internally, so it's kept separate rather than
+      // folded into that response -- a plain check shouldn't pay for this every time).
+      if (req.method === "GET" && path === "/api/retirement/suggestions") {
+        const { config: fireConfig } = loadFireConfig(configPath)
+        const plan = requirePlan(fireConfig)
+        const dataSource = currentAccountDataSource()
+        const rawAccounts = await dataSource.fetchAccounts()
+        const irsLimits = loadIrsLimits(irsLimitsPath)
+        const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
+        const federalPovertyGuidelines = loadFederalPovertyGuidelines(federalPovertyGuidelinesPath)
+        const irsLifeExpectancy = loadIrsLifeExpectancy(irsLifeExpectancyPath)
+        const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
+        const result = await generateSuggestions(
+          requireActualConfig(),
+          dataSource,
+          accounts,
+          { ...plan, fallbackInflationMean: 0.03, federalTaxBrackets, federalPovertyGuidelines },
+          irsLifeExpectancy,
+        )
+        sendJson(res, 200, result ?? { targetRetirementAge: null, suggestions: [] })
         return
       }
 

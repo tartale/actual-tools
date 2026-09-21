@@ -2999,6 +2999,141 @@ document.addEventListener("keydown", (e) => {
 
 document.getElementById("chartZoomOpenBtn").addEventListener("click", () => openChartZoom())
 
+// Issue #28: "you're eligible for an early-access option you haven't set, and it would help"
+// suggestions (Rule of 55 / SEPP) -- see fire-suggestions.ts's own doc comment for the mechanics
+// behind /api/retirement/suggestions. Fetched fresh on every open, not folded into lastCheckResult
+// -- the what-if checks behind that endpoint are several extra checkDashboard calls each, not worth
+// paying for on every plain recheck (see #suggestionsOpenBtn's own doc comment in index.html).
+let suggestionsResult = null
+function openSuggestions() {
+  const backdrop = document.getElementById("suggestionsBackdrop")
+  const applyBtn = document.getElementById("suggestionsApplyBtn")
+  applyBtn.disabled = true
+  document.getElementById("suggestionsBody").innerHTML = `<div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Loading…</div>`
+  backdrop.hidden = false
+  void backdrop.offsetHeight
+  backdrop.classList.add("open")
+  api("/api/retirement/suggestions")
+    .then((result) => {
+      if (backdrop.hidden) return // closed before this resolved
+      suggestionsResult = result
+      renderSuggestions(result)
+    })
+    .catch((error) => {
+      if (backdrop.hidden) return
+      document.getElementById("suggestionsBody").innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+    })
+}
+function closeSuggestions() {
+  const backdrop = document.getElementById("suggestionsBackdrop")
+  if (backdrop.hidden) return
+  const restore = () => {
+    backdrop.hidden = true
+    document.getElementById("suggestionsBody").innerHTML = ""
+    suggestionsResult = null
+  }
+  backdrop.classList.remove("open")
+  if (prefersReducedMotion()) {
+    restore()
+    return
+  }
+  backdrop.addEventListener("transitionend", function onEnd(e) {
+    if (e.target !== backdrop) return
+    backdrop.removeEventListener("transitionend", onEnd)
+    restore()
+  })
+}
+
+// Rule of 55 is a plain checkbox (independent per account, and independent of that SAME account's
+// own SEPP suggestion below -- the two aren't mutually exclusive, see effectiveAccessAge's own doc
+// comment in fire-dashboard.ts). A SEPP suggestion's own method choice IS mutually exclusive (one
+// account can only actually elect one method), so that's the one native <input type="radio"> group
+// this feature needs -- issue #28's own "don't allow selecting both" rule, satisfied by plain radio
+// semantics rather than extra JS bookkeeping. Neither radio is pre-selected, so "apply nothing for
+// this account's SEPP option" is simply leaving both unchosen.
+function renderSuggestions(result) {
+  const body = document.getElementById("suggestionsBody")
+  const applyBtn = document.getElementById("suggestionsApplyBtn")
+  body.innerHTML = ""
+  if (result.suggestions.length === 0) {
+    body.innerHTML = `<div class="empty-note">No early-access option would improve this plan's outcome right now.</div>`
+    applyBtn.disabled = true
+    return
+  }
+  // targetRetirementAge is the lowest CONFIGURED retirement age being explored, not a committed
+  // decision about any one account -- the same "hypothetical/modeling input" bucket the Plan
+  // section's own retirement-ages field is already in, not a real personal-timeline fact (unlike
+  // the separation/SEPP-start age an applied suggestion goes on to set on a specific account), so
+  // it's shown here in the clear, same as elsewhere on this page.
+  const intro = document.createElement("p")
+  intro.textContent = `Targeting the lowest configured retirement age (${result.targetRetirementAge}) -- each option below would unlock money earlier and improve this plan's projected outcome.`
+  body.appendChild(intro)
+  result.suggestions.forEach((s) => {
+    const card = document.createElement("div")
+    card.className = "suggestion-card"
+    if (s.kind === "rule-of-55") {
+      card.innerHTML = `
+        <label class="suggestion-option">
+          <input type="checkbox" class="suggestion-input" data-kind="rule-of-55" data-account-id="${escapeHtml(s.accountId)}">
+          Elect Rule of 55 for <strong>${escapeHtml(s.accountName)}</strong>
+        </label>
+        <ul class="suggestion-pros-cons">
+          <li>Unlocks this account at separation from that employer, with no 10% early-withdrawal penalty.</li>
+          <li>Only applies to this specific employer plan -- doesn't carry over to an IRA or a different employer's plan.</li>
+        </ul>`
+    } else {
+      const options = s.methodOptions
+        .map(
+          (opt) => `
+        <label class="suggestion-option">
+          <input type="radio" class="suggestion-input" name="sepp-${escapeHtml(s.accountId)}" data-kind="sepp" data-account-id="${escapeHtml(s.accountId)}" data-method="${opt.method}">
+          ${opt.method === "rmd" ? "RMD method" : "Amortization method"}${opt.annualAmount != null ? ` -- ${moneySpan(opt.annualAmount)}/yr` : ""}
+        </label>`,
+        )
+        .join("")
+      card.innerHTML = `
+        <div class="suggestion-card-title">Elect a 72(t) SEPP schedule for <strong>${escapeHtml(s.accountName)}</strong></div>
+        <div class="suggestion-radio-group">${options}</div>
+        <ul class="suggestion-pros-cons">
+          <li>Available for IRAs and other tax-deferred accounts -- no employer separation needed.</li>
+          <li>A binding schedule once started: fixed for 5 years or until age 59½, whichever is later.</li>
+          <li>RMD recalculates (and moves with the market) every year; Amortization is level for the life of the schedule.</li>
+        </ul>`
+    }
+    body.appendChild(card)
+  })
+  applyBtn.disabled = false
+}
+
+// Function to PATCH every checked/selected option's own account, sequentially -- patchAccount
+// already re-renders STATE and schedules a recheck after each of its own PATCHes, so this just
+// calls it once per selection instead of reimplementing that. Sequential (not Promise.all) since a
+// Rule of 55 checkbox and a SEPP radio can both target the SAME account at once -- PATCH already
+// merges partial updates account-side, so this only needs to not race two concurrent PATCHes to the
+// same account against each other.
+async function applySuggestions() {
+  const inputs = [...document.querySelectorAll("#suggestionsBody .suggestion-input:checked")]
+  for (const input of inputs) {
+    const accountId = input.dataset.accountId
+    if (input.dataset.kind === "rule-of-55") {
+      await patchAccount(accountId, { ruleOf55SeparationAge: suggestionsResult.targetRetirementAge })
+    } else {
+      await patchAccount(accountId, { seppMethod: input.dataset.method, seppStartAge: suggestionsResult.targetRetirementAge })
+    }
+  }
+  closeSuggestions()
+}
+
+document.getElementById("suggestionsOpenBtn").addEventListener("click", () => openSuggestions())
+document.getElementById("suggestionsClose").addEventListener("click", closeSuggestions)
+document.getElementById("suggestionsBackdrop").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeSuggestions()
+})
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !document.getElementById("suggestionsBackdrop").hidden) closeSuggestions()
+})
+document.getElementById("suggestionsApplyBtn").addEventListener("click", () => runExclusive(applySuggestions))
+
 // Function to make a freshly rendered chart clickable-anywhere-to-zoom -- shared by
 // renderBridgeChart/renderMonteCarloChart, since both return the same .bridge-chart wrapper shape.
 // The zoom entry point itself is the one pinned button in the Analysis card-head
