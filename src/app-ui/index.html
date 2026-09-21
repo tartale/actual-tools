@@ -118,6 +118,20 @@
         </div>
       </div>
 
+      <!-- Issue #28: "you're eligible for an early-access option you haven't set, and it would
+           help" suggestions (Rule of 55 / SEPP) -- built fresh from /api/retirement/suggestions on
+           every open (see openSuggestions in app.js), same as #chartZoomBackdrop's own
+           built-on-demand content, rather than kept in sync continuously: those what-if checks are
+           several extra checkDashboard calls each, not worth paying for on every plain recheck. -->
+      <div class="modal-backdrop" id="suggestionsBackdrop" hidden>
+        <div class="modal modal-suggestions" role="dialog" aria-modal="true" aria-labelledby="suggestionsTitle">
+          <button type="button" class="modal-close" id="suggestionsClose" title="Close" aria-label="Close">×</button>
+          <h2 id="suggestionsTitle">Early-access suggestions</h2>
+          <div id="suggestionsBody"></div>
+          <button type="button" class="btn" id="suggestionsApplyBtn" disabled>Apply selected</button>
+        </div>
+      </div>
+
       <!-- Refresh/Expand all/Collapse all (used to be the left column's own toolbar) and the
            Portfolio/Projected Expenditures tiles (used to sit at the top of the right column) merged into one panel
            that freezes right below the topbar as the page scrolls -- one sticky element instead of
@@ -462,6 +476,16 @@
           <div class="card-head">
             <h2>Analysis</h2>
             <div class="card-head-actions">
+              <!-- Issue #28: opens the early-access suggestions modal (see openSuggestions in
+                   app.js) -- always enabled, same as #chartZoomOpenBtn below, rather than
+                   disabled/hidden until a fetch confirms there's something to show: knowing that
+                   ahead of time would mean running the same what-if checks on every page load, the
+                   exact cost this button exists to defer until someone actually asks. Opens to a
+                   loading state, then either the real suggestions or an explicit "none right now"
+                   empty state -- never a blank or broken-looking modal. -->
+              <button type="button" class="icon-btn" id="suggestionsOpenBtn" title="Early-access suggestions" aria-label="Early-access suggestions">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2Z"/></svg>
+              </button>
               <!-- Toggles the Bridge chart between its line and a table of the same underlying
                    per-age numbers (see renderBridgeTable in app.js) -- Monte Carlo is unaffected.
                    Persisted across reloads via a cookie (see saveBridgeTableView), same reasoning
