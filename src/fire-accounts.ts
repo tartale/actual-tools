@@ -462,6 +462,27 @@ export interface FireAccountOverride {
 // payout for) a person actually plans to claim at.
 export type SocialSecurityClaimingAge = 62 | 67 | 70
 
+// A known future change to living expenses -- a kid starting college, a car payment that ends in
+// three years, a planned downsize -- entered directly by the user rather than inferred from spend
+// history the way the rest of annualSpend is. annualAmount is signed: positive adds to spend,
+// negative reduces it (a downsize or a debt paid off, modeled directly here for a
+// planned/hypothetical change with no real account behind it, distinct from the separate
+// debt-payoff mechanism that reads an actual mortgage account's own real payoff date).
+export interface ExpenseAdjustment {
+  id: string
+  name: string
+  annualAmount: number
+  startAge: number
+  // null means "runs through the end of the plan," same convention as an account with no
+  // accessAge meaning "always accessible."
+  endAge: number | null
+  // Whether this amount grows with the plan's own inflationMean from currentAge forward, the same
+  // way annualSpend/RetirementIncomeStream implicitly do (both are entered as today's-dollars
+  // figures, scaled by the SAME whole-period inflation factor) -- or stays fixed at exactly the
+  // nominal figure entered, every year it's active, if false.
+  inflate: boolean
+}
+
 // The plan-wide inputs the app needs that aren't a per-account fact: your birth date, the
 // retirement age(s) to compare, how long the plan should last, and the two guaranteed-income
 // sources (pension, Social Security) that reduce how much the portfolio itself needs to fund once
@@ -518,6 +539,11 @@ export interface DashboardConfig {
   socialSecurityMonthlyAt62: number | null
   socialSecurityMonthlyAt67: number | null
   socialSecurityMonthlyAt70: number | null
+  // Known future changes to living expenses (a kid starting college, a car payment ending, a
+  // planned downsize) -- see ExpenseAdjustment's own doc comment below for each entry's shape. An
+  // empty array (the default) is a valid "none configured yet" state, unlike
+  // crossoverExpenseCategoryIds above -- there's no ambiguity here between "empty" and "not set."
+  expenseAdjustments: ExpenseAdjustment[]
   // Every Monte Carlo widget this tool generates (one per retirement age being compared) is its
   // own independently-named widget in Actual, so tuning one inside Actual's own UI never reaches
   // its siblings -- comparing retirement ages fairly needs the SAME simulation settings on all of
@@ -588,6 +614,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   socialSecurityMonthlyAt62: null,
   socialSecurityMonthlyAt67: null,
   socialSecurityMonthlyAt70: null,
+  expenseAdjustments: [],
   monteCarloWithdrawalStrategy: null,
   monteCarloReturnModel: null,
   monteCarloTaxModel: null,
@@ -1273,6 +1300,25 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       }
     }
   }
+  if (dashboardSource.expenseAdjustments != null) {
+    if (!Array.isArray(dashboardSource.expenseAdjustments)) {
+      throw new Error(`Invalid config in ${path}: dashboard.expenseAdjustments must be an array.`)
+    }
+    for (const adjustment of dashboardSource.expenseAdjustments) {
+      if (
+        typeof adjustment !== "object" ||
+        adjustment === null ||
+        typeof adjustment.id !== "string" ||
+        typeof adjustment.name !== "string" ||
+        typeof adjustment.annualAmount !== "number" ||
+        typeof adjustment.startAge !== "number" ||
+        (adjustment.endAge !== null && typeof adjustment.endAge !== "number") ||
+        typeof adjustment.inflate !== "boolean"
+      ) {
+        throw new Error(`Invalid config in ${path}: each dashboard.expenseAdjustments entry must have a string id/name, numeric annualAmount/startAge, endAge (number or null), and boolean inflate.`)
+      }
+    }
+  }
 
   const config: FireConfig = {
     version: 1,
@@ -1304,6 +1350,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       crossoverSpendHistoryMonths: dashboardSource.crossoverSpendHistoryMonths ?? DEFAULT_DASHBOARD_CONFIG.crossoverSpendHistoryMonths,
       monteCarloWithdrawalRule: dashboardSource.monteCarloWithdrawalRule ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalRule,
       monteCarloTaxBands: dashboardSource.monteCarloTaxBands ?? DEFAULT_DASHBOARD_CONFIG.monteCarloTaxBands,
+      expenseAdjustments: dashboardSource.expenseAdjustments ?? DEFAULT_DASHBOARD_CONFIG.expenseAdjustments,
     },
   }
 

@@ -7,7 +7,7 @@
 
 import { buildMonteCarloWidget } from "./fire-dashboard.ts"
 import type { MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
-import type { ClassifiedAccount } from "./fire-accounts.ts"
+import type { ClassifiedAccount, ExpenseAdjustment } from "./fire-accounts.ts"
 import { getMonteCarloHorizonYears, monteCarloConfigFromMeta, runMonteCarloSimulation } from "./vendor/monte-carlo/monte-carlo-engine.ts"
 import type { MonteCarloResult } from "./vendor/monte-carlo/monte-carlo-engine.ts"
 
@@ -43,8 +43,9 @@ export function runRetirementMonteCarlo(
   annualSpendCents: number,
   assumptions: MonteCarloAssumptions,
   incomeStreams: readonly RetirementIncomeStream[] = [],
+  expenseAdjustments: readonly ExpenseAdjustment[] = [],
 ): MonteCarloSummary {
-  const widget = buildMonteCarloWidget(0, 0, accounts, currentAge, retirementAge, targetAge, annualSpendCents, assumptions, undefined, incomeStreams)
+  const widget = buildMonteCarloWidget(0, 0, accounts, currentAge, retirementAge, targetAge, annualSpendCents, assumptions, undefined, incomeStreams, expenseAdjustments)
   // buildMonteCarloWidget always returns a real meta object; the | null in ExportImportDashboardWidget
   // is for a widget read back from an export file, which this freshly-built one never is.
   const meta = widget.meta ?? undefined

@@ -214,6 +214,7 @@ function render() {
   renderWithdrawalRule()
   renderTaxBands()
   renderExpenseCategoryPicker()
+  renderExpenseAdjustments()
   renderAccounts()
   // Restoring "retirement" as the remembered active section (see the activateSection call at the
   // bottom of this file) fires runCheck() synchronously at page load, well before this STATE fetch
@@ -397,6 +398,91 @@ let taxBandIdCounter = 0
 function nextTaxBandId() {
   taxBandIdCounter += 1
   return `band-${Date.now()}-${taxBandIdCounter}`
+}
+
+// Function to render the Expense adjustments list (issue #24) -- same add/edit/remove-row pattern
+// as renderTaxBands just above (one dynamic list item per ExpenseAdjustment, a whole-array PATCH
+// on every edit rather than a per-field route), with a sign selector splitting the stored signed
+// annualAmount into a magnitude the user enters as a MONTHLY figure (matching pensionMonthlyAmount's
+// own convention) and a +/- direction, rather than asking for a signed number directly.
+function renderExpenseAdjustments() {
+  const adjustments = STATE.dashboard.expenseAdjustments
+  const container = document.getElementById("expenseAdjustmentsList")
+  container.innerHTML = adjustments
+    .map(
+      (adjustment) => `
+    <div class="expense-adjustment-row" data-adjustment-id="${escapeHtml(adjustment.id)}">
+      <div class="field">
+        <label>Name</label>
+        <input type="text" class="ea-name" value="${escapeHtml(adjustment.name)}">
+      </div>
+      <div class="field">
+        <label>Effect</label>
+        <select class="ea-sign">
+          <option value="1"${adjustment.annualAmount >= 0 ? " selected" : ""}>Additional expense (+)</option>
+          <option value="-1"${adjustment.annualAmount < 0 ? " selected" : ""}>Reduced expense (-)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Monthly amount</label>
+        <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="ea-amount" value="${escapeHtml(formatMoneyInputValue(Math.round(Math.abs(adjustment.annualAmount) / 12)))}"></div>
+      </div>
+      <div class="field">
+        <label>Start age</label>
+        <input type="number" min="1" class="ea-start-age" value="${adjustment.startAge}">
+      </div>
+      <div class="field">
+        <label>End age</label>
+        <input type="number" min="1" class="ea-end-age" placeholder="none" value="${adjustment.endAge ?? ""}">
+      </div>
+      <div class="field ea-inflate-field">
+        <label class="checkbox-label"><input type="checkbox" class="ea-inflate"${adjustment.inflate ? " checked" : ""}> Grows with inflation</label>
+      </div>
+      <button type="button" class="icon-btn ea-remove" title="Remove" aria-label="Remove expense adjustment">✕</button>
+    </div>`,
+    )
+    .join("")
+  container.querySelectorAll(".expense-adjustment-row").forEach((row) => {
+    const adjustmentId = row.dataset.adjustmentId
+    const amountInput = row.querySelector(".ea-amount")
+    attachMoneyFormatting(amountInput)
+    const commitRow = () => {
+      const signInput = row.querySelector(".ea-sign")
+      const startAgeInput = row.querySelector(".ea-start-age")
+      const endAgeInput = row.querySelector(".ea-end-age")
+      const inflateInput = row.querySelector(".ea-inflate")
+      const monthlyAmount = parseMoneyInputCents(amountInput.value) ?? 0
+      const next = STATE.dashboard.expenseAdjustments.map((adjustment) =>
+        adjustment.id === adjustmentId
+          ? {
+              id: adjustmentId,
+              name: row.querySelector(".ea-name").value,
+              annualAmount: monthlyAmount * 12 * Number(signInput.value),
+              startAge: startAgeInput.value === "" ? adjustment.startAge : parseInt(startAgeInput.value, 10),
+              endAge: endAgeInput.value === "" ? null : parseInt(endAgeInput.value, 10),
+              inflate: inflateInput.checked,
+            }
+          : adjustment,
+      )
+      runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
+    }
+    row.querySelector(".ea-name").addEventListener("change", commitRow)
+    row.querySelector(".ea-sign").addEventListener("change", commitRow)
+    amountInput.addEventListener("moneycommit", commitRow)
+    row.querySelector(".ea-start-age").addEventListener("change", commitRow)
+    row.querySelector(".ea-end-age").addEventListener("change", commitRow)
+    row.querySelector(".ea-inflate").addEventListener("change", commitRow)
+    row.querySelector(".ea-remove").addEventListener("click", () => {
+      const next = STATE.dashboard.expenseAdjustments.filter((adjustment) => adjustment.id !== adjustmentId)
+      runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
+    })
+  })
+}
+
+let expenseAdjustmentIdCounter = 0
+function nextExpenseAdjustmentId() {
+  expenseAdjustmentIdCounter += 1
+  return `expense-${Date.now()}-${expenseAdjustmentIdCounter}`
 }
 
 // Function to render the Spend configuration section's own expense-category picker (see
@@ -1128,7 +1214,7 @@ function niceAxisTicks(maxCents, targetCount) {
 // its own line already stops naturally at the age it runs out, which is the entire point.
 const BRIDGE_WINDOW_YEARS = 20
 
-function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = [], debtPayoffs = [], incomeStreams = [], acaCliffCrossings = []) {
+function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = [], debtPayoffs = [], incomeStreams = [], acaCliffCrossings = [], expenseAdjustments = []) {
   const usable = bridgeResults.filter((r) => r.timeline.length > 0 && r.accessibleAtRetirement + r.lockedAtRetirement > 0)
   if (usable.length === 0) return null
   // Read once, not per-figure -- see svgMoneyText/svgAgeText's own doc comment for why this
@@ -1240,6 +1326,17 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
   const debtPayoffAges = [...new Set(debtPayoffs.map((d) => d.payoffAge))].filter((age) => age > minAge && age <= maxAge)
   const incomeAges = [...new Set(incomeStreams.map((s) => s.startAge))].filter((age) => age > minAge && age <= maxAge)
   const acaCliffAges = [...new Set(acaCliffCrossings.map((c) => c.crossesAtAge))].filter((age) => age > minAge && age <= maxAge)
+  // Each adjustment contributes up to two dated events -- the start (its own signed amount) and,
+  // only when it has an end age, the reversal one year later (endAge is the LAST year it applies,
+  // so the reversal lands at endAge + 1, matching how startAge itself is the first year it applies).
+  const expenseEvents = expenseAdjustments.flatMap((adjustment) => {
+    const events = [{ age: adjustment.startAge, name: adjustment.name, amount: adjustment.annualAmount }]
+    if (adjustment.endAge != null) {
+      events.push({ age: adjustment.endAge + 1, name: `${adjustment.name} ends`, amount: -adjustment.annualAmount })
+    }
+    return events
+  })
+  const expenseAges = [...new Set(expenseEvents.map((e) => e.age))].filter((age) => age > minAge && age <= maxAge)
   const markers = [
     ...ruleOf55Ages.map((age) => ({
       age,
@@ -1278,6 +1375,12 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
       // withdrawal needs) -- the highest is the one furthest past the cliff, so that's what's shown.
       const pctFPL = Math.max(...crossingsAtAge.map((c) => c.pctFPL))
       return { age, className: "acacliff", name, amount: `${ageMaskText(pctFPL, isPrivate)}% FPL` }
+    }),
+    ...expenseAges.map((age) => {
+      const eventsAtAge = expenseEvents.filter((e) => e.age === age)
+      const name = eventsAtAge.map((e) => e.name).join(" + ")
+      const total = eventsAtAge.reduce((sum, e) => sum + e.amount, 0)
+      return { age, className: "expense", name, amount: `${total >= 0 ? "+" : "-"}${usdCompact(Math.abs(total))}/yr` }
     }),
   ].sort((a, b) => a.age - b.age)
   const markerRowStep = 13
@@ -1333,7 +1436,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
   // stacked on that line before even reading the labels. Chained pairwise at decreasing weights
   // (1/2, 1/3, 1/4, ...) rather than flat 50/50 so N colors end up EQUALLY weighted regardless of
   // how many are being folded in, not biased toward whichever was mixed in last.
-  const MARKER_COLORS = { ruleof55: "#9446ed", mortgage: "#66b5fa", income: "#65d6ad", acacliff: "#ff9b9b" }
+  const MARKER_COLORS = { ruleof55: "#9446ed", mortgage: "#66b5fa", income: "#65d6ad", acacliff: "#ff9b9b", expense: "#f2b544" }
   const blendMarkerColors = (classNames) =>
     classNames
       .map((cls) => MARKER_COLORS[cls])
@@ -2543,7 +2646,7 @@ function renderCheckResult(result) {
     group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
     const chart = isBridgeTableView()
       ? renderBridgeTable(result.bridgeResults, result.currentAge, result.planToAge)
-      : renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams, result.acaCliffCrossings)
+      : renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams, result.acaCliffCrossings, result.expenseAdjustments)
     if (chart) group.appendChild(chart)
     result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
     container.appendChild(group)
@@ -2769,6 +2872,17 @@ document.getElementById("addTaxBandBtn").addEventListener("click", () => {
   const next = [...(STATE.dashboard.monteCarloTaxBands ?? []), { id: nextTaxBandId() }]
   runExclusive(() => patchPlan({ monteCarloTaxBands: next }, "savedSimSettings"))
 })
+document.getElementById("addExpenseAdjustmentBtn").addEventListener("click", () => {
+  // A real (if generic) starting point, not a blank/zero row -- every field already has a valid
+  // value, so it shows up on the chart/table immediately rather than needing to be filled in
+  // before it does anything. currentAge falls back to 30 on the rare chance birth date isn't set
+  // yet (STATE.currentAge is null then) -- an arbitrary but harmless placeholder the user will
+  // overwrite long before this ever reaches a real check anyway (no birth date means no check can
+  // run at all yet).
+  const startAge = (STATE.currentAge ?? 30) + 1
+  const next = [...STATE.dashboard.expenseAdjustments, { id: nextExpenseAdjustmentId(), name: "New expense", annualAmount: 0, startAge, endAge: null, inflate: true }]
+  runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
+})
 document.getElementById("refreshBtn").addEventListener("click", refreshAll)
 
 // --- Chart zoom ---
@@ -2946,8 +3060,8 @@ document.addEventListener("keydown", (e) => {
 // Retirement income default collapsed (set once, rarely revisited); the rest default open.
 // DEFAULT_COLLAPSED_SECTIONS is what a first-ever visit (no cookie yet) applies; after that,
 // saveSectionFolds keeps the cookie authoritative for every reload.
-const RETIREMENT_SECTIONS = ["plan", "spend-configuration", "simulation-settings", "retirement-income", "accounts"]
-const DEFAULT_COLLAPSED_SECTIONS = ["simulation-settings", "retirement-income"]
+const RETIREMENT_SECTIONS = ["plan", "spend-configuration", "simulation-settings", "retirement-income", "expense-adjustments", "accounts"]
+const DEFAULT_COLLAPSED_SECTIONS = ["simulation-settings", "retirement-income", "expense-adjustments"]
 
 // Function to fold or unfold one section -- shared by an individual card's own toggle and
 // Expand/Collapse all, so both always leave the caret, aria state, and body in step. Folding a

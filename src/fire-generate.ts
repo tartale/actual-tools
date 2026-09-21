@@ -10,7 +10,7 @@ import {
   sumTransactionAmounts,
 } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth, Transaction } from "./actual-helpers.ts"
-import type { ClassifiedAccount } from "./fire-accounts.ts"
+import type { ClassifiedAccount, ExpenseAdjustment } from "./fire-accounts.ts"
 import { effectiveAccessAge, portfolioAccountIds } from "./fire-dashboard.ts"
 import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 import {
@@ -196,6 +196,9 @@ export interface CheckOptions {
   // ceiling above: once on Medicare there's no ACA marketplace coverage left to be subsidy-eligible
   // FOR, so there's nothing left for a conversion to protect -- see rothConversionAmountAt below.
   acaFloorPctFpl: 100 | 138 | null
+  // Known future changes to living expenses -- see ExpenseAdjustment's own doc comment
+  // (fire-accounts.ts) for each entry's shape.
+  expenseAdjustments: readonly ExpenseAdjustment[]
 }
 
 export interface AccountContribution {
@@ -250,6 +253,12 @@ export interface CheckResult {
   // planToAge -- empty (not an error) whenever household size/filing status/either reference file
   // is missing, or a scenario simply never crosses it. See the computation's own doc comment.
   acaCliffCrossings: { retirementAge: number; crossesAtAge: number; pctFPL: number }[]
+  // Passed straight through from options -- the client already has this from the Plan section's
+  // own config (STATE.dashboard.expenseAdjustments), but exposing it here too keeps every
+  // Bridge-chart marker input flowing through this same CheckResult, matching
+  // ruleOf55Boosts/debtPayoffs/incomeStreams above, rather than the chart needing to reach into a
+  // second, differently-shaped source for just this one marker kind.
+  expenseAdjustments: readonly ExpenseAdjustment[]
 }
 
 // Function to analyze the dashboard that is actually live in Actual, rather than generating a new
@@ -294,14 +303,37 @@ export async function checkDashboard(
   // Prefer the inflation the live dashboard is actually simulating with; fall back only when
   // nothing has been imported yet.
   const inflationMean = monteCarloMetas[0]?.inflationMean ?? options.fallbackInflationMean
+
+  // Function to get one age's own net effect of every configured ExpenseAdjustment, split into an
+  // inflating (today's-dollars, netted in before inflating) and fixed (nominal, added after) part
+  // -- see simulateBridge's own expenseAdjustmentAt parameter for exactly how each part is
+  // applied. Scenario-independent (an adjustment's start/end age and amount don't vary by
+  // retirementAge), so built once and shared by every scenario's own simulateBridge call and by
+  // projectedSpendAt below, the same reasoning taxDeferredCapAt/inflateGuideline already use for
+  // their own once-per-check callbacks.
+  const expenseAdjustmentAt = (age: number): { inflating: number; fixed: number } => {
+    let inflating = 0
+    let fixed = 0
+    for (const adjustment of options.expenseAdjustments) {
+      if (age < adjustment.startAge || (adjustment.endAge != null && age > adjustment.endAge)) continue
+      if (adjustment.inflate) inflating += adjustment.annualAmount
+      else fixed += adjustment.annualAmount
+    }
+    return { inflating, fixed }
+  }
+
   // The same gross-inflate formula simulateBridge's own loop applies for its projectedSpend field
   // (income NOT netted out -- see BridgeYear's own doc comment for why), for an arbitrary age
   // rather than a running simulation -- scenario-independent (annualSpend/inflationMean don't vary
   // by retirementAge), so computed once and reused across every scenario's own history below,
   // rather than duplicated inline for each. For an age before currentAge, the negative exponent
   // runs the same formula backward: what this plan's projected expenses were worth back then, not a
-  // claim about what was actually spent.
-  const projectedSpendAt = (age: number): number => annualSpend * Math.pow(1 + inflationMean, age - options.currentAge)
+  // claim about what was actually spent -- expense adjustments run backward the same way (a
+  // historical point for an adjustment whose startAge is in the past correctly still reflects it).
+  const projectedSpendAt = (age: number): number => {
+    const { inflating, fixed } = expenseAdjustmentAt(age)
+    return Math.max(0, (annualSpend + inflating) * Math.pow(1 + inflationMean, age - options.currentAge) + fixed)
+  }
 
   const transactionEntries = await Promise.all(
     portfolioIds.map(async (accountId): Promise<[string, Transaction[]]> => [accountId, await fetchAccountTransactions(actualConfig, accountId, BALANCE_SINCE_DATE)]),
@@ -540,7 +572,18 @@ export async function checkDashboard(
   // else here, not shared across them the way monteCarloHistory above is.
   const bridgeResults = options.retirementAges.map((retirementAge) => {
     const currentBridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge)
-    const result = simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams, taxDeferredCapAt, rothConversionAmountAt)
+    const result = simulateBridge(
+      currentBridgeAccounts,
+      options.currentAge,
+      retirementAge,
+      options.planToAge,
+      annualSpend,
+      inflationMean,
+      incomeStreams,
+      taxDeferredCapAt,
+      rothConversionAmountAt,
+      expenseAdjustmentAt,
+    )
     // Ends on a real point at currentAge itself (today's live balance, not a historical one) --
     // ties the last real-history year to "now" so the chart has something to draw a line between
     // even with only one year of lookback, and (for a retirementAge equal to currentAge) meets
@@ -612,7 +655,7 @@ export async function checkDashboard(
     try {
       monteCarloByAge = options.retirementAges.map((retirementAge) => ({
         retirementAge,
-        result: runRetirementMonteCarlo(accounts, balances, options.currentAge, retirementAge, options.planToAge, annualSpend, options.monteCarloAssumptions, incomeStreams),
+        result: runRetirementMonteCarlo(accounts, balances, options.currentAge, retirementAge, options.planToAge, annualSpend, options.monteCarloAssumptions, incomeStreams, options.expenseAdjustments),
       }))
     } catch {
       // Leave empty -- an incomplete "custom" allocation just means no Monte Carlo results this
@@ -642,6 +685,7 @@ export async function checkDashboard(
     debtPayoffs,
     incomeStreams: options.incomeStreams,
     acaCliffCrossings,
+    expenseAdjustments: options.expenseAdjustments,
   }
 }
 

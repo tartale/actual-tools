@@ -2,6 +2,7 @@ import { portfolioAccounts } from "./fire-accounts.ts"
 import type {
   ClassifiedAccount,
   DashboardConfig,
+  ExpenseAdjustment,
   MonteCarloAllocationPreset,
   MonteCarloReturnModel,
   MonteCarloTaxBandMeta,
@@ -296,11 +297,19 @@ export function retirementIncomeStreams(dashboard: Pick<DashboardConfig, "pensio
 // number (it was already reducing the draw from day one), while one that starts later gets its
 // own phase stepping the withdrawal down further from that age on. Withdrawal is floored at 0 --
 // guaranteed income exceeding spend doesn't mean the portfolio owes the plan money.
+// expenseAdjustments layers in a SIGNED effect on top of income's own reduction -- positive
+// increases the withdrawal, negative reduces it (see ExpenseAdjustment's own doc comment,
+// fire-accounts.ts). Treated as a today's-dollars figure regardless of its own inflate flag:
+// Monte Carlo's spending-phase model only knows a figure the engine itself inflates every
+// simulated year (same as annualSpendCents/income streams already are), with no notion of a
+// phase-spanning FIXED nominal amount the way Bridge's own per-year loop can represent -- a
+// deliberate approximation specific to this engine, not a precise match to Bridge's own math.
 export function buildSpendingPhases(
   currentAge: number,
   retirementAge: number,
   annualSpendCents: number,
   incomeStreams: readonly RetirementIncomeStream[] = [],
+  expenseAdjustments: readonly ExpenseAdjustment[] = [],
 ): MonteCarloSpendingPhaseMeta[] {
   const alreadyRetired = retirementAge <= currentAge
   const effectiveStart = Math.max(retirementAge, currentAge)
@@ -312,28 +321,45 @@ export function buildSpendingPhases(
     // against Actual's own monteCarloSimulation.ts: withdrawal and contributions are separate,
     // additive line items applied to the same pot balances the same year, so a nonzero "spending"
     // figure here would double-count real living expenses that were actually paid out of wages,
-    // never touching the portfolio at all.
+    // never touching the portfolio at all. An expense adjustment active before retirement has
+    // nothing to adjust here for exactly the same reason.
     phases.push({ id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 })
   }
 
-  const alreadyActive = incomeStreams.filter((stream) => stream.startAge <= effectiveStart)
-  const later = [...incomeStreams.filter((stream) => stream.startAge > effectiveStart)].sort((a, b) => a.startAge - b.startAge)
+  // Computed fresh at any age (not tracked incrementally) so the later loop below can freely
+  // interleave income-stream and expense-adjustment boundaries in age order without the two
+  // needing to be walked together.
+  const incomeEffectAt = (age: number): number => incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount, 0)
+  const adjustmentEffectAt = (age: number): number =>
+    expenseAdjustments.filter((adjustment) => adjustment.startAge <= age && (adjustment.endAge == null || adjustment.endAge >= age)).reduce((sum, adjustment) => sum + adjustment.annualAmount, 0)
 
-  let cumulativeIncome = alreadyActive.reduce((sum, stream) => sum + stream.annualAmount, 0)
   phases.push({
     id: "retirement-spending",
     name: "Retirement spending",
     fromAge: alreadyRetired ? null : retirementAge,
-    annualWithdrawal: Math.max(0, annualSpendCents - cumulativeIncome),
+    annualWithdrawal: Math.max(0, annualSpendCents - incomeEffectAt(effectiveStart) + adjustmentEffectAt(effectiveStart)),
   })
 
-  for (const stream of later) {
-    cumulativeIncome += stream.annualAmount
+  // Every later income-stream start and every later expense-adjustment boundary (its own startAge,
+  // or the age right after its endAge, reversing it exactly once it's no longer active) merge into
+  // one shared, age-ordered list of phases.
+  const laterIncome = incomeStreams
+    .filter((stream) => stream.startAge > effectiveStart)
+    .map((stream) => ({ age: stream.startAge, id: `income-${stream.id}`, name: `After ${stream.name}` }))
+  const laterAdjustments = expenseAdjustments
+    .flatMap((adjustment) => [
+      { age: adjustment.startAge, id: `expense-${adjustment.id}-start`, name: adjustment.name },
+      ...(adjustment.endAge != null ? [{ age: adjustment.endAge + 1, id: `expense-${adjustment.id}-end`, name: `${adjustment.name} ends` }] : []),
+    ])
+    .filter((boundary) => boundary.age > effectiveStart)
+  const laterBoundaries = [...laterIncome, ...laterAdjustments].sort((a, b) => a.age - b.age)
+
+  for (const boundary of laterBoundaries) {
     phases.push({
-      id: `income-${stream.id}`,
-      name: `After ${stream.name}`,
-      fromAge: stream.startAge,
-      annualWithdrawal: Math.max(0, annualSpendCents - cumulativeIncome),
+      id: boundary.id,
+      name: boundary.name,
+      fromAge: boundary.age,
+      annualWithdrawal: Math.max(0, annualSpendCents - incomeEffectAt(boundary.age) + adjustmentEffectAt(boundary.age)),
     })
   }
 
@@ -447,6 +473,7 @@ export function buildMonteCarloWidget(
   assumptions: MonteCarloAssumptions,
   name = "Monte Carlo",
   incomeStreams: readonly RetirementIncomeStream[] = [],
+  expenseAdjustments: readonly ExpenseAdjustment[] = [],
 ): ExportImportDashboardWidget<MonteCarloCardMeta> {
   const eligibleAccounts = portfolioAccounts(accounts)
   const missingPreset = eligibleAccounts.find((account) => account.allocationPreset === null)
@@ -480,7 +507,7 @@ export function buildMonteCarloWidget(
       returnModel: assumptions.returnModel,
       withdrawalRule: assumptions.withdrawalRule,
       minimumWithdrawal: assumptions.minimumWithdrawal,
-      spendingPhases: buildSpendingPhases(currentAge, retirementAge, annualSpendCents, incomeStreams),
+      spendingPhases: buildSpendingPhases(currentAge, retirementAge, annualSpendCents, incomeStreams, expenseAdjustments),
       contributions: buildContributions(eligibleAccounts, currentAge, retirementAge),
       inflationMean: assumptions.inflationMean,
       inflationStdDev: assumptions.inflationStdDev,

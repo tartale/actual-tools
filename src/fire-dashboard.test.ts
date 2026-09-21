@@ -14,7 +14,7 @@ import {
   withdrawalTaxRateFor,
 } from "./fire-dashboard.ts"
 import type { MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
-import type { ClassifiedAccount, DashboardConfig } from "./fire-accounts.ts"
+import type { ClassifiedAccount, DashboardConfig, ExpenseAdjustment } from "./fire-accounts.ts"
 import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
 
 // Function to build a classified account with sensible defaults for the fields a test ignores
@@ -282,6 +282,44 @@ describe("buildSpendingPhases", () => {
     expect(buildSpendingPhases(45, 60, 500000, [pension])).toEqual([
       { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
       { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 0 },
+    ])
+  })
+
+  it("folds an expense adjustment already active at retirement straight into the base spending figure", () => {
+    const college: ExpenseAdjustment = { id: "college", name: "College", annualAmount: 100000, startAge: 60, endAge: null, inflate: true }
+    expect(buildSpendingPhases(45, 60, 500000, [], [college])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 600000 },
+    ])
+  })
+
+  it("adds a stepped-up phase for an expense adjustment starting after retirement, and steps back down once it ends", () => {
+    const college: ExpenseAdjustment = { id: "college", name: "College", annualAmount: 100000, startAge: 65, endAge: 68, inflate: true }
+    expect(buildSpendingPhases(45, 60, 500000, [], [college])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
+      { id: "expense-college-start", name: "College", fromAge: 65, annualWithdrawal: 600000 },
+      { id: "expense-college-end", name: "College ends", fromAge: 69, annualWithdrawal: 500000 },
+    ])
+  })
+
+  it("interleaves income and expense-adjustment boundaries in age order, stacking their effects cumulatively", () => {
+    const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 67, annualAmount: 200000 }
+    const carPayment: ExpenseAdjustment = { id: "car", name: "Car payment", annualAmount: 60000, startAge: 63, endAge: null, inflate: false }
+    expect(buildSpendingPhases(45, 60, 500000, [pension], [carPayment])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
+      { id: "expense-car-start", name: "Car payment", fromAge: 63, annualWithdrawal: 560000 },
+      { id: "income-pension", name: "After Pension", fromAge: 67, annualWithdrawal: 360000 },
+    ])
+  })
+
+  it("a negative (reducing) expense adjustment lowers the withdrawal, same as income does", () => {
+    const downsize: ExpenseAdjustment = { id: "downsize", name: "Downsize", annualAmount: -150000, startAge: 70, endAge: null, inflate: true }
+    expect(buildSpendingPhases(45, 60, 500000, [], [downsize])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 500000 },
+      { id: "expense-downsize-start", name: "Downsize", fromAge: 70, annualWithdrawal: 350000 },
     ])
   })
 })
