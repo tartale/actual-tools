@@ -7,6 +7,7 @@ import { startAppServer } from "./app-server.ts"
 import type { RunningServer, StateResponse } from "./app-server.ts"
 import type { ActualConfig } from "./actual-helpers.ts"
 import { loadActualSession, writeActualSession } from "./actual-session.ts"
+import { loadFileDataSourceSession } from "./data-source-session.ts"
 import { DEFAULT_DASHBOARD_CONFIG } from "./fire-accounts.ts"
 import type { CheckResult } from "./fire-generate.ts"
 
@@ -64,6 +65,7 @@ function mockActualFetch(fixture: FetchFixture) {
 let dir: string
 let configPath: string
 let sessionPath: string
+let dataSourceSessionPath: string
 let irsLimitsPath: string
 let federalTaxBracketsPath: string
 let irsLifeExpectancyPath: string
@@ -74,6 +76,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "app-server-test-"))
   configPath = join(dir, "config.json")
   sessionPath = join(dir, "session.json")
+  dataSourceSessionPath = join(dir, "data-source.json")
   irsLimitsPath = join(dir, "irs-limits.json")
   federalTaxBracketsPath = join(dir, "federal-tax-brackets.json")
   irsLifeExpectancyPath = join(dir, "irs-life-expectancy.json")
@@ -101,7 +104,7 @@ async function boot(fixture: FetchFixture = {}, options: { loggedIn?: boolean } 
   if (options.loggedIn ?? true) {
     writeActualSession(sessionPath, actualConfig)
   }
-  server = await startAppServer({ sessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir: dir })
+  server = await startAppServer({ sessionPath, dataSourceSessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir: dir })
   return server.url
 }
 
@@ -1183,6 +1186,91 @@ describe("/api/session", () => {
     const stateRes = await fetch(`${url}api/retirement/state`)
     expect(stateRes.status).toBe(400)
     expect((await readJson<ErrorBody>(stateRes)).error).toContain("Not logged in")
+  })
+})
+
+describe("/api/data-source", () => {
+  it("reports Actual-sync mode when no file has ever been imported", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/data-source`)
+    expect(res.status).toBe(200)
+    expect(await readJson<{ mode: string }>(res)).toEqual({ mode: "actual" })
+  })
+
+  it("imports a file: validates it parses, persists the session, and switches /api/retirement/state to its rows instead of Actual's", async () => {
+    const filePath = join(dir, "accounts.csv")
+    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
+    const url = await boot({ accounts: [{ id: "a1", name: "Actual Checking", offbudget: true, closed: false }] }, { loggedIn: false })
+
+    const res = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath }) })
+    expect(res.status).toBe(200)
+    const body = await readJson<{ mode: string; filePath: string; lastLoadedAt: string; available: boolean; error: string | null }>(res)
+    expect(body).toMatchObject({ mode: "file", filePath, available: true, error: null })
+    expect(typeof body.lastLoadedAt).toBe("string")
+    expect(loadFileDataSourceSession(dataSourceSessionPath)).toEqual({ filePath, lastLoadedAt: body.lastLoadedAt })
+
+    const stateRes = await fetch(`${url}api/retirement/state`)
+    expect(stateRes.status).toBe(200)
+    const state = await readJson<StateResponse>(stateRes)
+    expect(state.accounts).toHaveLength(1)
+    expect(state.accounts[0]).toMatchObject({ id: "manual-brokerage", name: "Manual Brokerage" })
+  })
+
+  it("rejects a file that fails to parse, and saves nothing", async () => {
+    const filePath = join(dir, "bad.csv")
+    writeFileSync(filePath, "not,the,right,header\n")
+    const url = await boot({}, { loggedIn: false })
+
+    const res = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath }) })
+    expect(res.status).toBe(400)
+    expect(loadFileDataSourceSession(dataSourceSessionPath)).toBeNull()
+  })
+
+  it("rejects an empty filePath before ever touching the filesystem", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath: "" }) })
+    expect(res.status).toBe(400)
+    expect(loadFileDataSourceSession(dataSourceSessionPath)).toBeNull()
+  })
+
+  it("GET re-probes the file live and warns (without clearing the session) once it goes missing", async () => {
+    const filePath = join(dir, "accounts.csv")
+    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
+    const url = await boot({}, { loggedIn: false })
+    const importRes = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath }) })
+    const imported = await readJson<{ lastLoadedAt: string }>(importRes)
+
+    rmSync(filePath)
+    const res = await fetch(`${url}api/data-source`)
+    expect(res.status).toBe(200)
+    const body = await readJson<{ mode: string; available: boolean; error: string | null; lastLoadedAt: string }>(res)
+    expect(body.mode).toBe("file")
+    expect(body.available).toBe(false)
+    expect(body.error).toBeTruthy()
+    // The last KNOWN-GOOD timestamp stays put -- a failed probe never advances it.
+    expect(body.lastLoadedAt).toBe(imported.lastLoadedAt)
+    expect(loadFileDataSourceSession(dataSourceSessionPath)).toEqual({ filePath, lastLoadedAt: imported.lastLoadedAt })
+
+    // Doesn't interrupt the flow -- /api/retirement/state still resolves an error (currently
+    // logged out of Actual, and the file is now unavailable too), not a 500 from something
+    // unhandled blowing up the whole request.
+    const stateRes = await fetch(`${url}api/retirement/state`)
+    expect(stateRes.status).toBe(400)
+  })
+
+  it("clears the file session on DELETE, switching back to Actual-sync mode", async () => {
+    const filePath = join(dir, "accounts.csv")
+    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
+    const url = await boot({ accounts: [] })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath }) })
+
+    const res = await fetch(`${url}api/data-source`, { method: "DELETE" })
+    expect(res.status).toBe(200)
+    expect(await readJson<{ mode: string }>(res)).toEqual({ mode: "actual" })
+    expect(loadFileDataSourceSession(dataSourceSessionPath)).toBeNull()
+
+    const stateRes = await fetch(`${url}api/retirement/state`)
+    expect(stateRes.status).toBe(200)
   })
 })
 

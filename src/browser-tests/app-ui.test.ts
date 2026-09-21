@@ -124,6 +124,7 @@ async function openBudgetPage(): Promise<{ page: Page; errors: string[] }> {
   writeActualSession(sessionPath, actualConfig)
   server = await startAppServer({
     sessionPath,
+    dataSourceSessionPath: join(dir, "data-source.json"),
     configPath: join(dir, "config.json"),
     irsLimitsPath: join(dir, "irs-limits.json"),
     federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),
@@ -424,6 +425,91 @@ describe.skipIf(!browser)("Budget picker in a browser", () => {
     const withoutAmount = await ui.evaluate(() => Math.round(document.querySelector(".action-buttons")!.getBoundingClientRect().left))
     // Same geometry whichever action is selected -- the buttons never move under the cursor.
     expect(withoutAmount).toBe(withAmount)
+    expect(errors).toEqual([])
+  }, 60000)
+})
+
+// Opens the real page against a real server with NEITHER an Actual session nor a file-import
+// session on disk, so it lands on the real #loginBackdrop modal -- unlike openBudgetPage above,
+// which pre-seeds Actual credentials to skip straight past it. Exercises issue #35's actual
+// end-user path: picking a mode, submitting the form, and everything that follows.
+async function openLoginModalPage(): Promise<{ page: Page; errors: string[] }> {
+  vi.stubGlobal("fetch", mockActualFetch())
+  writeFileSync(join(dir, "irs-limits.json"), "{}")
+  server = await startAppServer({
+    sessionPath: join(dir, "session.json"),
+    dataSourceSessionPath: join(dir, "data-source.json"),
+    configPath: join(dir, "config.json"),
+    irsLimitsPath: join(dir, "irs-limits.json"),
+    federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),
+    irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"),
+    federalPovertyGuidelinesPath: join(dir, "federal-poverty-guidelines.json"),
+    uiDir: UI_DIR,
+  })
+  const opened = await (browser as Browser).newPage({ viewport: { width: 1400, height: 1000 } })
+  page = opened
+  const errors: string[] = []
+  opened.on("pageerror", (error) => errors.push(error.message))
+  await opened.goto(server.url)
+  await opened.waitForSelector("#loginBackdrop.open")
+  return { page: opened, errors }
+}
+
+describe.skipIf(!browser)("File-import data source in a browser", () => {
+  it("imports a file from the login modal, lands on Retirement with its accounts, and disables Budget", async () => {
+    const filePath = join(dir, "accounts.csv")
+    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
+    const { page: ui, errors } = await openLoginModalPage()
+
+    // Starts on the Actual fields -- picking the file radio swaps the visible field group and the
+    // submit button's own label, per issue #35's mutually-exclusive-mode design.
+    expect(await ui.locator("#actualFields").isVisible()).toBe(true)
+    expect(await ui.locator("#fileFields").isVisible()).toBe(false)
+    await ui.locator("#dataSourceModeFile").check()
+    expect(await ui.locator("#actualFields").isVisible()).toBe(false)
+    expect(await ui.locator("#fileFields").isVisible()).toBe(true)
+    expect(await ui.locator("#loginSubmitBtn").textContent()).toBe("Import file")
+
+    await ui.locator("#importFilePath").fill(filePath)
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForSelector("#loginBackdrop", { state: "hidden" })
+
+    // Lands on Retirement (the default-section fallback redirects there once Budget is disabled),
+    // showing the account this file's own row named -- not anything from the mocked Actual fetch.
+    await ui.waitForSelector("#accountsList")
+    expect(await ui.locator("#accountsList").textContent()).toContain("Manual Brokerage")
+    expect(await ui.locator('.section-item[data-section="retirement"]').evaluate((el) => el.classList.contains("active"))).toBe(true)
+    expect(await ui.locator('.section-item[data-section="budget"]').evaluate((el) => el.classList.contains("disabled"))).toBe(true)
+
+    // Clicking the disabled Budget tab is a no-op -- Retirement stays the active section.
+    await ui.locator('.section-item[data-section="budget"]').click()
+    expect(await ui.locator('.section-item[data-section="budget"]').evaluate((el) => el.classList.contains("active"))).toBe(false)
+
+    // The topbar chip reports the file connection, not just silence.
+    await ui.waitForSelector("#dataSourceChip:not([hidden])")
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("File")
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("warns inline, without interrupting the page, once the remembered file goes missing", async () => {
+    const filePath = join(dir, "accounts.csv")
+    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
+    const { page: ui, errors } = await openLoginModalPage()
+    await ui.locator("#dataSourceModeFile").check()
+    await ui.locator("#importFilePath").fill(filePath)
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForSelector("#accountsList")
+    await ui.waitForSelector("#dataSourceChip:not([hidden])")
+    expect(await ui.locator("#dataSourceChip").evaluate((el) => el.classList.contains("warn"))).toBe(false)
+
+    rmSync(filePath)
+    await ui.locator("#refreshBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#dataSourceChip")?.classList.contains("warn") === true)
+
+    // The page itself is still up and usable -- no crash, no blocking modal -- just the chip
+    // flipping to its warn styling and copy.
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("unavailable")
+    expect(await ui.locator("#accountsList").isVisible()).toBe(true)
     expect(errors).toEqual([])
   }, 60000)
 })
