@@ -496,6 +496,18 @@ export interface DashboardConfig {
   // marketplace coverage entirely. Meaningless without acaTargetPctFpl also set. Null (the
   // default) means the ceiling (if any) applies for the whole plan, with no age cutoff.
   medicareAge: number | null
+  // Minimum %FPL ACA marketplace subsidies actually require -- 100 in a state that didn't expand
+  // Medicaid, 138 in one that did (below either, a household would be Medicaid- rather than
+  // subsidy-eligible). Only ever 100, 138, or null (off) -- this app tracks no state anywhere else
+  // (see federal-poverty-guidelines.ts), so this is a direct toggle rather than a full state
+  // picker. When set (plus householdSize/filingStatus/the tax-bracket/poverty-guideline files),
+  // the simulation converts just enough traditional money to Roth each year to keep MAGI at or
+  // above this floor once non-taxable/pension/SS alone would otherwise land it under -- see
+  // fire-generate.ts's rothConversionAmountAt. Must be strictly less than acaTargetPctFpl whenever
+  // both are set (validated in app-server.ts's PATCH handler, not here -- see its own doc comment
+  // for why a cross-field check belongs at the write boundary, not the parse/merge layer this file
+  // is).
+  acaFloorPctFpl: 100 | 138 | null
   // Cents/mo, null until entered. A pension with no start age (or vice versa) isn't applied --
   // see retirementIncomeStreams in fire-dashboard.ts.
   pensionStartAge: number | null
@@ -569,6 +581,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   householdSize: null,
   acaTargetPctFpl: null,
   medicareAge: null,
+  acaFloorPctFpl: null,
   pensionStartAge: null,
   pensionMonthlyAmount: null,
   socialSecurityClaimingAge: null,
@@ -1171,6 +1184,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.acaTargetPctFpl != null && (typeof dashboardSource.acaTargetPctFpl !== "number" || dashboardSource.acaTargetPctFpl <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.acaTargetPctFpl must be a positive number, or null.`)
   }
+  if (dashboardSource.acaFloorPctFpl != null && dashboardSource.acaFloorPctFpl !== 100 && dashboardSource.acaFloorPctFpl !== 138) {
+    throw new Error(`Invalid config in ${path}: dashboard.acaFloorPctFpl must be 100, 138, or null.`)
+  }
   if (dashboardSource.medicareAge != null && (typeof dashboardSource.medicareAge !== "number" || dashboardSource.medicareAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.medicareAge must be a positive number, or null.`)
   }
@@ -1269,6 +1285,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       householdSize: dashboardSource.householdSize ?? DEFAULT_DASHBOARD_CONFIG.householdSize,
       acaTargetPctFpl: dashboardSource.acaTargetPctFpl ?? DEFAULT_DASHBOARD_CONFIG.acaTargetPctFpl,
       medicareAge: dashboardSource.medicareAge ?? DEFAULT_DASHBOARD_CONFIG.medicareAge,
+      acaFloorPctFpl: dashboardSource.acaFloorPctFpl ?? DEFAULT_DASHBOARD_CONFIG.acaFloorPctFpl,
       pensionStartAge: dashboardSource.pensionStartAge ?? DEFAULT_DASHBOARD_CONFIG.pensionStartAge,
       pensionMonthlyAmount: dashboardSource.pensionMonthlyAmount ?? DEFAULT_DASHBOARD_CONFIG.pensionMonthlyAmount,
       socialSecurityClaimingAge: dashboardSource.socialSecurityClaimingAge ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityClaimingAge,

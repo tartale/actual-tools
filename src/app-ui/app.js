@@ -243,6 +243,7 @@ function renderPlan() {
   const householdSizeInput = document.getElementById("householdSize")
   const acaTargetPctFplInput = document.getElementById("acaTargetPctFpl")
   const medicareAgeInput = document.getElementById("medicareAge")
+  const acaFloorPctFplInput = document.getElementById("acaFloorPctFpl")
   // Only overwrite a field the user isn't actively editing -- avoids clobbering keystrokes if a
   // response from one field's PATCH arrives while another is still focused.
   if (document.activeElement !== birthInput) birthInput.value = STATE.dashboard.birthDate ?? ""
@@ -252,6 +253,7 @@ function renderPlan() {
   if (document.activeElement !== householdSizeInput) householdSizeInput.value = STATE.dashboard.householdSize ?? ""
   if (document.activeElement !== acaTargetPctFplInput) acaTargetPctFplInput.value = STATE.dashboard.acaTargetPctFpl ?? ""
   if (document.activeElement !== medicareAgeInput) medicareAgeInput.value = STATE.dashboard.medicareAge ?? ""
+  if (document.activeElement !== acaFloorPctFplInput) acaFloorPctFplInput.value = STATE.dashboard.acaFloorPctFpl ?? ""
   document.getElementById("ageDerived").textContent = STATE.currentAge ?? "—"
 }
 
@@ -1519,6 +1521,10 @@ document.addEventListener("keydown", (e) => {
 function bridgeTableColumnDefs(result) {
   return [
     { id: "taxDeferred", label: "Tax-deferred", kind: "taxDeferred" },
+    // Right next to Tax-deferred, not off with the summary/MAGI columns further down -- it's the
+    // same kind of tax-deferred-account activity (issue #29's ACA subsidy floor), just a transfer
+    // instead of a withdrawal.
+    { id: "rothConversion", label: "Roth conversion", kind: "rothConversion" },
     { id: "nonTaxable", label: "Non-taxable", kind: "nonTaxable" },
     { id: "pctFPL", label: "%FPL", kind: "pctFPL" },
     { id: "magi", label: "MAGI", kind: "magi" },
@@ -1584,6 +1590,9 @@ function bridgeTableHeaderCell(col) {
   // spend from a 22%-taxed account means actually withdrawing ~$76,900 gross. Not obvious just
   // from the column name, so it gets a title tooltip the other (need- rather than tax-rate-
   // driven) columns don't.
+  if (col.kind === "rothConversion") {
+    return `<th title="Money moved from a traditional account to a Roth one this year to keep MAGI at the ACA subsidy floor -- a transfer, not a withdrawal, so it doesn't fund any of that year's spending">${escapeHtml(col.label)}</th>`
+  }
   const title = col.kind === "taxDeferred" || col.kind === "nonTaxable" ? ` title="Gross (pre-tax) withdrawal -- can exceed Expenses once the account's own tax rate is backed out"` : ""
   return `<th${title}>${escapeHtml(col.label)}</th>`
 }
@@ -1621,6 +1630,12 @@ function bridgeTableDataCell(col, point, isPrivate) {
           : ""
       return `<td class="bt-num"${title}>${moneySpan(gross)}</td>`
     }
+    case "rothConversion":
+      // Undefined on the vast majority of rows (no acaFloorPctFpl set, or none needed that year)
+      // -- "—", not $0.00, so a row that genuinely converted $0 (impossible today, but the same
+      // "no real figure computed" convention every other column here uses) would be
+      // distinguishable in principle.
+      return `<td class="bt-num">${point.rothConversionAmount != null ? moneySpan(point.rothConversionAmount) : "—"}</td>`
     case "pctFPL":
       return `<td class="bt-num">${point.pctFPL != null ? `<span class="money">${(Math.round(point.pctFPL * 10) / 10).toLocaleString()}</span>%` : "—"}</td>`
     case "magi":
@@ -1838,6 +1853,8 @@ function downloadBridgeTableCsv(result, rows, columns) {
         return dollars(point.grossTaxDeferredWithdrawal)
       case "nonTaxable":
         return dollars(point.grossNonTaxDeferredWithdrawal)
+      case "rothConversion":
+        return dollars(point.rothConversionAmount)
       case "pctFPL":
         return point.pctFPL != null ? (Math.round(point.pctFPL * 10) / 10).toFixed(1) : ""
       case "magi":
@@ -2339,6 +2356,10 @@ function renderChartSkeleton(ariaLabel, currentAge, planToAge, retirementAges, p
 function renderBridgeTableSkeleton(currentAge, planToAge, portfolioAccounts) {
   const defs = [
     { id: "taxDeferred", label: "Tax-deferred", kind: "static" },
+    // Kept in the SAME position bridgeTableColumnDefs' own real version uses -- ids/order have to
+    // match exactly for the persisted cookie's column selection/order to carry over cleanly once
+    // the real table replaces this skeleton.
+    { id: "rothConversion", label: "Roth conversion", kind: "static" },
     { id: "nonTaxable", label: "Non-taxable", kind: "static" },
     { id: "pctFPL", label: "%FPL", kind: "static" },
     { id: "magi", label: "MAGI", kind: "static" },
@@ -2600,6 +2621,13 @@ document.getElementById("acaTargetPctFpl").addEventListener("change", (e) => {
 document.getElementById("medicareAge").addEventListener("change", (e) => {
   const age = e.target.value === "" ? null : parseFloat(e.target.value)
   runExclusive(() => patchPlan({ medicareAge: age === null || age <= 0 ? null : age }, "savedMedicareAge"))
+})
+
+// A <select> of exactly "", "100", "138" -- not a free-form number the way acaTargetPctFpl's own
+// field is, since those are this policy's only two real values (see the field's own help text).
+document.getElementById("acaFloorPctFpl").addEventListener("change", (e) => {
+  const pct = e.target.value === "" ? null : parseInt(e.target.value, 10)
+  runExclusive(() => patchPlan({ acaFloorPctFpl: pct }, "savedAcaFloorPctFpl"))
 })
 
 document.getElementById("pensionStartAge").addEventListener("change", (e) => {

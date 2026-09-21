@@ -184,6 +184,18 @@ export interface CheckOptions {
   // reached, the cap stops applying (Medicare replaces the need for ACA marketplace coverage).
   // Meaningless without acaTargetPctFpl also set.
   medicareAge: number | null
+  // Minimum %FPL ACA marketplace subsidies require -- 100% in states that didn't expand Medicaid,
+  // 138% in states that did (below either, a household would be Medicaid-eligible instead, not
+  // subsidy-eligible). Only ever 100 or 138 -- validated at the API boundary (app-server.ts), not
+  // a free-form percentage the way acaTargetPctFpl is, since those are this policy's only two real
+  // values. This app tracks no state (federal-only everywhere else -- see
+  // federal-poverty-guidelines.ts's own doc comment), so this is a direct toggle between the two
+  // rather than a full state picker. When set (plus the four fields above), the simulation converts
+  // just enough traditional money to Roth each year to keep MAGI at or above this floor once
+  // non-taxable/pension/SS alone would otherwise land it under. Same medicareAge gating as the
+  // ceiling above: once on Medicare there's no ACA marketplace coverage left to be subsidy-eligible
+  // FOR, so there's nothing left for a conversion to protect -- see rothConversionAmountAt below.
+  acaFloorPctFpl: 100 | 138 | null
 }
 
 export interface AccountContribution {
@@ -412,6 +424,56 @@ export async function checkDashboard(
     return Math.round(lo)
   }
 
+  // Function to get the desired Roth-conversion amount for a given age -- issue #29's ACA subsidy
+  // floor, the mirror image of taxDeferredCapAt above: that one stops MAGI going too HIGH (risking
+  // the 400% cliff), this one keeps it from going too LOW (risking falling under the minimum ACA
+  // marketplace subsidies actually require -- see acaFloorPctFpl's own doc comment). Takes this
+  // year's real grossTaxDeferredWithdrawal (simulateBridge already knows it by the time it calls
+  // this) so the search is against the REAL trajectory, not a guess -- same reasoning
+  // taxDeferredCapAt's own doc comment gives for reading grossTaxDeferredWithdrawal off
+  // result.timeline elsewhere in this file. Returns the GROSS conversion amount that brings MAGI
+  // up to (not past) the floor; simulateBridge itself clamps this to whatever tax-deferred balance
+  // is actually reachable that year and picks the destination account, since only it tracks live
+  // balances. Assumes acaFloorPctFpl is strictly less than acaTargetPctFpl whenever both are set
+  // (validated at the API boundary, app-server.ts) -- converting up to the floor should never by
+  // itself risk crossing the ceiling, so this never needs to look at taxDeferredCapAt's own output
+  // to stay out of its way.
+  const rothConversionAmountAt = (age: number, grossTaxDeferredWithdrawal: number): number => {
+    if (
+      options.acaFloorPctFpl == null ||
+      options.householdSize == null ||
+      options.federalPovertyGuidelines == null ||
+      options.filingStatus == null ||
+      options.federalTaxBrackets == null
+    ) {
+      return 0
+    }
+    if (options.medicareAge != null && age >= options.medicareAge) {
+      return 0
+    }
+    const floorMagi = inflateGuideline(federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines), age) * (options.acaFloorPctFpl / 100)
+    const { pensionIncome, socialSecurityBenefit } = ordinaryIncomeAt(age)
+    const magiWithoutConversion = estimateMagi(
+      { grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit },
+      options.filingStatus,
+      options.federalTaxBrackets,
+    ).magi
+    if (magiWithoutConversion >= floorMagi) return 0
+    let lo = 0
+    let hi = 100_000_000_000 // $1B in cents -- comfortably past any real conversion; binary search converges regardless
+    for (let i = 0; i < 40; i++) {
+      const mid = (lo + hi) / 2
+      const magi = estimateMagi(
+        { grossTaxDeferredWithdrawal, rothConversionAmount: mid, pensionIncome, socialSecurityBenefit },
+        options.filingStatus,
+        options.federalTaxBrackets,
+      ).magi
+      if (magi <= floorMagi) lo = mid
+      else hi = mid
+    }
+    return Math.round(lo)
+  }
+
   // Function to read one scenario's ordinary-income inputs at a given age -- shared by
   // magiFinding's own call below (at the retirement age only), acaCliffCrossings (which needs the
   // same figures at every age of the trajectory to find when, if ever, MAGI crosses the ACA
@@ -430,11 +492,16 @@ export async function checkDashboard(
   // scenario's real withdrawal-phase computation never set a figure for it -- see BridgeYear's own
   // doc comment) reads as $0, same "nothing withdrawn" meaning as an explicit zero would have.
   const magiInputsAt = (age: number, result: BridgeResult) => {
-    const grossTaxDeferredWithdrawal = result.timeline.find((point) => point.age === age)?.grossTaxDeferredWithdrawal ?? 0
+    const point = result.timeline.find((point) => point.age === age)
+    const grossTaxDeferredWithdrawal = point?.grossTaxDeferredWithdrawal ?? 0
+    // Same "read the real trajectory, don't re-derive" reasoning as grossTaxDeferredWithdrawal
+    // above -- the real Roth conversion (if any) simulateBridge's own rothConversionAmountAt
+    // callback actually applied that year (issue #29's ACA subsidy floor).
+    const rothConversionAmount = point?.rothConversionAmount ?? 0
     // options.incomeStreams (pension/SS only, pre-merge) for the RAW figures MAGI needs as their
     // own separate ordinary-income lines.
     const { pensionIncome, socialSecurityBenefit } = ordinaryIncomeAt(age)
-    return { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit }
+    return { grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit }
   }
 
   // Function to set magi/pctFPL directly on each of a scenario's own timeline points (mutating in
@@ -457,8 +524,8 @@ export async function checkDashboard(
       // never reached the allocation -- see BridgeYear's own doc comment) -- magi/pctFPL stay
       // undefined for exactly the same reason: there's no real income to estimate one from.
       if (point.grossTaxDeferredWithdrawal === undefined) continue
-      const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(point.age, result)
-      const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, filingStatus, federalTaxBrackets)
+      const { grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit } = magiInputsAt(point.age, result)
+      const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit }, filingStatus, federalTaxBrackets)
       point.magi = estimate.magi
       if (baseGuideline != null) point.pctFPL = (estimate.magi / inflateGuideline(baseGuideline, point.age)) * 100
     }
@@ -473,7 +540,7 @@ export async function checkDashboard(
   // else here, not shared across them the way monteCarloHistory above is.
   const bridgeResults = options.retirementAges.map((retirementAge) => {
     const currentBridgeAccounts = toBridgeAccounts(accounts, balances, contributionsAnnualByAccount, retirementAge)
-    const result = simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams, taxDeferredCapAt)
+    const result = simulateBridge(currentBridgeAccounts, options.currentAge, retirementAge, options.planToAge, annualSpend, inflationMean, incomeStreams, taxDeferredCapAt, rothConversionAmountAt)
     // Ends on a real point at currentAge itself (today's live balance, not a historical one) --
     // ties the last real-history year to "now" so the chart has something to draw a line between
     // even with only one year of lookback, and (for a retirementAge equal to currentAge) meets
@@ -491,12 +558,12 @@ export async function checkDashboard(
   const bridgeFindings = bridgeResults.flatMap((result) => {
     const findings = [bridgeFinding(result, options.planToAge)]
     if (options.filingStatus != null && options.federalTaxBrackets != null) {
-      const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(result.retirementAge, result)
+      const { grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit } = magiInputsAt(result.retirementAge, result)
       const aca =
         options.householdSize != null && options.federalPovertyGuidelines != null
           ? { targetGuideline: inflateGuideline(federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines), result.retirementAge) }
           : null
-      findings.push(magiFinding(result.retirementAge, pensionIncome, socialSecurityBenefit, grossTaxDeferredWithdrawal, options.filingStatus, options.federalTaxBrackets, aca))
+      findings.push(magiFinding(result.retirementAge, pensionIncome, socialSecurityBenefit, grossTaxDeferredWithdrawal, rothConversionAmount, options.filingStatus, options.federalTaxBrackets, aca))
     }
     return findings
   })
@@ -522,8 +589,8 @@ export async function checkDashboard(
     for (const result of bridgeResults) {
       const lastFundedAge = result.depletionAge != null ? result.depletionAge - 1 : options.planToAge
       for (let age = result.retirementAge; age <= Math.min(options.planToAge, lastFundedAge); age++) {
-        const { grossTaxDeferredWithdrawal, pensionIncome, socialSecurityBenefit } = magiInputsAt(age, result)
-        const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, options.filingStatus, options.federalTaxBrackets)
+        const { grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit } = magiInputsAt(age, result)
+        const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit }, options.filingStatus, options.federalTaxBrackets)
         const pctFPL = (estimate.magi / inflateGuideline(baseGuideline, age)) * 100
         if (pctFPL > 400) {
           acaCliffCrossings.push({ retirementAge: result.retirementAge, crossesAtAge: age, pctFPL: Math.round(pctFPL * 10) / 10 })

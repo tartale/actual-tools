@@ -160,6 +160,15 @@
                 <input type="number" min="1" step="1" id="medicareAge">
                 <div class="derived">Stops the %FPL ceiling above once you reach this age<span class="saved-flag" id="savedMedicareAge">saved</span></div>
               </div>
+              <div class="field">
+                <label for="acaFloorPctFpl">ACA subsidy floor<button type="button" class="help-icon" data-help="ACA marketplace subsidies actually require a MINIMUM MAGI too -- 100% FPL in a state that didn't expand Medicaid, 138% in one that did (below either, you'd be Medicaid- rather than subsidy-eligible). Pick whichever applies to you.&#10;&#10;When set, converts just enough traditional money to Roth each year to keep MAGI at or above this floor, once non-taxable/pension/Social Security alone would otherwise land it under -- a same-owner transfer, not a real withdrawal, so it doesn't change what you actually spend. Stops applying at Medicare age above, same as the ceiling: there's no ACA marketplace coverage left to stay eligible for once Medicare starts. Leave blank to skip this entirely.">?</button></label>
+                <select id="acaFloorPctFpl">
+                  <option value="">Off</option>
+                  <option value="100">100% (didn't expand Medicaid)</option>
+                  <option value="138">138% (expanded Medicaid)</option>
+                </select>
+                <div class="derived">Converts traditional to Roth to avoid falling below this floor<span class="saved-flag" id="savedAcaFloorPctFpl">saved</span></div>
+              </div>
             </div>
           </div>
           </div>

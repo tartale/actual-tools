@@ -629,6 +629,112 @@ describe("GET /api/retirement/check", () => {
     expect(body.acaCliffCrossings.length).toBeGreaterThan(0)
   })
 
+  it("rejects an ACA floor that isn't strictly below the ceiling", async () => {
+    const url = await boot()
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ acaTargetPctFpl: 100 }) })
+    // Equal to the ceiling, not just above it -- also invalid; there'd be no real gap for a
+    // conversion to land in.
+    const equalRes = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ acaFloorPctFpl: 100 }) })
+    expect(equalRes.status).toBe(400)
+    const aboveRes = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ acaFloorPctFpl: 138 }) })
+    expect(aboveRes.status).toBe(400)
+    expect((await readJson<ErrorBody>(aboveRes)).error).toContain("must be less than")
+    // The other direction -- floor already set, then lowering the ceiling underneath it -- is
+    // rejected too, since the check re-validates whichever of the two fields this PATCH touches
+    // against the other's CURRENT value, not just the field being changed in isolation.
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ acaTargetPctFpl: 300, acaFloorPctFpl: 138 }) })
+    const loweredRes = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ acaTargetPctFpl: 100 }) })
+    expect(loweredRes.status).toBe(400)
+  })
+
+  it("rejects an acaFloorPctFpl that isn't 100 or 138", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ acaFloorPctFpl: 150 }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("converts to Roth to keep MAGI at the ACA subsidy floor once non-taxable alone would otherwise leave it at $0", async () => {
+    const url = await boot({
+      accounts: [
+        { id: "cash", name: "Brokerage", offbudget: true, closed: false },
+        { id: "401k", name: "401k", offbudget: true, closed: false },
+        { id: "roth", name: "Roth IRA", offbudget: true, closed: false },
+      ],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      // $300,000 cash comfortably covers $24,000/yr on its own for the whole horizon -- without
+      // the floor, MAGI would stay $0.00 the entire time (same reasoning as the "keeps the MAGI
+      // finding's tax-deferred draw at $0" test above, just with a floor instead of a ceiling).
+      transactionsByAccount: { cash: [{ amount: 300_000_00, transfer_id: null }], "401k": [{ amount: 500_000_00, transfer_id: null }], roth: [{ amount: 0, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1, acaFloorPctFpl: 100 }),
+    })
+    await fetch(`${url}api/retirement/accounts/cash`, { method: "PATCH", body: JSON.stringify({ type: "brokerage", withdrawalOrder: 0 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", withdrawalOrder: 1 }) })
+    await fetch(`${url}api/retirement/accounts/roth`, { method: "PATCH", body: JSON.stringify({ type: "roth-ira", withdrawalOrder: 2 }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    const firstYear = body.bridgeResults[0]?.timeline.find((point) => point.age === 65)
+    // The real withdrawal alone still needs nothing from tax-deferred -- cash alone covers it.
+    expect(firstYear?.grossTaxDeferredWithdrawal).toBe(0)
+    // But a real conversion tops MAGI up to the floor anyway -- checked as %FPL (100), not a raw
+    // dollar figure, since the guideline itself is inflated forward to age 65's own nominal
+    // dollars (inflateGuideline) and a raw-dollar assertion would have to duplicate that same
+    // compounding math to know what to expect.
+    expect(firstYear?.rothConversionAmount).toBeGreaterThan(0)
+    expect(firstYear?.pctFPL).toBeGreaterThan(99)
+    expect(firstYear?.pctFPL).toBeLessThanOrEqual(100.1) // binary search converges within a cent or two, never past it
+    const magiFinding = body.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
+    expect(magiFinding?.detail.some((line) => line.includes("Roth conversion"))).toBe(true)
+  })
+
+  it("never converts to Roth once Medicare age is reached -- there's no ACA marketplace coverage left to protect", async () => {
+    const url = await boot({
+      accounts: [
+        { id: "cash", name: "Brokerage", offbudget: true, closed: false },
+        // A real tax-deferred source has to exist for this test to actually exercise the
+        // medicareAge gate -- otherwise there's nothing to convert FROM regardless of age, and
+        // the test would pass for the wrong reason.
+        { id: "401k", name: "401k", offbudget: true, closed: false },
+        { id: "roth", name: "Roth IRA", offbudget: true, closed: false },
+      ],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: {
+        cash: [{ amount: 300_000_00, transfer_id: null }],
+        "401k": [{ amount: 500_000_00, transfer_id: null }],
+        roth: [{ amount: 0, transfer_id: null }],
+      },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      // retirementAges=65, medicareAge=65 -- the floor never gets a single year to apply.
+      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 70, filingStatus: "single", householdSize: 1, acaFloorPctFpl: 100, medicareAge: 65 }),
+    })
+    await fetch(`${url}api/retirement/accounts/cash`, { method: "PATCH", body: JSON.stringify({ type: "brokerage", withdrawalOrder: 0 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", withdrawalOrder: 1 }) })
+    await fetch(`${url}api/retirement/accounts/roth`, { method: "PATCH", body: JSON.stringify({ type: "roth-ira", withdrawalOrder: 2 }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.bridgeResults[0]?.timeline.every((point) => point.rothConversionAmount === undefined)).toBe(true)
+  })
+
   it("marks the age a scenario's MAGI crosses the ACA subsidy cliff", async () => {
     const url = await boot({
       accounts: [{ id: "ira", name: "Inherited IRA", offbudget: true, closed: false }],
