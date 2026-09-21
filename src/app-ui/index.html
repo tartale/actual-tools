@@ -230,13 +230,18 @@
           <div class="card-body">
             <div class="income-grid">
               <div class="field">
-                <label for="crossoverExpenseAdjustment">Expense Adjustment<button type="button" class="help-icon" data-help="How much to scale your projected expenses by.&#10;&#10;100% plans to spend the same as your projected expenses. Above 100% plans to spend more in retirement; below 100% plans to spend less.">?</button></label>
+                <label for="crossoverExpenseAdjustment">Overall spend scale<button type="button" class="help-icon" data-help="How much to scale your projected expenses by, across the board.&#10;&#10;100% plans to spend the same as your projected expenses. Above 100% plans to spend more in retirement; below 100% plans to spend less.">?</button></label>
                 <div class="input-affix suffix-percent"><input type="number" step="1" id="crossoverExpenseAdjustment" placeholder="100"></div>
               </div>
               <div class="field">
                 <label for="crossoverSpendHistoryMonths">Spend history<button type="button" class="help-icon" data-help="How many trailing months of category spending to average, for the expense categories selected below.&#10;&#10;A longer window smooths out one-off months (a big trip, a large medical bill); a shorter one reacts faster to a real, lasting change in spending.">?</button></label>
                 <div class="input-affix suffix-months"><input type="number" step="1" min="1" id="crossoverSpendHistoryMonths" placeholder="12"></div>
               </div>
+            </div>
+            <div class="field full spend-config-buffer">
+              <label>Planned expense changes<button type="button" class="help-icon" data-help="Known future changes to living expenses -- e.g. a mortgage payoff, a kid finishing college, a planned move. Each one adjusts projected spend by a fixed annual amount over an age range, on top of the overall spend scale above.">?</button><span class="saved-flag" id="savedExpenseAdjustments">saved</span></label>
+              <div id="expenseAdjustmentsList"></div>
+              <button type="button" class="btn secondary" id="addExpenseAdjustmentBtn">Add planned change</button>
             </div>
             <div class="field full spend-config-buffer">
               <label>Expense categories<button type="button" class="help-icon" data-help="Used to estimate your future expenses.&#10;&#10;Select the categories that reflect your living expenses in retirement -- e.g. Food, Utilities, Entertainment, Medical.&#10;&#10;Exclude categories that won't continue in retirement -- e.g. retirement savings contributions.">?</button><span class="saved-flag" id="savedExpenseCategories">saved</span></label>
@@ -437,19 +442,6 @@
                 </div>
               </div>
             </div>
-          </div>
-          </div>
-        </div>
-
-        <div class="card" data-section="expense-adjustments">
-          <div class="card-head">
-            <span class="card-head-title"><button type="button" class="card-fold-toggle" aria-expanded="true">▼</button><h2>Expense adjustments</h2></span>
-            <span class="hint">Known future changes to living expenses<span class="saved-flag" id="savedExpenseAdjustments">saved</span></span>
-          </div>
-          <div class="card-fold">
-          <div class="card-body">
-            <div id="expenseAdjustmentsList"></div>
-            <button type="button" class="btn secondary" id="addExpenseAdjustmentBtn">Add expense adjustment</button>
           </div>
           </div>
         </div>

@@ -3199,8 +3199,8 @@ document.addEventListener("keydown", (e) => {
 // Retirement income default collapsed (set once, rarely revisited); the rest default open.
 // DEFAULT_COLLAPSED_SECTIONS is what a first-ever visit (no cookie yet) applies; after that,
 // saveSectionFolds keeps the cookie authoritative for every reload.
-const RETIREMENT_SECTIONS = ["plan", "spend-configuration", "simulation-settings", "retirement-income", "expense-adjustments", "accounts"]
-const DEFAULT_COLLAPSED_SECTIONS = ["simulation-settings", "retirement-income", "expense-adjustments"]
+const RETIREMENT_SECTIONS = ["plan", "spend-configuration", "simulation-settings", "retirement-income", "accounts"]
+const DEFAULT_COLLAPSED_SECTIONS = ["simulation-settings", "retirement-income"]
 
 // Function to fold or unfold one section -- shared by an individual card's own toggle and
 // Expand/Collapse all, so both always leave the caret, aria state, and body in step. Folding a
