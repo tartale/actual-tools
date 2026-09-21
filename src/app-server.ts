@@ -440,6 +440,7 @@ function requirePlan(fireConfig: FireConfig): {
   householdSize: number | null
   acaTargetPctFpl: number | null
   medicareAge: number | null
+  acaFloorPctFpl: 100 | 138 | null
 } {
   if (fireConfig.dashboard.birthDate === null) {
     throw new Error("Missing birth date -- set it on the Plan section first.")
@@ -464,6 +465,7 @@ function requirePlan(fireConfig: FireConfig): {
     householdSize: fireConfig.dashboard.householdSize,
     acaTargetPctFpl: fireConfig.dashboard.acaTargetPctFpl,
     medicareAge: fireConfig.dashboard.medicareAge,
+    acaFloorPctFpl: fireConfig.dashboard.acaFloorPctFpl,
   }
 }
 
@@ -814,6 +816,21 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             throw new Error("medicareAge must be a positive number or null.")
           }
           dashboard.medicareAge = body.medicareAge
+        }
+        if ("acaFloorPctFpl" in body) {
+          if (body.acaFloorPctFpl !== null && body.acaFloorPctFpl !== 100 && body.acaFloorPctFpl !== 138) {
+            throw new Error("acaFloorPctFpl must be 100, 138, or null.")
+          }
+          dashboard.acaFloorPctFpl = body.acaFloorPctFpl
+        }
+        // Checked here (a write-boundary cross-field validation), not in fire-accounts.ts's own
+        // parse/merge validation, which only ever looks at one field at a time -- only fires when
+        // this PATCH actually touches one of the two fields, so a pre-existing config saved before
+        // this check existed can never block an unrelated field update because of it.
+        // rothConversionAmountAt (fire-generate.ts) relies on this invariant already holding by the
+        // time it runs: converting up to the floor should never risk crossing the ceiling.
+        if (("acaTargetPctFpl" in body || "acaFloorPctFpl" in body) && dashboard.acaFloorPctFpl != null && dashboard.acaTargetPctFpl != null && dashboard.acaFloorPctFpl >= dashboard.acaTargetPctFpl) {
+          throw new Error(`acaFloorPctFpl (${dashboard.acaFloorPctFpl}) must be less than acaTargetPctFpl (${dashboard.acaTargetPctFpl}) when both are set.`)
         }
         if ("pensionStartAge" in body) {
           if (body.pensionStartAge !== null && (typeof body.pensionStartAge !== "number" || body.pensionStartAge <= 0)) {

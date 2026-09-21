@@ -347,6 +347,19 @@ export interface BridgeYear {
   // isTaxDeferred inverted -- set (or left undefined) at exactly the same points, for exactly the
   // same reasons.
   grossNonTaxDeferredWithdrawal?: number
+  // Gross dollars moved from a tax-deferred account into a Roth one THIS year (a same-owner
+  // internal transfer, not a withdrawal -- the money never leaves the portfolio, and moves
+  // dollar-for-dollar with no withdrawalTaxRate applied, the same "doesn't gross up for the tax
+  // itself" simplification magiFinding's own detail text already states for an ordinary
+  // withdrawal: the real tax owed on converting is a separate real-world cash cost this model
+  // doesn't track leaving from anywhere). Counts as ordinary income for MAGI purposes exactly like
+  // grossTaxDeferredWithdrawal does (see estimateMagi's own rothConversionAmount parameter) without
+  // itself funding any of the year's real spending -- see simulateBridge's own
+  // rothConversionAmountAt parameter for why this exists (issue #29: keeping MAGI at or above the
+  // ACA subsidy floor once non-taxable/pension/SS income alone would otherwise fall under it).
+  // Undefined under the same conditions as grossTaxDeferredWithdrawal, plus whenever no conversion
+  // was needed or possible that year (the common case).
+  rothConversionAmount?: number
   // Every account's own balance at this point, keyed by BridgeAccount.id -- set alongside
   // accessibleBalance/lockedBalance at both the accumulation and withdrawal-phase push sites (the
   // same `balances` array simulateBridge already tracks, just also exposed per-account instead of
@@ -425,6 +438,16 @@ export function simulateBridge(
   // fire-generate.ts's one caller) -- undefined (the default), or the callback returning null for
   // a given age, both mean that year passes null through, today's behavior unchanged.
   taxDeferredWithdrawalCapAt?: (age: number) => number | null,
+  // Called once per withdrawal-phase year, after that year's real withdrawal is known, to get the
+  // desired GROSS Roth-conversion amount for the year (issue #29's ACA subsidy floor -- keep MAGI
+  // at or above a target once non-taxable/pension/SS alone would otherwise land it under). Takes
+  // the real grossTaxDeferredWithdrawal so the caller (fire-generate.ts) can compute the exact
+  // conversion still needed to reach the floor without simulateBridge itself knowing anything
+  // about tax brackets or FPL guidelines -- same separation of concerns as
+  // taxDeferredWithdrawalCapAt above. simulateBridge clamps the returned amount to whatever
+  // tax-deferred balance is actually reachable that year; undefined (the default), or the callback
+  // returning 0, both mean no conversion happens.
+  rothConversionAmountAt?: (age: number, grossTaxDeferredWithdrawal: number) => number,
 ): BridgeResult {
   const balances = accounts.map((account) => account.balance)
   // Every account's own current balance, keyed by id -- snapshotted onto each BridgeYear alongside
@@ -551,6 +574,39 @@ export function simulateBridge(
       reachable.forEach((index, position) => {
         balances[index] = (balances[index] as number) - (allocation.grossByIndex[position] as number)
       })
+
+      // Roth conversion (issue #29's ACA subsidy floor) -- a same-owner transfer, not a
+      // withdrawal, so it's applied AFTER the real withdrawal above (using whatever's left in each
+      // tax-deferred account once that's settled) but still BEFORE this year's growth below, same
+      // timing as the withdrawal itself. Source accounts are restricted to reachable ones, same as
+      // an ordinary withdrawal (see this function's own isAccessible) -- real conversions from a
+      // still-locked account are technically penalty-free too, but treating "locked" uniformly
+      // here avoids a whole separate no-penalty-on-conversion carve-out for a rare case. The
+      // destination is NOT restricted to reachable accounts: receiving a conversion isn't a
+      // withdrawal, so a Roth account that's still locked for withdrawal purposes can still
+      // receive one.
+      if (thisYearBridge != null && rothConversionAmountAt != null) {
+        const desiredConversion = rothConversionAmountAt(age, thisYearBridge.grossTaxDeferredWithdrawal ?? 0)
+        if (desiredConversion > 0) {
+          const taxDeferredSourceIdx = reachable.filter((index) => (accounts[index] as BridgeAccount).isTaxDeferred)
+          const rothDestIdx = accounts.map((_, index) => index).filter((index) => (accounts[index] as BridgeAccount).taxTreatment === "tax-free")
+          const availableToConvert = taxDeferredSourceIdx.reduce((sum, index) => sum + (balances[index] as number), 0)
+          const clampedConversion = Math.min(desiredConversion, availableToConvert)
+          if (clampedConversion > 0 && rothDestIdx.length > 0) {
+            const sourceSubset = taxDeferredSourceIdx.map((index) => ({ balance: balances[index] as number, withdrawalOrder: (accounts[index] as BridgeAccount).withdrawalOrder }))
+            const { grossByIndex: convertedByPosition } = coreAllocateGrossBudget(sourceSubset, clampedConversion)
+            taxDeferredSourceIdx.forEach((index, position) => {
+              balances[index] = (balances[index] as number) - (convertedByPosition[position] as number)
+            })
+            // One destination pot, not a proportional split across every Roth account -- the
+            // lowest-withdrawalOrder one, same "sequential, lowest order first" tiebreak this
+            // file already uses for a withdrawal's own order-based accounts.
+            const destIndex = [...rothDestIdx].sort((a, b) => ((accounts[a] as BridgeAccount).withdrawalOrder ?? Infinity) - ((accounts[b] as BridgeAccount).withdrawalOrder ?? Infinity))[0] as number
+            balances[destIndex] = (balances[destIndex] as number) + clampedConversion
+            thisYearBridge.rothConversionAmount = clampedConversion
+          }
+        }
+      }
     }
 
     accounts.forEach((account, index) => {
@@ -640,6 +696,10 @@ export function magiFinding(
   pensionIncome: number,
   socialSecurityBenefit: number,
   grossTaxDeferredWithdrawal: number,
+  // The real Roth conversion simulateBridge's own trajectory applied this year (see BridgeYear's
+  // own doc comment) -- issue #29's MAGI floor. Zero on any plan that never set acaFloorPctFpl, so
+  // existing callers/tests need no changes.
+  rothConversionAmount: number,
   filingStatus: FilingStatus,
   table: FederalTaxBrackets,
   // A single dollar figure, not the raw table/householdSize -- the caller (fire-generate.ts) is the
@@ -649,7 +709,7 @@ export function magiFinding(
   // a given age.
   aca: { targetGuideline: number } | null,
 ): Finding {
-  const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount: 0, pensionIncome, socialSecurityBenefit }, filingStatus, table)
+  const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit }, filingStatus, table)
   const marginalPct = Math.round(estimate.marginalRate * 1000) / 10
   const effectivePct = Math.round(estimate.effectiveRate * 1000) / 10
   const fplNote = aca ? ` (${Math.round((estimate.magi / aca.targetGuideline) * 1000) / 10}% FPL)` : ""
@@ -658,6 +718,8 @@ export function magiFinding(
     title: `age ${retirementAge} -- est. MAGI ${formatUsd(estimate.magi)}${fplNote} puts you in the ${marginalPct}% federal bracket (${effectivePct}% effective).`,
     detail: [
       `${formatUsd(grossTaxDeferredWithdrawal)} tax-deferred, ${formatUsd(pensionIncome)} pension, ${formatUsd(estimate.taxableSocialSecurity)} taxable Social Security -- taxable income ${formatUsd(estimate.taxableIncome)} after the standard deduction.`,
+      // Only shown when it actually happened -- most plans never set the ACA floor this exists for.
+      ...(rothConversionAmount > 0 ? [`Includes a ${formatUsd(rothConversionAmount)} Roth conversion to keep MAGI at the ACA subsidy floor.`] : []),
       "A rough estimate, not a line from Form 1040: excludes still-locked accounts, doesn't gross up for the tax itself.",
     ],
   }

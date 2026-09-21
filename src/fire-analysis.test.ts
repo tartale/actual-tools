@@ -170,6 +170,61 @@ describe("simulateBridge", () => {
     expect(byAge.get(52)?.withdrawalsByAccountId).toBeUndefined()
   })
 
+  // annualSpend: 0 in every test below isolates the Roth-conversion mechanism (issue #29's ACA
+  // subsidy floor) from the ordinary withdrawal tiering already covered above -- with nothing to
+  // withdraw, grossTaxDeferredWithdrawal stays 0 and rothConversionAmountAt's own return value is
+  // the only thing moving any balance.
+  it("converts from a tax-deferred account to a Roth one when rothConversionAmountAt asks for it", () => {
+    const accounts = [
+      bridgeAccount({ id: "trad", balance: 100000, isTaxDeferred: true, taxTreatment: "tax-deferred" }),
+      bridgeAccount({ id: "roth", balance: 5000, isTaxDeferred: false, taxTreatment: "tax-free" }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 52, 0, 0, [], undefined, () => 20000)
+    expect(result.timeline[0]?.rothConversionAmount).toBe(20000)
+    // Start-of-year snapshot, same timing as accessibleBalance/lockedBalance -- before the
+    // conversion actually moves anything.
+    expect(result.timeline[0]?.balancesByAccountId).toEqual({ trad: 100000, roth: 5000 })
+    // trad: 100000 - 20000 converted; roth: 5000 + 20000 received.
+    expect(result.timeline[1]?.balancesByAccountId).toEqual({ trad: 80000, roth: 25000 })
+  })
+
+  it("clamps the conversion to whatever tax-deferred balance is actually reachable", () => {
+    const accounts = [
+      bridgeAccount({ id: "trad", balance: 100, isTaxDeferred: true, taxTreatment: "tax-deferred" }),
+      bridgeAccount({ id: "roth", balance: 0, isTaxDeferred: false, taxTreatment: "tax-free" }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 51, 0, 0, [], undefined, () => 1000)
+    expect(result.timeline[0]?.rothConversionAmount).toBe(100)
+  })
+
+  it("does nothing when there's no Roth account anywhere in the portfolio to convert into", () => {
+    const accounts = [bridgeAccount({ id: "trad", balance: 100000, isTaxDeferred: true, taxTreatment: "tax-deferred" })]
+    const result = simulateBridge(accounts, 50, 50, 51, 0, 0, [], undefined, () => 20000)
+    expect(result.timeline[0]?.rothConversionAmount).toBeUndefined()
+  })
+
+  it("never converts from a still-locked tax-deferred account, the same as an ordinary withdrawal wouldn't", () => {
+    const accounts = [
+      bridgeAccount({ id: "trad", balance: 100000, isTaxDeferred: true, taxTreatment: "tax-deferred", accessAge: 90 }),
+      // A real (nonzero) reachable balance -- otherwise the reachable pool is $0 and the year
+      // depletes immediately (see simulateBridge's own reachableTotal check), before ever reaching
+      // the conversion logic this test means to exercise at all.
+      bridgeAccount({ id: "roth", balance: 50, isTaxDeferred: false, taxTreatment: "tax-free" }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 51, 0, 0, [], undefined, () => 20000)
+    expect(result.timeline[0]?.rothConversionAmount).toBeUndefined()
+  })
+
+  it("still converts INTO a Roth account that's itself locked for withdrawal -- receiving isn't a withdrawal", () => {
+    const accounts = [
+      bridgeAccount({ id: "trad", balance: 100000, isTaxDeferred: true, taxTreatment: "tax-deferred" }),
+      bridgeAccount({ id: "roth", balance: 0, isTaxDeferred: false, taxTreatment: "tax-free", accessAge: 90 }),
+    ]
+    const result = simulateBridge(accounts, 50, 50, 52, 0, 0, [], undefined, () => 20000)
+    expect(result.timeline[0]?.rothConversionAmount).toBe(20000)
+    expect(result.timeline[1]?.balancesByAccountId?.roth).toBe(20000)
+  })
+
   it("exposes a slim per-account projection on the result, in the same order as the accounts passed in", () => {
     const accounts = [
       bridgeAccount({ id: "cash", name: "Brokerage", balance: 100, isTaxDeferred: false, taxTreatment: "taxable", accessAge: null }),
@@ -418,7 +473,7 @@ const POVERTY_TABLE: FederalPovertyGuidelines = {
 
 describe("magiFinding", () => {
   it("states MAGI, marginal/effective rate, and the withdrawal/pension/SS breakdown", () => {
-    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE, null)
+    const finding = magiFinding(59, 0, 20000_00, 60000_00, 0, "single", MAGI_TABLE, null)
     expect(finding.level).toBe("info")
     // MAGI $77,000, marginal 22% (see estimateMagi's own equivalent test) -- 811000/7700000 = 10.5%.
     expect(finding.title).toBe("age 59 -- est. MAGI $77,000.00 puts you in the 22% federal bracket (10.5% effective).")
@@ -429,10 +484,16 @@ describe("magiFinding", () => {
 
   it("adds %FPL to the title when aca context is given", () => {
     // MAGI $77,000 / $21,150 (household of 2: $15,650 + $5,500) = 364.07% -> 364.1%.
-    const finding = magiFinding(59, 0, 20000_00, 60000_00, "single", MAGI_TABLE, { targetGuideline: federalPovertyGuideline(2, POVERTY_TABLE) })
+    const finding = magiFinding(59, 0, 20000_00, 60000_00, 0, "single", MAGI_TABLE, { targetGuideline: federalPovertyGuideline(2, POVERTY_TABLE) })
     expect(finding.title).toBe("age 59 -- est. MAGI $77,000.00 (364.1% FPL) puts you in the 22% federal bracket (10.5% effective).")
     // The detail lines are unaffected by aca -- the cliff itself is a chart marker, not text here.
     expect(finding.detail).toHaveLength(2)
+  })
+
+  it("adds a detail line when a Roth conversion contributed to MAGI", () => {
+    const finding = magiFinding(59, 0, 0, 40000_00, 20000_00, "single", MAGI_TABLE, null)
+    expect(finding.detail).toContain("Includes a $20,000.00 Roth conversion to keep MAGI at the ACA subsidy floor.")
+    expect(finding.detail).toHaveLength(3)
   })
 })
 
