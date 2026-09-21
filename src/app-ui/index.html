@@ -21,6 +21,12 @@
         <div class="section-item active" data-section="budget">Budget</div>
         <div class="section-item" data-section="retirement">Retirement</div>
       </nav>
+      <!-- File-import mode's own status chip (issue #35) -- hidden entirely in Actual-sync mode
+           (see refreshDataSourceChip in app.js). Sits at the topbar's right edge, grouped with the
+           two icon buttons via #privacyToggle's own margin-left:auto. Never interrupts the page
+           (no modal, no blocking) -- just an inline signal that the remembered file did or didn't
+           load on the last attempt. -->
+      <div class="chip info" id="dataSourceChip" hidden></div>
       <!-- Global, not tied to either page -- both blur dollar figures via moneySpan. -->
       <button type="button" class="icon-btn" id="privacyToggle" title="Toggle privacy mode" aria-label="Toggle privacy mode" aria-pressed="false">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -42,28 +48,55 @@
     <main>
       <div class="top-error" id="topError" hidden></div>
 
-      <!-- Blocks the whole app until Actual credentials are on file -- checked once at load (see
-           checkSession in app.js) against /api/session, which never echoes a saved api key back,
-           so this modal has no "already filled in" state to restore, just empty fields every time
-           it's shown. Deliberately has no close (x)/backdrop-click/Escape dismissal, unlike
-           #chartZoomBackdrop below -- there's nothing sensible to fall back to without credentials,
-           so it isn't a modal you cancel out of, only one you complete. -->
+      <!-- Blocks the whole app until a data source is on file -- checked once at load (see
+           checkSession in app.js) against /api/session and /api/data-source, neither of which
+           echoes secrets back, so this modal has no "already filled in" state to restore, just
+           empty fields every time it's shown. Deliberately has no close (x)/backdrop-click/Escape
+           dismissal, unlike #chartZoomBackdrop below -- there's nothing sensible to fall back to
+           without a data source, so it isn't a modal you cancel out of, only one you complete. -->
       <div class="modal-backdrop" id="loginBackdrop" hidden>
         <div class="modal modal-login" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
-          <h2 id="loginTitle">Log in to Actual</h2>
-          <p>Your <a href="https://github.com/jhonderson/actual-http-api" target="_blank" rel="noopener">actual-http-api</a> server's own URL, plus your budget's Sync ID (found under Settings &rarr; Show advanced settings in Actual itself) and the API key you set for that server. Stored locally by this app, not sent anywhere else.</p>
+          <h2 id="loginTitle">Connect your data</h2>
+          <!-- Mutually exclusive per issue #22/#35 -- syncing with Actual and importing a file are
+               two different AccountDataSource implementations on the server (see app-server.ts's
+               currentAccountDataSource), never both at once. Toggling shows/hides the matching
+               field group below (see the dataSourceMode radios' change handler in app.js); the
+               submit button's own label follows suit so it never reads "Log in" while the file
+               fields are the ones actually visible. -->
+          <div class="field data-source-mode" id="dataSourceModeField">
+            <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeActual" value="actual" checked> Sync with Actual</label>
+            <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeFile" value="file"> Import a file</label>
+          </div>
           <form id="loginForm">
-            <div class="field">
-              <label for="loginBaseUrl">REST API server URL</label>
-              <input type="text" id="loginBaseUrl" placeholder="http://localhost:5007/v1" autocomplete="url" required>
+            <div id="actualFields">
+              <p>Your <a href="https://github.com/jhonderson/actual-http-api" target="_blank" rel="noopener">actual-http-api</a> server's own URL, plus your budget's Sync ID (found under Settings &rarr; Show advanced settings in Actual itself) and the API key you set for that server. Stored locally by this app, not sent anywhere else.</p>
+              <div class="field">
+                <label for="loginBaseUrl">REST API server URL</label>
+                <input type="text" id="loginBaseUrl" placeholder="http://localhost:5007/v1" autocomplete="url">
+              </div>
+              <div class="field">
+                <label for="loginBudgetId">Budget ID (Sync ID)</label>
+                <input type="text" id="loginBudgetId" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="loginApiKey">API key</label>
+                <input type="password" id="loginApiKey" autocomplete="off">
+              </div>
             </div>
-            <div class="field">
-              <label for="loginBudgetId">Budget ID (Sync ID)</label>
-              <input type="text" id="loginBudgetId" autocomplete="off" required>
-            </div>
-            <div class="field">
-              <label for="loginApiKey">API key</label>
-              <input type="password" id="loginApiKey" autocomplete="off" required>
+            <!-- File mode only covers the Retirement page's own account-balance needs (name,balance
+                 per row) -- see fileAccountDataSource in file-account-data-source.ts -- so the
+                 Budget tab is disabled entirely while this mode is active (see the dataSourceMode
+                 API's own mode field and applyDataSourceMode in app.js), not just left broken. -->
+            <div id="fileFields" hidden>
+              <p>A CSV or TSV file with two columns, <code>name,balance</code> -- one row per account. This app re-reads the file from disk on every Refresh, so the path below must be reachable by wherever <em>this app's own server</em> is running, not just your browser -- the file picker only fills in a filename to get you started; a browser can't hand a file's real on-disk path to a web page, so double-check the path once it's filled in.</p>
+              <div class="field">
+                <label for="importFilePath">File path (on the server)</label>
+                <input type="text" id="importFilePath" placeholder="/home/user/accounts.csv" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="importFilePicker">Or pick a file to prefill the name above</label>
+                <input type="file" id="importFilePicker" accept=".csv,.tsv,text/csv,text/tab-separated-values">
+              </div>
             </div>
             <div class="derived warn-text" id="loginError" hidden></div>
             <button type="submit" class="btn" id="loginSubmitBtn">Log in</button>

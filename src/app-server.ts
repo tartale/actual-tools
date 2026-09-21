@@ -10,6 +10,9 @@ import type { Action, ActualConfig } from "./actual-helpers.ts"
 import { actualAccountDataSource } from "./account-data-source.ts"
 import type { AccountDataSource } from "./account-data-source.ts"
 import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
+import { fileAccountDataSource } from "./file-account-data-source.ts"
+import { clearFileDataSourceSession, loadFileDataSourceSession, writeFileDataSourceSession } from "./data-source-session.ts"
+import type { FileDataSourceSession } from "./data-source-session.ts"
 import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import {
   ACCOUNT_TYPES,
@@ -74,6 +77,10 @@ export interface AppServerOptions {
   // (see /api/session below) -- replaces a required actualConfig option; the server now starts
   // fine with nothing logged in yet, same as a missing config.json is fine.
   sessionPath: string
+  // Where to load/persist which file (if any) is being imported instead of syncing with Actual --
+  // see /api/data-source below. Missing is fine, same as sessionPath -- the app just starts in
+  // Actual-sync mode.
+  dataSourceSessionPath: string
   configPath: string
   irsLimitsPath: string
   federalTaxBracketsPath: string
@@ -214,7 +221,7 @@ interface StateResponse {
 // return after persisting a change -- so the client always renders from the same shape and never
 // has to separately recompute what a "max" contribution resolves to or which fields a type implies.
 async function buildState(
-  actualConfig: ActualConfig,
+  dataSource: AccountDataSource,
   configPath: string,
   irsLimitsPath: string,
   federalTaxBracketsPath: string,
@@ -233,7 +240,6 @@ async function buildState(
   // depend on which scenario is asking.
   const latestRetirementAge = fireConfig.dashboard.retirementAges.length > 0 ? Math.max(...fireConfig.dashboard.retirementAges) : null
 
-  const dataSource = actualAccountDataSource(actualConfig)
   const rawAccounts = await dataSource.fetchAccounts()
   const classified = classifyAccounts(rawAccounts, fireConfig, birthDate, irsLimits)
   const balanceById = await getBalances(dataSource, rawAccounts, balanceMode)
@@ -691,7 +697,7 @@ function applyAccountOrder(fireConfig: FireConfig, configPath: string, orderedId
 // Function to start the local companion-app server: serves the static UI, and everything under
 // /api/retirement/ that the Retirement section needs. Returns immediately once listening.
 export async function startAppServer(options: AppServerOptions): Promise<RunningServer> {
-  const { sessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir } = options
+  const { sessionPath, dataSourceSessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir } = options
 
   // Mutable, unlike every other *Path option above: login/logout (see /api/session below) change
   // this at runtime, so route handlers below always read the CURRENT value via requireActualConfig
@@ -706,6 +712,36 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       throw new Error("Not logged in to Actual yet.")
     }
     return actualConfig
+  }
+
+  // Mutable for the same reason actualConfig is -- see /api/data-source below. Independent of
+  // actualConfig (both can be on file at once): switching from file mode back to Actual mode
+  // shouldn't force re-entering credentials that are still sitting there valid, and vice versa.
+  let fileDataSourceSession: FileDataSourceSession | null = loadFileDataSourceSession(dataSourceSessionPath)
+
+  // Function to get whichever AccountDataSource is actually active right now -- file mode (when
+  // set) takes priority over Actual, matching the login screen's own mutually-exclusive radio
+  // choice (see issue #35). Every Retirement route that used to construct
+  // currentAccountDataSource() directly now goes through this instead, so
+  // switching modes doesn't require touching each one individually. The returned fetchAccounts is
+  // wrapped to persist lastLoadedAt on the file-mode session after every REAL successful load
+  // (Refresh, a normal page load, not just the initial connect) -- "the last successful load's own
+  // timestamp" per issue #35's acceptance criteria is a running fact, not a one-time one.
+  function currentAccountDataSource(): AccountDataSource {
+    if (fileDataSourceSession === null) {
+      return actualAccountDataSource(requireActualConfig())
+    }
+    const session = fileDataSourceSession
+    const source = fileAccountDataSource(session.filePath)
+    return {
+      ...source,
+      async fetchAccounts() {
+        const accounts = await source.fetchAccounts()
+        fileDataSourceSession = { filePath: session.filePath, lastLoadedAt: new Date().toISOString() }
+        writeFileDataSourceSession(dataSourceSessionPath, fileDataSourceSession)
+        return accounts
+      },
+    }
   }
 
   // A fresh id per process start -- the page polls this (see app.js's hot-reload polling) and
@@ -767,8 +803,54 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         return
       }
 
+      // The file-import counterpart to /api/session above -- issue #35. GET is a live health
+      // probe, not just an echo of the persisted path: it actually attempts fetchAccounts() every
+      // time (a file read + parse, cheap) so the client can show a warn chip the moment the file
+      // goes missing or stops parsing, without waiting for a real Retirement check to fail first.
+      // A failed probe here does NOT clear the session or throw to the client -- "doesn't
+      // interrupt the flow" per the issue's own acceptance criteria; it just reports available:
+      // false alongside the reason, and the LAST known-good lastLoadedAt stays exactly where it
+      // was (this probe only advances it on success, via the same currentAccountDataSource wrapper
+      // every other route already goes through).
+      if (req.method === "GET" && path === "/api/data-source") {
+        if (fileDataSourceSession === null) {
+          sendJson(res, 200, { mode: "actual" })
+          return
+        }
+        try {
+          await currentAccountDataSource().fetchAccounts()
+          sendJson(res, 200, { mode: "file", filePath: fileDataSourceSession.filePath, lastLoadedAt: fileDataSourceSession.lastLoadedAt, available: true, error: null })
+        } catch (error) {
+          sendJson(res, 200, { mode: "file", filePath: fileDataSourceSession.filePath, lastLoadedAt: fileDataSourceSession.lastLoadedAt, available: false, error: formatError(error) })
+        }
+        return
+      }
+      if (req.method === "POST" && path === "/api/data-source") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const filePath = typeof body.filePath === "string" ? body.filePath.trim() : ""
+        if (!filePath) {
+          throw new Error("filePath is required.")
+        }
+        // Proves the file actually parses (same "prove it works before persisting anything"
+        // pattern POST /api/session already uses for Actual credentials) before switching modes --
+        // a typo'd path or a malformed file fails here, with a real error message, not on the
+        // first page load after "connecting".
+        await fileAccountDataSource(filePath).fetchAccounts()
+        const session: FileDataSourceSession = { filePath, lastLoadedAt: new Date().toISOString() }
+        writeFileDataSourceSession(dataSourceSessionPath, session)
+        fileDataSourceSession = session
+        sendJson(res, 200, { mode: "file", filePath, lastLoadedAt: session.lastLoadedAt, available: true, error: null })
+        return
+      }
+      if (req.method === "DELETE" && path === "/api/data-source") {
+        clearFileDataSourceSession(dataSourceSessionPath)
+        fileDataSourceSession = null
+        sendJson(res, 200, { mode: "actual" })
+        return
+      }
+
       if (req.method === "GET" && path === "/api/retirement/state") {
-        sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "fresh"))
+        sendJson(res, 200, await buildState(currentAccountDataSource(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "fresh"))
         return
       }
 
@@ -974,7 +1056,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           dashboard.monteCarloTaxBands = bands as MonteCarloTaxBandMeta[] | null
         }
         writeFireConfig(configPath, { ...fireConfig, dashboard })
-        sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
+        sendJson(res, 200, await buildState(currentAccountDataSource(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
@@ -985,9 +1067,9 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           return
         }
         const { config: fireConfig } = loadFireConfig(configPath)
-        const rawAccounts = await actualAccountDataSource(requireActualConfig()).fetchAccounts()
+        const rawAccounts = await currentAccountDataSource().fetchAccounts()
         applyAccountOrder(fireConfig, configPath, body.orderedIds as string[], rawAccounts)
-        sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
+        sendJson(res, 200, await buildState(currentAccountDataSource(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
@@ -998,7 +1080,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const accountId = decodeURIComponent(accountMatch[1] as string)
         const body = (await readJsonBody(req)) as Record<string, unknown>
         const { config: fireConfig } = loadFireConfig(configPath)
-        const rawAccounts = await actualAccountDataSource(requireActualConfig()).fetchAccounts()
+        const rawAccounts = await currentAccountDataSource().fetchAccounts()
         const account = rawAccounts.find((candidate) => candidate.id === accountId)
         if (!account) {
           sendJson(res, 404, { error: `No open account with id ${accountId}.` })
@@ -1013,14 +1095,14 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         if (prunedAccounts.length !== reloaded.accounts.length) {
           writeFireConfig(configPath, { ...reloaded, accounts: prunedAccounts })
         }
-        sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
+        sendJson(res, 200, await buildState(currentAccountDataSource(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
       }
 
       if (req.method === "GET" && path === "/api/retirement/check") {
         const { config: fireConfig } = loadFireConfig(configPath)
         const plan = requirePlan(fireConfig)
-        const dataSource = actualAccountDataSource(requireActualConfig())
+        const dataSource = currentAccountDataSource()
         const rawAccounts = await dataSource.fetchAccounts()
         const irsLimits = loadIrsLimits(irsLimitsPath)
         const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)

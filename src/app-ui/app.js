@@ -673,6 +673,10 @@ async function refreshAll() {
     await runCheck()
   } finally {
     btn.disabled = false
+    // "Refresh reloads the same remembered file when in file mode" (issue #35) already falls out
+    // of runCheck() re-hitting /api/retirement/check, which goes through currentAccountDataSource
+    // -- this just picks up the resulting lastLoadedAt/availability for the topbar chip.
+    refreshDataSourceChip()
   }
 }
 
@@ -3127,6 +3131,13 @@ document.getElementById("collapseAllBtn").addEventListener("click", () => {
 // previously-chosen section behave identically (including lazily loading Budget's own data either
 // way, not just on a real click).
 function activateSection(name) {
+  // Budget is disabled entirely in file-import mode (issue #35) -- fall back to Retirement rather
+  // than land on a section whose data source can't answer its own richer category/transaction
+  // needs (see the "companion app north star" comment in app-server.ts: file mode only ever
+  // implements Retirement's narrower AccountDataSource surface).
+  if (name === "budget" && document.querySelector('.section-item[data-section="budget"]').classList.contains("disabled")) {
+    name = "retirement"
+  }
   document.querySelectorAll(".section-item[data-section]").forEach((i) => i.classList.toggle("active", i.dataset.section === name))
   document.querySelectorAll(".page").forEach((p) => p.classList.toggle("active", p.id === "page-" + name))
   if (name === "budget") {
@@ -3150,6 +3161,7 @@ let retirementChecked = false
 
 document.querySelectorAll(".section-item[data-section]").forEach((item) => {
   item.addEventListener("click", () => {
+    if (item.classList.contains("disabled")) return
     activateSection(item.dataset.section)
     try {
       setCookie("activeSection", item.dataset.section)
@@ -4096,24 +4108,78 @@ if (retirementToolbarEl) {
 
 // --- Login/logout ---
 //
-// Both the Retirement and Budget pages need Actual credentials before their own first fetch, so
-// this gate runs once at startup, ahead of either page's own bootstrap, rather than each page
-// checking for itself. /api/session never echoes a saved api key back (see app-server.ts), so the
-// login form always starts blank -- there's no "already filled in" state for it to restore.
+// Both the Retirement and Budget pages need a data source connected before their own first fetch,
+// so this gate runs once at startup, ahead of either page's own bootstrap, rather than each page
+// checking for itself. Two mutually exclusive data sources (issue #22/#35): syncing live with
+// Actual (the original behavior, via /api/session), or importing a CSV/TSV file's name,balance
+// rows instead (via /api/data-source, see file-account-data-source.ts) -- picked with the
+// dataSourceMode radios in #loginBackdrop. Neither /api/session nor /api/data-source's GET ever
+// echoes the Actual API key back, so the login form always starts blank -- there's no "already
+// filled in" state for it to restore (the file path is the one exception; see
+// prefillFileFieldsFromSession below).
+let ACTIVE_DATA_SOURCE_MODE = "actual"
+
+// Function to reflect which data source is active into the parts of the page that care: the
+// Budget tab (disabled entirely in file mode -- it only ever implements Retirement's narrower
+// AccountDataSource needs, see the "companion app north star" comment in app-server.ts) and the
+// logout/disconnect icon's own title (so it always describes what it's actually about to do).
+function applyDataSourceMode(mode) {
+  ACTIVE_DATA_SOURCE_MODE = mode
+  const budgetTab = document.querySelector('.section-item[data-section="budget"]')
+  budgetTab.classList.toggle("disabled", mode === "file")
+  budgetTab.title = mode === "file" ? "Not available while importing from a file" : ""
+  const logoutBtn = document.getElementById("logoutBtn")
+  const label = mode === "file" ? "Disconnect file" : "Log out of Actual"
+  logoutBtn.title = label
+  logoutBtn.setAttribute("aria-label", label)
+}
+
+// Function to poll the file-import health probe and update the topbar's own warn chip -- issue
+// #35's "warn chip if the remembered file becomes unavailable" and "last successful load's
+// timestamp is preserved and shown" acceptance criteria. A no-op, chip left hidden, in Actual mode.
+// Deliberately never throws/interrupts the page -- see GET /api/data-source's own doc comment in
+// app-server.ts, this just mirrors whatever it reports.
+async function refreshDataSourceChip() {
+  const chip = document.getElementById("dataSourceChip")
+  if (ACTIVE_DATA_SOURCE_MODE !== "file") {
+    chip.hidden = true
+    return
+  }
+  try {
+    const status = await api("/api/data-source")
+    if (status.mode !== "file") {
+      chip.hidden = true
+      return
+    }
+    const loadedAt = status.lastLoadedAt ? new Date(status.lastLoadedAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "never"
+    chip.hidden = false
+    chip.classList.toggle("warn", !status.available)
+    chip.classList.toggle("info", status.available)
+    chip.title = status.available ? `Importing from ${status.filePath}` : `File unavailable: ${status.error}`
+    chip.textContent = status.available ? `File · loaded ${loadedAt}` : `File unavailable · last loaded ${loadedAt}`
+  } catch {
+    // The probe request itself failed (server unreachable, etc.) -- leave the chip as it was
+    // rather than flashing a misleading state; the next refresh (or the retry-banner path
+    // elsewhere on the page) will pick it back up.
+  }
+}
+
 // Restores whichever section was last chosen (per-browser cookie, same restart-survives-a-port-
 // change rationale as every other small preference here -- see getCookie/setCookie's own doc
-// comment), falling back to Budget. Applying it rather than trusting the HTML's default markup is
-// also what makes Budget's data load on a restored section, not just on a manual click. Same
-// reasoning for the action: applied rather than trusted from the markup, so the heading, the
-// amount box and the button pair can never disagree with whichever option the page happens to open
-// on. All of this waits for startApp (i.e. a confirmed login) rather than running unconditionally
-// at script load, since activateSection's own Budget/Retirement branches immediately fetch real
-// data (loadPickerTable/runCheck) -- before login that fetch can only fail.
+// comment), falling back to Budget (activateSection itself redirects that to Retirement when
+// Budget is disabled). Applying it rather than trusting the HTML's default markup is also what
+// makes Budget's data load on a restored section, not just on a manual click. Same reasoning for
+// the action: applied rather than trusted from the markup, so the heading, the amount box and the
+// button pair can never disagree with whichever option the page happens to open on. All of this
+// waits for startApp (i.e. a confirmed data source) rather than running unconditionally at script
+// load, since activateSection's own Budget/Retirement branches immediately fetch real data
+// (loadPickerTable/runCheck) -- before that this fetch can only fail.
 function startApp() {
   loadState()
   loadExpenseCategoryOptions()
   applySelectedAction()
   applySectionFolds()
+  refreshDataSourceChip()
   try {
     const savedSection = getCookie("activeSection")
     const knownSections = [...document.querySelectorAll(".section-item[data-section]")].map((i) => i.dataset.section)
@@ -4137,8 +4203,12 @@ function hideLoginModal() {
 }
 async function checkSession() {
   try {
-    const status = await api("/api/session")
-    if (status.loggedIn) {
+    const [sessionStatus, dataSourceStatus] = await Promise.all([api("/api/session"), api("/api/data-source")])
+    if (dataSourceStatus.mode === "file") {
+      applyDataSourceMode("file")
+      startApp()
+    } else if (sessionStatus.loggedIn) {
+      applyDataSourceMode("actual")
       startApp()
     } else {
       showLoginModal()
@@ -4149,22 +4219,50 @@ async function checkSession() {
     showError(error.message, () => checkSession())
   }
 }
+
+// Toggles the field group shown below the radios, and the submit button's own label, so neither
+// can ever disagree with whichever mode is actually selected.
+function applyLoginFormMode(mode) {
+  document.getElementById("actualFields").hidden = mode === "file"
+  document.getElementById("fileFields").hidden = mode !== "file"
+  document.getElementById("loginSubmitBtn").textContent = mode === "file" ? "Import file" : "Log in"
+}
+document.getElementById("dataSourceModeActual").addEventListener("change", () => applyLoginFormMode("actual"))
+document.getElementById("dataSourceModeFile").addEventListener("change", () => applyLoginFormMode("file"))
+// Best-effort convenience only -- browsers never expose a picked file's real filesystem path to a
+// page (sandboxed by design), just its bare name, so this can prefill a starting point but can't
+// fill in the directory the server would actually need. The path field stays a plain text input
+// the person is expected to check/complete themselves; see the note in #fileFields' own copy.
+document.getElementById("importFilePicker").addEventListener("change", (e) => {
+  const file = e.target.files[0]
+  if (!file) return
+  const pathField = document.getElementById("importFilePath")
+  if (!pathField.value.trim()) {
+    pathField.value = file.name
+  }
+})
+
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault()
   const errorEl = document.getElementById("loginError")
   errorEl.hidden = true
   const submitBtn = document.getElementById("loginSubmitBtn")
+  const mode = document.getElementById("dataSourceModeFile").checked ? "file" : "actual"
   submitBtn.disabled = true
-  submitBtn.textContent = "Logging in…"
+  submitBtn.textContent = mode === "file" ? "Importing…" : "Logging in…"
   try {
-    await api("/api/session", {
-      method: "POST",
-      body: JSON.stringify({
-        baseUrl: document.getElementById("loginBaseUrl").value.trim(),
-        budgetId: document.getElementById("loginBudgetId").value.trim(),
-        apiKey: document.getElementById("loginApiKey").value.trim(),
-      }),
-    })
+    if (mode === "file") {
+      const filePath = document.getElementById("importFilePath").value.trim()
+      if (!filePath) throw new Error("Enter the file's path on the server.")
+      await api("/api/data-source", { method: "POST", body: JSON.stringify({ filePath }) })
+    } else {
+      const baseUrl = document.getElementById("loginBaseUrl").value.trim()
+      const budgetId = document.getElementById("loginBudgetId").value.trim()
+      const apiKey = document.getElementById("loginApiKey").value.trim()
+      if (!baseUrl || !budgetId || !apiKey) throw new Error("Fill in all three fields.")
+      await api("/api/session", { method: "POST", body: JSON.stringify({ baseUrl, budgetId, apiKey }) })
+    }
+    applyDataSourceMode(mode)
     hideLoginModal()
     startApp()
   } catch (error) {
@@ -4172,12 +4270,12 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
     errorEl.hidden = false
   } finally {
     submitBtn.disabled = false
-    submitBtn.textContent = "Log in"
+    submitBtn.textContent = mode === "file" ? "Import file" : "Log in"
   }
 })
 document.getElementById("logoutBtn").addEventListener("click", async () => {
   try {
-    await api("/api/session", { method: "DELETE" })
+    await api(ACTIVE_DATA_SOURCE_MODE === "file" ? "/api/data-source" : "/api/session", { method: "DELETE" })
   } catch {
     // Nothing sensible to show here -- reload regardless, which re-checks the session and lands on
     // the login modal either way (logged out for real, or the DELETE itself failed and a stale

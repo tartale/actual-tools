@@ -6,6 +6,7 @@ import { dirname, join } from "node:path"
 
 import { formatError } from "./actual-helpers.ts"
 import { DEFAULT_SESSION_PATH } from "./actual-session.ts"
+import { DEFAULT_DATA_SOURCE_SESSION_PATH } from "./data-source-session.ts"
 import { DEFAULT_CONFIG_PATH } from "./fire-accounts.ts"
 import { DEFAULT_IRS_LIMITS_PATH } from "./irs-limits.ts"
 import { DEFAULT_FEDERAL_TAX_BRACKETS_PATH } from "./federal-tax-brackets.ts"
@@ -33,6 +34,7 @@ const uiDir = join(dirname(fileURLToPath(import.meta.url)), "app-ui")
 interface Options {
   configPath: string
   sessionPath: string
+  dataSourceSessionPath: string
   irsLimitsPath: string
   federalTaxBracketsPath: string
   irsLifeExpectancyPath: string
@@ -55,6 +57,10 @@ const HELP_PAGE: HelpPage = {
         {
           name: "-s, --session PATH",
           description: `Path to store the Actual REST credentials entered through the app's own login form (default: ${DEFAULT_SESSION_PATH}). Missing is fine -- the app just starts logged out.`,
+        },
+        {
+          name: "--data-source-session PATH",
+          description: `Path to store which file (if any) is being imported instead of syncing with Actual (default: ${DEFAULT_DATA_SOURCE_SESSION_PATH}). Missing is fine -- the app just starts in Actual-sync mode.`,
         },
         {
           name: "-i, --irs-limits PATH",
@@ -88,6 +94,7 @@ function usage(message: string): never {
 function parseArguments(argv: readonly string[]): Options {
   let configPath = DEFAULT_CONFIG_PATH
   let sessionPath = DEFAULT_SESSION_PATH
+  let dataSourceSessionPath = DEFAULT_DATA_SOURCE_SESSION_PATH
   let irsLimitsPath = DEFAULT_IRS_LIMITS_PATH
   let federalTaxBracketsPath = DEFAULT_FEDERAL_TAX_BRACKETS_PATH
   let irsLifeExpectancyPath = DEFAULT_IRS_LIFE_EXPECTANCY_PATH
@@ -106,6 +113,11 @@ function parseArguments(argv: readonly string[]): Options {
       const value = argv[i + 1]
       if (value === undefined || value.startsWith("-")) usage("Missing argument for --session")
       sessionPath = value
+      i++
+    } else if (arg === "--data-source-session") {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith("-")) usage("Missing argument for --data-source-session")
+      dataSourceSessionPath = value
       i++
     } else if (arg === "-i" || arg === "--irs-limits") {
       const value = argv[i + 1]
@@ -143,7 +155,7 @@ function parseArguments(argv: readonly string[]): Options {
     }
   }
 
-  return { configPath, sessionPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, port, open }
+  return { configPath, sessionPath, dataSourceSessionPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, port, open }
 }
 
 // Function to best-effort open a URL in the default browser. Swallowed non-fatally: this is a
@@ -166,6 +178,7 @@ async function main(): Promise<void> {
 
   const server = await startAppServer({
     sessionPath: options.sessionPath,
+    dataSourceSessionPath: options.dataSourceSessionPath,
     configPath: options.configPath,
     irsLimitsPath: options.irsLimitsPath,
     federalTaxBracketsPath: options.federalTaxBracketsPath,
