@@ -1,15 +1,6 @@
-import {
-  addMonthsToDate,
-  ageFromBirthDate,
-  averageSpent,
-  fetchAccountTransactions,
-  fetchCategoryGroups,
-  fetchDashboardWidgets,
-  fetchHistoricalSpent,
-  formatError,
-  sumTransactionAmounts,
-} from "./actual-helpers.ts"
-import type { ActualConfig, CategoryMonth, Transaction } from "./actual-helpers.ts"
+import { averageSpent, fetchCategoryGroups, fetchDashboardWidgets, fetchHistoricalSpent, formatError } from "./actual-helpers.ts"
+import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
+import type { AccountDataSource } from "./account-data-source.ts"
 import type { ClassifiedAccount, ExpenseAdjustment } from "./fire-accounts.ts"
 import { effectiveAccessAge, portfolioAccountIds } from "./fire-dashboard.ts"
 import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
@@ -36,11 +27,6 @@ import type { FederalPovertyGuidelines } from "./federal-poverty-guidelines.ts"
 // app-server.ts's /api/retirement/check route, and directly unit-testable without capturing
 // stdout. (Used to also build and write a fresh dashboard for Export to Dashboard -- removed
 // entirely, along with the drift-detection findings that only existed to nudge a re-export.)
-
-// The API has no running-balance field; summing an account's full transaction history is the
-// accounting identity used instead, so this must reach back further than any real account could
-// have existed.
-const BALANCE_SINCE_DATE = "1970-01-01"
 
 // Function to get the current month as a yyyy-mm string
 function currentMonth(): string {
@@ -266,6 +252,7 @@ export interface CheckResult {
 // editing in the app -- including changes this tool never made.
 export async function checkDashboard(
   actualConfig: ActualConfig,
+  dataSource: AccountDataSource,
   accounts: readonly ClassifiedAccount[],
   options: CheckOptions,
 ): Promise<CheckResult> {
@@ -335,35 +322,18 @@ export async function checkDashboard(
     return Math.max(0, (annualSpend + inflating) * Math.pow(1 + inflationMean, age - options.currentAge) + fixed)
   }
 
-  const transactionEntries = await Promise.all(
-    portfolioIds.map(async (accountId): Promise<[string, Transaction[]]> => [accountId, await fetchAccountTransactions(actualConfig, accountId, BALANCE_SINCE_DATE)]),
+  const balanceEntries = await Promise.all(
+    portfolioIds.map(async (accountId): Promise<[string, number]> => [accountId, await dataSource.fetchAccountBalance(accountId)]),
   )
-  const transactionsByAccount = new Map(transactionEntries)
-  const balances = new Map(portfolioIds.map((accountId) => [accountId, sumTransactionAmounts(transactionsByAccount.get(accountId) ?? [])]))
+  const balances = new Map(balanceEntries)
   const portfolioTotal = portfolioIds.reduce((total, accountId) => total + (balances.get(accountId) ?? 0), 0)
 
-  // How far back to extend the Bridge/Monte Carlo charts' x-axis before currentAge: real
-  // transaction history, capped at a few years so a decades-old account doesn't turn the chart
-  // into a full net-worth history. Bounded by the earliest transaction across ALL portfolio
-  // accounts (the one with the longest history), not the shortest -- an account opened more
-  // recently than that just correctly contributes $0 for the years before it existed, same as it
-  // would if it just hadn't been opened yet.
-  const HISTORY_LOOKBACK_YEARS_MAX = 5
-  const today = new Date().toISOString().slice(0, 10)
-  const allTransactionDates = [...transactionsByAccount.values()].flat().map((transaction) => transaction.date).filter((date) => date <= today)
-  const earliestTransactionDate = allTransactionDates.length > 0 ? allTransactionDates.reduce((min, date) => (date < min ? date : min)) : today
-  const historyYearsBack = Math.min(HISTORY_LOOKBACK_YEARS_MAX, ageFromBirthDate(earliestTransactionDate))
-  // Oldest first, so a chart can just concat this in front of its own forward-looking data.
-  const historicalAges = Array.from({ length: historyYearsBack }, (_, index) => options.currentAge - historyYearsBack + index)
-  const historicalBalancesByAge = new Map(
-    historicalAges.map((age) => {
-      const cutoff = addMonthsToDate(today, -12 * (options.currentAge - age))
-      return [
-        age,
-        new Map(portfolioIds.map((accountId) => [accountId, sumTransactionAmounts((transactionsByAccount.get(accountId) ?? []).filter((transaction) => transaction.date <= cutoff))])),
-      ] as const
-    }),
-  )
+  // How far back to extend the Bridge/Monte Carlo charts' x-axis before currentAge, and each
+  // portfolio account's own balance at each of those past ages -- see AccountDataSource's own
+  // fetchAccountHistory doc comment (account-data-source.ts) for what determines this and why an
+  // empty result (no history at all) is a normal, valid case, not something this caller needs to
+  // special-case.
+  const { historicalAges, balancesByAgeAndAccount: historicalBalancesByAge } = await dataSource.fetchAccountHistory(portfolioIds, options.currentAge)
   const monteCarloHistory = historicalAges.map((age) => ({
     age,
     totalBalance: portfolioIds.reduce((total, accountId) => total + (historicalBalancesByAge.get(age)?.get(accountId) ?? 0), 0),
