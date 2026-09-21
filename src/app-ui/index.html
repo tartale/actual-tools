@@ -198,9 +198,9 @@
                 <div class="derived">For the ACA subsidy (%FPL) estimate<span class="saved-flag" id="savedHouseholdSize">saved</span></div>
               </div>
               <div class="field">
-                <label for="acaTargetPctFpl">Target %FPL ceiling<button type="button" class="help-icon" data-help="Caps tax-deferred withdrawals to keep your estimated MAGI at or under this %FPL, once non-taxable sources (which never raise MAGI) are used up.&#10;&#10;The ACA marketplace subsidy cliff is 400% FPL under current law, so a value a little under that (e.g. 395) leaves a buffer. Only applies before Medicare age below, if set. Leave blank to withdraw in plain order instead, with no ceiling.">?</button></label>
+                <label for="acaTargetPctFpl">Target %FPL ceiling<button type="button" class="help-icon" data-help="Draws tax-deferred withdrawals up to this %FPL first, then non-taxable sources (which never raise MAGI) for the rest -- so idle tax-deferred capacity under the ceiling gets used as soon as it's available, instead of sitting untouched.&#10;&#10;The ACA marketplace subsidy cliff is 400% FPL under current law, so a value a little under that (e.g. 395) leaves a buffer. Only applies before Medicare age below, if set. Leave blank to withdraw in plain order instead, with no ceiling.">?</button></label>
                 <input type="number" min="1" step="1" id="acaTargetPctFpl">
-                <div class="derived">Prefers non-taxable sources, then caps tax-deferred at this %FPL<span class="saved-flag" id="savedAcaTargetPctFpl">saved</span></div>
+                <div class="derived">Caps tax-deferred at this %FPL first, then draws non-taxable sources<span class="saved-flag" id="savedAcaTargetPctFpl">saved</span></div>
               </div>
               <div class="field">
                 <label for="medicareAge">Medicare age<button type="button" class="help-icon" data-help="Age Medicare eligibility begins (typically 65).&#10;&#10;Once set, the %FPL ceiling above stops applying at this age, since Medicare replaces the need for ACA marketplace coverage. Meaningless without the ceiling also set. Leave blank to apply the ceiling for the whole plan, with no age cutoff.">?</button></label>
