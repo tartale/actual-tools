@@ -560,14 +560,14 @@ describe("GET /api/retirement/check", () => {
     expect(body.acaCliffCrossings).toEqual([{ retirementAge: 51, crossesAtAge: 54, pctFPL: 902.1 }])
   })
 
-  it("keeps the MAGI finding's tax-deferred draw at $0 once a %FPL ceiling is set, even with no explicit withdrawalOrder", async () => {
-    // Regression: an earlier reserve-pacing design (medicareAge-triggered) always spread the WHOLE
-    // non-taxable pot evenly across every pre-Medicare year regardless of whether that helped --
-    // when non-taxable was small relative to spend, that forced a tax-deferred draw in EVERY year
-    // instead of none, moving a real ACA cliff crossing from age 97 to age 53 in live data. This
-    // design has no such failure mode: non-taxable is drawn first, fully, uncapped -- exactly the
-    // same "prefer non-taxable" behavior withdrawalOrder gives explicitly, but automatic the moment
-    // a ceiling is set, since using it never raises MAGI.
+  it("draws tax-deferred up to the %FPL ceiling first, even with no explicit withdrawalOrder", async () => {
+    // Confirmed live (2026-09-21) that preferring non-taxable here, as an earlier version of this
+    // design did, leaves real ceiling headroom sitting unused every year the $50,000 non-taxable
+    // pot alone covers the $24,000/yr spend -- the 401k just keeps compounding untouched instead of
+    // smoothing that same lifetime income across more years while it's cheap to do so. So once a
+    // ceiling is set, tax-deferred is drawn FIRST, up to the cap -- exactly the same "prefer
+    // tax-deferred" behavior withdrawalOrder gives explicitly, but automatic the moment a ceiling is
+    // set.
     const url = await boot({
       accounts: [
         { id: "cash", name: "Brokerage", offbudget: true, closed: false },
@@ -597,7 +597,7 @@ describe("GET /api/retirement/check", () => {
     await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ acaTargetPctFpl: 300 }) })
     const afterCeiling = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
     const magiAfter = afterCeiling.bridgeFindings.find((f) => f.title.includes("est. MAGI"))
-    expect(magiAfter?.detail[0]).toContain("$0.00 tax-deferred")
+    expect(magiAfter?.detail[0]).not.toContain("$0.00 tax-deferred")
   })
 
   it("lets tax-deferred exceed the %FPL ceiling as a last resort, rather than falsely reporting a funding shortfall", async () => {
@@ -667,9 +667,9 @@ describe("GET /api/retirement/check", () => {
       categoryGroups: [
         { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
       ],
-      // $300,000 cash comfortably covers $24,000/yr on its own for the whole horizon -- without
-      // the floor, MAGI would stay $0.00 the entire time (same reasoning as the "keeps the MAGI
-      // finding's tax-deferred draw at $0" test above, just with a floor instead of a ceiling).
+      // $300,000 cash comfortably covers $24,000/yr on its own for the whole horizon, and an
+      // explicit withdrawalOrder (cash, then 401k, then Roth) means the real withdrawal never
+      // touches tax-deferred at all -- without the floor, MAGI would stay $0.00 the entire time.
       transactionsByAccount: { cash: [{ amount: 300_000_00, transfer_id: null }], "401k": [{ amount: 500_000_00, transfer_id: null }], roth: [{ amount: 0, transfer_id: null }] },
       monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
       dashboardRows: [],

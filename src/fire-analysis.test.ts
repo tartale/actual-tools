@@ -423,16 +423,19 @@ describe("simulateBridge", () => {
 })
 
 describe("allocateWithdrawal", () => {
-  it("never touches tax-deferred at all when non-taxable alone covers the need, regardless of the cap", () => {
+  it("draws tax-deferred up to the cap FIRST, even when non-taxable alone could have covered the whole need", () => {
     const accounts = [
       { balance: 1000, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
       { balance: 1000, withdrawalTaxRate: 0.5, withdrawalOrder: null, isTaxDeferred: true },
     ]
-    // The whole point of this design: non-taxable is drawn UNCAPPED, so a cap here (however
-    // small) never forces an unnecessary tax-deferred draw the way the earlier reserve-pacing
-    // design did.
+    // Confirmed live (2026-09-21) that preferring non-taxable here, as an earlier version of this
+    // tiering did, leaves real ceiling headroom sitting unused in every year non-taxable alone
+    // already covers spend -- the tax-deferred balance just keeps compounding untouched instead
+    // of smoothing that same lifetime income across more years while it's cheap to do so. So the
+    // cap gets used FIRST: 40 gross (50% taxed) nets 20 -- the remaining 80 net need comes from
+    // non-taxable, uncapped.
     const allocation = allocateWithdrawal(accounts, 100, 40)
-    expect(allocation.grossByIndex).toEqual([100, 0])
+    expect(allocation.grossByIndex).toEqual([80, 40])
   })
 
   it("caps tax-deferred at taxDeferredCap once non-taxable alone can't cover the need", () => {
@@ -447,15 +450,15 @@ describe("allocateWithdrawal", () => {
     expect(allocation.grossByIndex).toEqual([30, 140])
   })
 
-  it("doesn't cap tax-deferred when the real need-driven gross already stays under the cap", () => {
+  it("covers the whole need from tax-deferred alone, without touching non-taxable, when it stays under the cap", () => {
     const accounts = [
       { balance: 10, withdrawalTaxRate: 0, withdrawalOrder: null, isTaxDeferred: false },
       { balance: 1000, withdrawalTaxRate: 0.5, withdrawalOrder: null, isTaxDeferred: true },
     ]
-    // 10 from non-taxable, remaining 90 net needs 180 gross -- well under a 1000 cap, so this
-    // covers the real need normally rather than manufacturing a smaller, capped draw.
+    // The whole 100 net need would need 200 gross from the 50%-taxed tax-deferred pot -- well
+    // under a 1000 cap, so tier 1 covers it entirely and the $10 non-taxable pot is never touched.
     const allocation = allocateWithdrawal(accounts, 100, 1000)
-    expect(allocation.grossByIndex).toEqual([10, 180])
+    expect(allocation.grossByIndex).toEqual([0, 200])
   })
 
   it("allocates proportionally across accounts when no order or cap is given (today's default)", () => {

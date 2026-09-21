@@ -177,15 +177,22 @@ export interface WithdrawalAllocation {
 // taxDeferredCap (null by default): the %FPL-ceiling caller in fire-generate.ts -- when given,
 // this is a GROSS dollar ceiling on tax-deferred withdrawal ALONE this year (see simulateBridge's
 // own taxDeferredWithdrawalCapAt), not a hard limit. Three tiers:
-//   1. non-tax-deferred, UNCAPPED -- draws as much of netNeed as it can cover. Never throttled:
-//      using it never raises MAGI, so there's no reason to hold any of it back.
-//   2. tax-deferred, up to taxDeferredCap GROSS, for whatever's left of netNeed after (1) -- only
-//      actually capped when the need-driven gross would exceed it; otherwise this just covers the
-//      real need normally, same as an uncapped tier would (never draws MORE than needed just
-//      because the cap allows it).
-//   3. tax-deferred AGAIN, past its own cap, for whatever's STILL left -- a real spending need
-//      beats a MAGI target, the same "last resort" principle withdrawalOrder's own overflow
-//      already uses (see coreAllocate's sequential branch).
+//   1. tax-deferred, up to taxDeferredCap GROSS, for as much of netNeed as it covers -- drawn
+//      FIRST, not held back for non-taxable to cover instead. Confirmed live (2026-09-21) that
+//      preferring non-taxable here, as an earlier version of this tiering did, leaves real
+//      %FPL-ceiling headroom unused in any year non-taxable alone already covers spend: the
+//      tax-deferred balance just keeps compounding untouched instead, building toward a bigger
+//      balance (and a bigger eventual tax bill, once forced out later or by RMDs) instead of
+//      smoothing that same lifetime income across more years while it's cheap to do so. Only
+//      actually capped when the need-driven gross would exceed taxDeferredCap; otherwise this
+//      just covers the real need normally, same as an uncapped tier would (never draws MORE than
+//      needed just because the cap allows it).
+//   2. non-taxable, UNCAPPED, for whatever's left of netNeed after (1) -- never throttled: using
+//      it never raises MAGI, so there's no reason to hold any of it back once (1)'s own capacity
+//      (real need, or the cap, whichever binds first) is used up.
+//   3. tax-deferred AGAIN, past its own cap, for whatever's STILL left once non-taxable is ALSO
+//      exhausted -- a real spending need beats a MAGI target, the same "last resort" principle
+//      withdrawalOrder's own overflow already uses (see coreAllocate's sequential branch).
 export function allocateWithdrawal(
   accounts: readonly { balance: number; withdrawalTaxRate: number; withdrawalOrder: number | null; isTaxDeferred: boolean }[],
   netNeed: number,
@@ -247,13 +254,18 @@ export function allocateWithdrawal(
   const nonTaxDeferredIdx = allIndices.filter((index) => !(accounts[index] as (typeof accounts)[number]).isTaxDeferred)
   const taxDeferredIdx = allIndices.filter((index) => (accounts[index] as (typeof accounts)[number]).isTaxDeferred)
   let remaining = netNeed
-  remaining -= allocateAmong(nonTaxDeferredIdx, remaining)
-  // Only actually cap tier 2 when the need-driven gross would exceed taxDeferredCap -- otherwise
-  // covering the real (smaller) need normally already stays under it, with nothing to clamp.
+  // Tier 1: tax-deferred, up to taxDeferredCap -- drawn FIRST (see this function's own doc comment
+  // for why preferring non-taxable here left real ceiling headroom sitting unused). Only actually
+  // capped when the need-driven gross would exceed taxDeferredCap -- otherwise covering the real
+  // (smaller) need normally already stays under it, with nothing to clamp.
   const taxDeferredSubset = taxDeferredIdx.map((index) => ({ ...(accounts[index] as (typeof accounts)[number]), balance: remainingBalance[index] as number }))
   const neededGrossTotal = coreAllocate(taxDeferredSubset, remaining).grossByIndex.reduce((sum, gross) => sum + gross, 0)
   remaining -= neededGrossTotal <= taxDeferredCap ? allocateAmong(taxDeferredIdx, remaining) : allocateAmongGrossCapped(taxDeferredIdx, taxDeferredCap)
-  allocateAmong(taxDeferredIdx, remaining) // tier 3: overflow past the cap
+  // Tier 2: non-taxable, uncapped, for whatever's left.
+  remaining -= allocateAmong(nonTaxDeferredIdx, remaining)
+  // Tier 3: tax-deferred again, overflow past the cap -- last resort, only once non-taxable is
+  // ALSO exhausted.
+  allocateAmong(taxDeferredIdx, remaining)
   return { grossByIndex, totalNetCapacity }
 }
 
