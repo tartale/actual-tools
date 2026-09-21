@@ -5,8 +5,10 @@ import { readFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { extname, join } from "node:path"
 
-import { ACTIONS, ageFromBirthDate, fetchAccountBalance, fetchAllOpenAccounts, fetchCategoryGroups, formatError, isAction, parseDollarAmount, validateMonthFormat } from "./actual-helpers.ts"
+import { ACTIONS, ageFromBirthDate, fetchAllOpenAccounts, fetchCategoryGroups, formatError, isAction, parseDollarAmount, validateMonthFormat } from "./actual-helpers.ts"
 import type { Action, ActualConfig } from "./actual-helpers.ts"
+import { actualAccountDataSource } from "./account-data-source.ts"
+import type { AccountDataSource } from "./account-data-source.ts"
 import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
 import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import {
@@ -180,23 +182,18 @@ interface AccountState {
   withdrawalOrder: number | null
 }
 
-// A balance never changes as a side effect of a config edit -- only Actual's own ledger changes
-// it -- so re-fetching every account's full transaction history (the only way this API exposes a
-// balance; see fetchAccountBalance) on every single field edit was the real cause of "Max feels
-// delayed": a dozen real accounts' full histories, refetched after every keystroke. Cached here per
-// server process, keyed by account id; "fresh" (GET /api/retirement/state) always refetches
-// everything, "cached" (every mutating route's response) reuses what's known and only fetches an
-// account this process has never seen before.
+// A balance never changes as a side effect of a config edit -- only the data source's own ledger
+// changes it -- so re-fetching every account's full history on every single field edit was the
+// real cause of "Max feels delayed": a dozen real accounts' full histories, refetched after every
+// keystroke. Cached here per server process, keyed by account id; "fresh" (GET
+// /api/retirement/state) always refetches everything, "cached" (every mutating route's response)
+// reuses what's known and only fetches an account this process has never seen before.
 const balanceCache = new Map<string, number>()
 
-async function getBalances(
-  actualConfig: ActualConfig,
-  accounts: readonly { id: string }[],
-  mode: "fresh" | "cached",
-): Promise<Map<string, number>> {
+async function getBalances(dataSource: AccountDataSource, accounts: readonly { id: string }[], mode: "fresh" | "cached"): Promise<Map<string, number>> {
   const needsFetch = mode === "fresh" ? accounts : accounts.filter((account) => !balanceCache.has(account.id))
   if (needsFetch.length > 0) {
-    const fetched = await Promise.all(needsFetch.map((account) => fetchAccountBalance(actualConfig, account.id, "1970-01-01")))
+    const fetched = await Promise.all(needsFetch.map((account) => dataSource.fetchAccountBalance(account.id)))
     needsFetch.forEach((account, index) => balanceCache.set(account.id, fetched[index] as number))
   }
   return new Map(accounts.map((account) => [account.id, balanceCache.get(account.id) ?? 0]))
@@ -236,9 +233,10 @@ async function buildState(
   // depend on which scenario is asking.
   const latestRetirementAge = fireConfig.dashboard.retirementAges.length > 0 ? Math.max(...fireConfig.dashboard.retirementAges) : null
 
-  const rawAccounts = await fetchAllOpenAccounts(actualConfig)
+  const dataSource = actualAccountDataSource(actualConfig)
+  const rawAccounts = await dataSource.fetchAccounts()
   const classified = classifyAccounts(rawAccounts, fireConfig, birthDate, irsLimits)
-  const balanceById = await getBalances(actualConfig, rawAccounts, balanceMode)
+  const balanceById = await getBalances(dataSource, rawAccounts, balanceMode)
 
   const accounts: AccountState[] = classified.map((account) => {
     const override = findOverride(account, fireConfig)
@@ -987,7 +985,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           return
         }
         const { config: fireConfig } = loadFireConfig(configPath)
-        const rawAccounts = await fetchAllOpenAccounts(requireActualConfig())
+        const rawAccounts = await actualAccountDataSource(requireActualConfig()).fetchAccounts()
         applyAccountOrder(fireConfig, configPath, body.orderedIds as string[], rawAccounts)
         sendJson(res, 200, await buildState(requireActualConfig(), configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, "cached"))
         return
@@ -1000,7 +998,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const accountId = decodeURIComponent(accountMatch[1] as string)
         const body = (await readJsonBody(req)) as Record<string, unknown>
         const { config: fireConfig } = loadFireConfig(configPath)
-        const rawAccounts = await fetchAllOpenAccounts(requireActualConfig())
+        const rawAccounts = await actualAccountDataSource(requireActualConfig()).fetchAccounts()
         const account = rawAccounts.find((candidate) => candidate.id === accountId)
         if (!account) {
           sendJson(res, 404, { error: `No open account with id ${accountId}.` })
@@ -1022,12 +1020,13 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       if (req.method === "GET" && path === "/api/retirement/check") {
         const { config: fireConfig } = loadFireConfig(configPath)
         const plan = requirePlan(fireConfig)
-        const rawAccounts = await fetchAllOpenAccounts(requireActualConfig())
+        const dataSource = actualAccountDataSource(requireActualConfig())
+        const rawAccounts = await dataSource.fetchAccounts()
         const irsLimits = loadIrsLimits(irsLimitsPath)
         const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
         const federalPovertyGuidelines = loadFederalPovertyGuidelines(federalPovertyGuidelinesPath)
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
-        const result = await checkDashboard(requireActualConfig(), accounts, {
+        const result = await checkDashboard(requireActualConfig(), dataSource, accounts, {
           ...plan,
           fallbackInflationMean: 0.03,
           federalTaxBrackets,
