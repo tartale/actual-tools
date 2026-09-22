@@ -370,6 +370,7 @@ function renderSimSettings() {
   setIfIdle("mcInflationStdDev", d.monteCarloInflationStdDev == null ? "" : Math.round(d.monteCarloInflationStdDev * 1000) / 10)
   setIfIdle("mcMinimumWithdrawal", formatMoneyInputValue(d.monteCarloMinimumWithdrawal))
   setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
+  setIfIdle("expenseProjectionType", d.expenseProjectionType ?? "")
   setIfIdle("crossoverExpenseAdjustment", d.crossoverExpenseAdjustmentFactor == null ? "" : Math.round(d.crossoverExpenseAdjustmentFactor * 100))
   setIfIdle("crossoverSpendHistoryMonths", d.crossoverSpendHistoryMonths ?? "")
   // File and detached mode only -- an explicit Manual/Transactions choice (see fileModeSpendSource's
@@ -803,11 +804,14 @@ function parseRetirementAges(text) {
 }
 
 function renderAccounts() {
-  // File and detached mode only -- adding/exporting accounts directly only makes sense without a
-  // live Actual connection managing them instead (see the buttons' own doc comments in index.html).
+  // Add account only makes sense without a live Actual connection already managing the account
+  // list itself (file and detached mode -- see #addAccountField's own doc comment in index.html).
+  // Export has no such restriction -- it's a plain read of STATE.accounts, useful as a backup/
+  // external-edit round trip in every mode (2026-09-22: extended to Actual-sync mode too, per the
+  // user's own request -- there was never a technical reason it was file/detached-only).
   const manuallyManaged = ACTIVE_DATA_SOURCE_MODE === "file" || ACTIVE_DATA_SOURCE_MODE === "detached"
   document.getElementById("addAccountField").hidden = !manuallyManaged
-  document.getElementById("exportAccountsBtn").hidden = !manuallyManaged
+  document.getElementById("exportAccountsBtn").hidden = false
   const list = document.getElementById("accountsList")
   list.innerHTML = ""
   const typeKeys = Object.keys(STATE.accountTypes)
@@ -2929,6 +2933,9 @@ document.getElementById("mcSimulationCount").addEventListener("change", (e) => {
   const count = e.target.value === "" ? null : parseInt(e.target.value, 10)
   runExclusive(() => patchPlan({ monteCarloSimulationCount: count === null || count <= 0 ? null : count }, "savedSimSettings"))
 })
+document.getElementById("expenseProjectionType").addEventListener("change", (e) => {
+  runExclusive(() => patchPlan({ expenseProjectionType: e.target.value === "" ? null : e.target.value }, "savedSpendConfig"))
+})
 document.getElementById("crossoverExpenseAdjustment").addEventListener("change", (e) => {
   const pct = e.target.value === "" ? null : parseFloat(e.target.value)
   runExclusive(() => patchPlan({ crossoverExpenseAdjustmentFactor: pct === null ? null : pct / 100 }, "savedSpendConfig"))
@@ -3025,10 +3032,11 @@ document.getElementById("addAccountBtn").addEventListener("click", async () => {
   }
   try {
     if (ACTIVE_DATA_SOURCE_MODE === "detached") {
-      // Same default a fresh file/linked-mode account gets too (see applyAccountPatch's own
-      // not-found branch in app-server.ts) -- an explicit type from the start, never the "legacy,
-      // guess from the name" path a missing type would otherwise trigger (see classifyAccounts).
-      DETACHED_DRAFT.accounts.push({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name, balance, type: "other" })
+      // No explicit type -- same as a real file/linked-mode account with no override yet, this
+      // lets the server guess a real type from the name (classifyByHeuristic, in
+      // detachedAccountsFromBody) instead of falling into "other" and dropping out of the
+      // portfolio entirely (e.g. "Roth IRA" should classify as roth-ira, not sit unclassified).
+      DETACHED_DRAFT.accounts.push({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name, balance })
       saveDetachedDraft()
     } else {
       await api("/api/data-source/accounts", { method: "POST", body: JSON.stringify({ name, balance }) })
@@ -4831,7 +4839,10 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
         transactionsEntry = { fileName: transactionsFile.name, content: transactionsContent, lastLoadedAt: new Date().toISOString() }
         importedTransactionsFile = true
       }
-      DETACHED_DRAFT.accounts = accounts.map((account) => ({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name: account.name, balance: account.balance, type: "other" }))
+      // No explicit type -- same reasoning as Add account's own click handler: lets the server
+      // guess a real type from each name (classifyByHeuristic) instead of dropping every imported
+      // row into "other".
+      DETACHED_DRAFT.accounts = accounts.map((account) => ({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name: account.name, balance: account.balance }))
       DETACHED_DRAFT.accountsSource = { fileName: file.name, lastLoadedAt: new Date().toISOString() }
       if (transactionsEntry) DETACHED_DRAFT.transactions = transactionsEntry
       saveDetachedDraft()
@@ -4900,6 +4911,13 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
     clearDetachedDraft()
     await loadState()
     await runCheck()
+    // Same two calls the successful-import branch of the login form's own submit handler makes --
+    // without these, the chips keep naming the just-cleared files (refreshDataSourceChip is the
+    // only thing that updates CURRENT_TRANSACTIONS_FILE_NAME, which renderSimSettings' own Manual/
+    // Transactions default resolution depends on) and the category picker keeps showing categories
+    // derived from a transactions file that no longer exists.
+    await refreshDataSourceChip()
+    loadExpenseCategoryOptions()
     return
   }
   try {

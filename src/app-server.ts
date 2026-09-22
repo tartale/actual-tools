@@ -25,8 +25,10 @@ import {
   MONTE_CARLO_RETURN_MODELS,
   MONTE_CARLO_TAX_MODELS,
   MONTE_CARLO_WITHDRAWAL_RULE_TYPES,
+  EXPENSE_PROJECTION_TYPES,
   MONTE_CARLO_WITHDRAWAL_STRATEGIES,
   classifyAccounts,
+  classifyByHeuristic,
   contributionLimitLines,
   employerContributionSummary,
   findOverride,
@@ -43,6 +45,7 @@ import type {
   ContributionLimitGroup,
   EmployerContributionSummary,
   ExpenseAdjustment,
+  ExpenseProjectionType,
   FireAccountOverride,
   FireConfig,
   MonteCarloAllocationPreset,
@@ -71,6 +74,7 @@ import {
   ALLOCATION_PRESET_RETURNS,
   WITHDRAWAL_TAX_RATES,
   expenseAdjustmentFactorWithOverride,
+  expenseProjectionTypeWithOverride,
   monteCarloAssumptionsWithOverrides,
   retirementIncomeStreams,
   spendHistoryMonthsWithOverride,
@@ -498,6 +502,7 @@ function requirePlan(fireConfig: FireConfig): {
   crossoverExpenseCategoryIds: string[] | null
   expenseAdjustmentFactor: number
   spendHistoryMonths: number
+  expenseProjectionType: ExpenseProjectionType
   filingStatus: FilingStatus | null
   householdSize: number | null
   acaTargetPctFpl: number | null
@@ -524,6 +529,7 @@ function requirePlan(fireConfig: FireConfig): {
     crossoverExpenseCategoryIds: fireConfig.dashboard.crossoverExpenseCategoryIds,
     expenseAdjustmentFactor: expenseAdjustmentFactorWithOverride(fireConfig.dashboard),
     spendHistoryMonths: spendHistoryMonthsWithOverride(fireConfig.dashboard),
+    expenseProjectionType: expenseProjectionTypeWithOverride(fireConfig.dashboard),
     filingStatus: fireConfig.dashboard.filingStatus,
     householdSize: fireConfig.dashboard.householdSize,
     acaTargetPctFpl: fireConfig.dashboard.acaTargetPctFpl,
@@ -811,6 +817,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
     fileModeAnnualExpense: number | null,
     crossoverExpenseCategoryIds: readonly string[] | null,
     spendSource: "manual" | "transactions" | null,
+    expenseProjectionType: ExpenseProjectionType,
   ): { annualSpend: number; basis: string | null } {
     const manual = { annualSpend: fileModeAnnualExpense ?? DEFAULT_FILE_MODE_ANNUAL_EXPENSE, basis: null }
     if (spendSource === "manual") {
@@ -819,7 +826,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
     if (session.transactions != null) {
       const delimiter = session.transactions.fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
       const rows = parseTransactionRows(session.transactions.content, delimiter)
-      const fromTransactions = annualSpendFromTransactions(rows, spendHistoryMonths, expenseAdjustmentFactor, crossoverExpenseCategoryIds)
+      const fromTransactions = annualSpendFromTransactions(rows, spendHistoryMonths, expenseAdjustmentFactor, crossoverExpenseCategoryIds, expenseProjectionType)
       if (spendSource === "transactions" || fromTransactions.annualSpend > 0) {
         return fromTransactions
       }
@@ -1227,6 +1234,13 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           }
           dashboard.crossoverSpendHistoryMonths = value
         }
+        if ("expenseProjectionType" in body) {
+          const value = body.expenseProjectionType
+          if (value !== null && !EXPENSE_PROJECTION_TYPES.includes(value as ExpenseProjectionType)) {
+            throw new Error(`expenseProjectionType must be one of ${EXPENSE_PROJECTION_TYPES.join(", ")}, or null.`)
+          }
+          dashboard.expenseProjectionType = value as ExpenseProjectionType | null
+        }
         if ("fileModeAnnualExpense" in body) {
           const value = body.fileModeAnnualExpense
           if (value !== null && (typeof value !== "number" || value < 0)) {
@@ -1328,7 +1342,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           fallbackInflationMean: 0.03,
           federalTaxBrackets,
           federalPovertyGuidelines,
-          fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds, fireConfig.dashboard.fileModeSpendSource),
+          fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds, fireConfig.dashboard.fileModeSpendSource, plan.expenseProjectionType),
         })
         sendJson(res, 200, result)
         return
@@ -1359,12 +1373,27 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           if (typeof account.balance !== "number") {
             throw new Error(`accounts[${index}].balance must be a number (cents).`)
           }
-          detachedAccounts.push({ id: account.id, name: account.name.trim(), balance: account.balance })
-          // Spreads the WHOLE account (id/name/balance included) -- the extra fields ride along
-          // harmlessly (nothing reads .id/.name/.balance off a FireAccountOverride, only .match,
-          // set explicitly right after), simpler than destructuring three fields out just to
+          const name = account.name.trim()
+          detachedAccounts.push({ id: account.id, name, balance: account.balance })
+          // Every detached account doubles as its own override (there's no separate "no override
+          // at all yet" state the way a real config.json's accounts array has), so classifyAccounts'
+          // own name-heuristic fallback (classifyByHeuristic, reached there only when NO override
+          // exists) would otherwise never run for detached mode at all -- every account would
+          // resolve to plain "other" regardless of its name (resolveOverrideType's own fallback for
+          // an override with no type). Guess it here instead, the same heuristic a real fresh
+          // import/add gets, so "Roth IRA" classifies as a real portfolio account instead of falling
+          // out of the portfolio entirely. Only when the client hasn't already set an explicit type
+          // (an account whose type was actually chosen, e.g. via the row editor, keeps it).
+          // Cast, not validated here -- an unknown type string still reaches parseFireConfig right
+          // after this (both callers), which rejects it with the same real error a bogus type in a
+          // real config.json already gets. This function's own job is only reshaping the body, the
+          // same division of labor its own doc comment above already describes.
+          const type = (typeof account.type === "string" && account.type ? account.type : (classifyByHeuristic(name) ?? "other")) as AccountType
+          // Spreads the WHOLE account (id/name/balance/type included) -- the extra fields ride
+          // along harmlessly (nothing reads .id/.name/.balance off a FireAccountOverride, only
+          // .match, set explicitly right after), simpler than destructuring fields out just to
           // discard them.
-          overrides.push({ ...account, match: account.id })
+          overrides.push({ ...account, type, match: account.id })
         })
         return { detachedAccounts, overrides }
       }
@@ -1420,6 +1449,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           syntheticFireConfig.dashboard.fileModeAnnualExpense,
           plan.crossoverExpenseCategoryIds,
           syntheticFireConfig.dashboard.fileModeSpendSource,
+          plan.expenseProjectionType,
         )
         const result = await checkDashboard(null, dataSource, accounts, {
           ...plan,
@@ -1522,7 +1552,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             fallbackInflationMean: 0.03,
             federalTaxBrackets,
             federalPovertyGuidelines,
-            fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds, fireConfig.dashboard.fileModeSpendSource),
+            fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds, fireConfig.dashboard.fileModeSpendSource, plan.expenseProjectionType),
           },
           irsLifeExpectancy,
         )

@@ -295,6 +295,15 @@
             <div id="expenseHistoryFields">
             <div class="income-grid">
               <div class="field">
+                <label for="expenseProjectionType">Expense Projection Type<button type="button" class="help-icon" data-help="How past expenses are projected into the future.&#10;&#10;Mean: uses the average of all historical expenses.&#10;&#10;Median: uses the median of all historical expenses without filtering.&#10;&#10;Hampel Filtered Median: filters out outliers before calculating the median expense.">?</button></label>
+                <select id="expenseProjectionType">
+                  <option value="">not entered (mean)</option>
+                  <option value="mean">Mean</option>
+                  <option value="median">Median</option>
+                  <option value="hampel">Hampel Filtered Median</option>
+                </select>
+              </div>
+              <div class="field">
                 <label for="crossoverExpenseAdjustment">Overall spend scale<button type="button" class="help-icon" data-help="How much to scale your projected expenses by, across the board.&#10;&#10;100% plans to spend the same as your projected expenses. Above 100% plans to spend more in retirement; below 100% plans to spend less.">?</button></label>
                 <div class="input-affix suffix-percent"><input type="number" step="1" id="crossoverExpenseAdjustment" placeholder="100"></div>
               </div>
@@ -522,11 +531,14 @@
           <div class="category-picker-toolbar">
             <button type="button" class="btn secondary" id="accountsExpandAll">Expand all</button>
             <button type="button" class="btn secondary" id="accountsCollapseAll">Collapse all</button>
-            <!-- File and detached mode only -- exports the current accounts back to the same
-                 name,balance shape file mode's own header chips (or detached mode's own, matching
-                 -- see #dataSourceChip's own doc comment) import, so a plan can be edited externally
-                 and reimported later (see file-account-data-source.ts's own doc comment on the
-                 round trip). -->
+            <!-- Every mode (2026-09-22: extended from file/detached-only to Actual-sync too, per
+                 the user's own request -- exporting is a plain read of STATE.accounts, nothing
+                 mode-specific about it). Exports the current accounts back to the same name,balance
+                 shape file mode's own header chips (or detached mode's own, matching -- see
+                 #dataSourceChip's own doc comment) import, so a plan can be edited externally and
+                 reimported later (see file-account-data-source.ts's own doc comment on the round
+                 trip) -- in Actual-sync mode this is a one-way backup/reference snapshot instead,
+                 since there's no matching import path back into a live Actual connection. -->
             <button type="button" class="btn secondary" id="exportAccountsBtn" hidden>Export accounts</button>
           </div>
           <div class="accounts" id="accountsList"><div class="empty-note">Loading accounts…</div></div>
