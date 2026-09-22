@@ -575,6 +575,10 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .account-row { border-bottom: 1px solid var(--line-soft); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .account-row:last-child { border-bottom: none; }
 .account-row.reorderable.dragging { opacity: 0.4; }
+/* #addAccountField's own class -- same padding as .account-row, border-TOP instead (it sits right
+   after #accountsList, not inside it -- see its own doc comment in index.html for why), so it
+   reads as one more row continuing the same list rather than a separate panel. */
+.account-row-style { border-top: 1px solid var(--line-soft); padding: 14px 16px; }
 .acct-id { display: flex; gap: 8px; align-items: flex-start; }
 .drag-handle { color: var(--ink-faint); font-size: 15px; line-height: 1.4; cursor: grab; user-select: none; flex: none; }
 .reorderable .drag-handle:active { cursor: grabbing; }
@@ -747,6 +751,13 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .chip.warn { color: var(--warn); background: var(--warn-soft); }
 .chip.info { color: var(--info); background: var(--info-soft); }
 .chip.ok { color: var(--ok); background: var(--ok-soft); }
+/* #dataSourceChip/#transactionsChip -- real <button>s (issue #34/#35's follow-up, 2026-09-22:
+   clicking either reopens the Import modal), so this resets the button defaults .chip's own div
+   usages elsewhere don't need to worry about. */
+/* Overrides .chip's own text-transform:capitalize -- these two show a real filename, which
+   capitalize would mangle (e.g. "All-Accounts.csv" -> "All-Accounts.Csv"). */
+.chip-btn { border: none; cursor: pointer; font-family: inherit; text-transform: none; }
+.chip-btn:hover { filter: brightness(1.2); }
 .finding .title { font-size: 12.5px; font-weight: 500; color: var(--ink); }
 .finding .detail { font-size: 11.5px; color: var(--ink-soft); margin-top: 3px; }
 /* Placeholder finding row (see renderLoadingSkeleton's findingSkeletons) -- same .finding/.chip/
@@ -1012,10 +1023,44 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 /* The sync-with-Actual/import-a-file radio pair above #loginForm (issue #35/#22) -- not itself a
    .field's usual single-label-over-single-input shape, so it gets its own row layout rather than
    reusing .field's block label. */
-.data-source-mode { display: flex; gap: 18px; margin-bottom: 2px; }
-.data-source-mode .radio-label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--ink); cursor: pointer; margin: 0; }
-.data-source-mode input[type="radio"] { accent-color: var(--accent); cursor: pointer; }
-.modal-login input[type="file"] { font-size: 12px; color: var(--ink-soft); }
+.data-source-mode, .radio-row { display: flex; gap: 18px; margin-bottom: 2px; flex-wrap: wrap; }
+/* Own display:flex needs its own [hidden] override -- there is no global [hidden]{display:none}
+   (see .acct-fields[hidden]'s own doc comment above for why) -- needed now that Refresh's own
+   "update your data" flow (issue #34/#35's follow-up, 2026-09-22) actually toggles this hidden. */
+.data-source-mode[hidden] { display: none; }
+.data-source-mode .radio-label, .radio-row .radio-label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--ink); cursor: pointer; margin: 0; }
+.data-source-mode input[type="radio"], .radio-row input[type="radio"] { accent-color: var(--accent); cursor: pointer; }
+/* A file field's own "Browse…"/filename/Download Template row -- login screen's accounts/
+   transactions pickers (issue #34/#35's follow-up, 2026-09-22). The real <input type=file> is kept
+   (functionality) but visually hidden -- a native file input's own "Browse"/"No file chosen"
+   rendering can't be restyled to match the Download Template button beside it, so #importFilePickerBtn
+   (a plain styled button) triggers it instead, with the picked name shown separately. */
+.file-picker-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.file-picker-row .btn { flex: none; }
+.file-picker-name { font-size: 12.5px; color: var(--ink-soft); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Buffer above the Accounts file/Transactions file rows specifically -- more separation from the
+   mode radios above them than the form's own default 12px gap gives every other field. */
+.file-field { margin-top: 8px; }
+/* Log in/Import + Cancel side by side, overriding .modal-login .btn's own align-self: flex-start
+   (which would otherwise stack them). */
+.login-form-actions { display: flex; gap: 10px; }
+/* Buffer between the Manual/Transactions radios and whichever field appears below them (issue
+   #34/#35's follow-up, 2026-09-22) -- more separation than .field's own tight label-to-input gap,
+   since this one follows a whole OTHER control (the radios), not its own label. */
+.spend-source-buffer { margin-top: 10px; }
+#fileModeSpendSourceField .radio-row { margin-bottom: 12px; }
+/* Add-account inline form (Accounts section, file mode) -- name + a money-affix balance field +
+   the Add button, one row. */
+.add-account-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.add-account-row input[type="text"] { flex: 1 1 160px; min-width: 0; }
+.add-account-row .input-affix { flex: 0 1 140px; }
+.add-account-row .btn { flex: none; }
+/* Add-account inline form (Accounts section, file mode) -- name + a money-affix balance field +
+   the Add button, one row. */
+.add-account-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.add-account-row input[type="text"] { flex: 1 1 160px; min-width: 0; }
+.add-account-row .input-affix { flex: 0 1 140px; }
+.add-account-row .btn { flex: none; }
 /* Issue #28's suggestions modal -- a plain stack of option cards, each a checkbox (Rule of 55) or
    radio group (SEPP method choice, mutually exclusive per-account) plus its own pros/cons list. */
 .modal-suggestions { max-width: 560px; }

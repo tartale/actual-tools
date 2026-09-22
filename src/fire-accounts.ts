@@ -586,6 +586,16 @@ export interface DashboardConfig {
   // FileDataSourceSession's own transactions field) -- see checkDashboard's own doc comment on the
   // three-way spend-source precedence. Ignored outside file mode.
   fileModeAnnualExpense: number | null
+  // File-mode ONLY -- an explicit choice between fileModeAnnualExpense above and a transactions
+  // file's own real computed spend (fire-generate.ts's annualSpendFromTransactions), rather than
+  // the transactions file silently overriding the manual figure just because one happens to be
+  // uploaded. null (never touched) keeps that original "transactions wins if present, else manual"
+  // default; "manual" or "transactions" once the person picks a radio explicitly means exactly
+  // that -- "manual" ignores an uploaded transactions file entirely, "transactions" never falls
+  // back to the manual figure just because it happened to compute to 0 for the current window
+  // (empty result stays empty, rather than silently substituting a different number the person
+  // didn't choose). Ignored outside file mode.
+  fileModeSpendSource: "manual" | "transactions" | null
   // The two Monte Carlo fields the doc comment on MonteCarloWithdrawalStrategy above calls out as
   // deliberately NOT exposed as flat pinnable scalars -- each carries its own internal shape
   // (a withdrawal rule's parameters vary by its own type; tax bands are an open-ended list), so
@@ -635,6 +645,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   crossoverExpenseAdjustmentFactor: null,
   crossoverSpendHistoryMonths: null,
   fileModeAnnualExpense: null,
+  fileModeSpendSource: null,
   monteCarloWithdrawalRule: null,
   monteCarloTaxBands: null,
 }
@@ -1291,6 +1302,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   if (dashboardSource.fileModeAnnualExpense != null && (typeof dashboardSource.fileModeAnnualExpense !== "number" || dashboardSource.fileModeAnnualExpense < 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.fileModeAnnualExpense must be a non-negative number.`)
   }
+  if (dashboardSource.fileModeSpendSource != null && dashboardSource.fileModeSpendSource !== "manual" && dashboardSource.fileModeSpendSource !== "transactions") {
+    throw new Error(`Invalid config in ${path}: dashboard.fileModeSpendSource must be "manual", "transactions", or null.`)
+  }
   if (dashboardSource.monteCarloWithdrawalRule != null) {
     const rule = dashboardSource.monteCarloWithdrawalRule
     if (typeof rule !== "object" || Array.isArray(rule) || !MONTE_CARLO_WITHDRAWAL_RULE_TYPES.includes(rule.type)) {
@@ -1367,6 +1381,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       crossoverExpenseAdjustmentFactor: dashboardSource.crossoverExpenseAdjustmentFactor ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseAdjustmentFactor,
       crossoverSpendHistoryMonths: dashboardSource.crossoverSpendHistoryMonths ?? DEFAULT_DASHBOARD_CONFIG.crossoverSpendHistoryMonths,
       fileModeAnnualExpense: dashboardSource.fileModeAnnualExpense ?? DEFAULT_DASHBOARD_CONFIG.fileModeAnnualExpense,
+      fileModeSpendSource: dashboardSource.fileModeSpendSource ?? DEFAULT_DASHBOARD_CONFIG.fileModeSpendSource,
       monteCarloWithdrawalRule: dashboardSource.monteCarloWithdrawalRule ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalRule,
       monteCarloTaxBands: dashboardSource.monteCarloTaxBands ?? DEFAULT_DASHBOARD_CONFIG.monteCarloTaxBands,
       expenseAdjustments: dashboardSource.expenseAdjustments ?? DEFAULT_DASHBOARD_CONFIG.expenseAdjustments,
