@@ -186,6 +186,18 @@ async function api(path, options) {
   return body
 }
 
+// Detached mode has no server-persisted config to read/write -- every "load"/"patch" instead
+// re-POSTs the whole client-held draft (DETACHED_DRAFT, see its own declaration near
+// checkSession) to this stateless route and gets back the exact same StateResponse shape
+// GET /api/retirement/state returns, so STATE/render() and every patchPlan/patchAccount caller
+// below work completely unmodified regardless of which mode is active.
+function detachedState() {
+  return api("/api/retirement/detached/state", {
+    method: "POST",
+    body: JSON.stringify({ dashboard: DETACHED_DRAFT.dashboard, accounts: DETACHED_DRAFT.accounts }),
+  })
+}
+
 async function loadState() {
   // The server itself already retries a transient Actual-still-starting-up failure a few times
   // (actualRequest in actual-helpers.ts) before this ever rejects, so a slow-but-eventually-fine
@@ -193,7 +205,7 @@ async function loadState() {
   // blank accounts list that looks broken/frozen.
   document.getElementById("accountsList").innerHTML = `<div class="empty-note">Loading accounts…</div>`
   try {
-    STATE = await api("/api/retirement/state")
+    STATE = ACTIVE_DATA_SOURCE_MODE === "detached" ? await detachedState() : await api("/api/retirement/state")
     clearError()
     saveSkeletonCache(STATE)
     render()
@@ -205,7 +217,13 @@ async function loadState() {
 
 async function patchPlan(partial, savedFlagId) {
   try {
-    STATE = await api("/api/retirement/plan", { method: "PATCH", body: JSON.stringify(partial) })
+    if (ACTIVE_DATA_SOURCE_MODE === "detached") {
+      DETACHED_DRAFT.dashboard = { ...DETACHED_DRAFT.dashboard, ...partial }
+      saveDetachedDraft()
+      STATE = await detachedState()
+    } else {
+      STATE = await api("/api/retirement/plan", { method: "PATCH", body: JSON.stringify(partial) })
+    }
     clearError()
     render()
     flashSaved(savedFlagId)
@@ -217,7 +235,14 @@ async function patchPlan(partial, savedFlagId) {
 
 async function patchAccount(id, partial) {
   try {
-    STATE = await api(`/api/retirement/accounts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(partial) })
+    if (ACTIVE_DATA_SOURCE_MODE === "detached") {
+      const account = DETACHED_DRAFT.accounts.find((a) => a.id === id)
+      if (account) Object.assign(account, partial)
+      saveDetachedDraft()
+      STATE = await detachedState()
+    } else {
+      STATE = await api(`/api/retirement/accounts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(partial) })
+    }
     clearError()
     render()
     scheduleRecheck()
@@ -228,7 +253,16 @@ async function patchAccount(id, partial) {
 
 async function reorderAccounts(orderedIds) {
   try {
-    STATE = await api("/api/retirement/accounts/order", { method: "PATCH", body: JSON.stringify({ orderedIds }) })
+    if (ACTIVE_DATA_SOURCE_MODE === "detached") {
+      orderedIds.forEach((id, index) => {
+        const account = DETACHED_DRAFT.accounts.find((a) => a.id === id)
+        if (account) account.withdrawalOrder = index
+      })
+      saveDetachedDraft()
+      STATE = await detachedState()
+    } else {
+      STATE = await api("/api/retirement/accounts/order", { method: "PATCH", body: JSON.stringify({ orderedIds }) })
+    }
     clearError()
     render()
     scheduleRecheck()
@@ -355,6 +389,12 @@ function renderSimSettings() {
     document.getElementById("fileModeAnnualExpenseField").hidden = source !== "manual"
     document.getElementById("expenseHistoryFields").hidden = source === "manual"
     document.getElementById("expenseCategoriesField").hidden = source === "manual"
+  } else if (ACTIVE_DATA_SOURCE_MODE === "detached") {
+    // Same as file mode's own "manual" source -- detached mode never has spend history/a
+    // transactions file to derive these from, only the fixed figure below.
+    document.getElementById("fileModeAnnualExpenseField").hidden = false
+    document.getElementById("expenseHistoryFields").hidden = true
+    document.getElementById("expenseCategoriesField").hidden = true
   } else {
     document.getElementById("expenseHistoryFields").hidden = false
     document.getElementById("expenseCategoriesField").hidden = false
@@ -738,6 +778,14 @@ async function loadExpenseCategoryOptions() {
       return
     }
   }
+  // Detached mode never has a transactions file (or the live Actual budget data /api/budget/context
+  // itself needs) at all -- both routes this function otherwise calls are gated off entirely for a
+  // detached server (see the MODE gate in app-server.ts), so this returns before ever calling them.
+  if (ACTIVE_DATA_SOURCE_MODE === "detached") {
+    document.getElementById("expenseCategoryPicker").innerHTML = `<div class="empty-note">Detached mode has no transactions to derive expense categories from.</div>`
+    EXPENSE_CATEGORY_GROUPS = null
+    return
+  }
   try {
     const { categoryGroups } = await api("/api/budget/context")
     EXPENSE_CATEGORY_GROUPS = categoryGroups.filter((group) => !group.hidden || group.categories.some((category) => category.hidden))
@@ -757,10 +805,11 @@ function parseRetirementAges(text) {
 }
 
 function renderAccounts() {
-  // File mode only -- adding/exporting accounts directly only makes sense without a live Actual
-  // connection managing them instead (see the buttons' own doc comments in index.html).
-  document.getElementById("addAccountField").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
-  document.getElementById("exportAccountsBtn").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
+  // File and detached mode only -- adding/exporting accounts directly only makes sense without a
+  // live Actual connection managing them instead (see the buttons' own doc comments in index.html).
+  const manuallyManaged = ACTIVE_DATA_SOURCE_MODE === "file" || ACTIVE_DATA_SOURCE_MODE === "detached"
+  document.getElementById("addAccountField").hidden = !manuallyManaged
+  document.getElementById("exportAccountsBtn").hidden = !manuallyManaged
   const list = document.getElementById("accountsList")
   list.innerHTML = ""
   const typeKeys = Object.keys(STATE.accountTypes)
@@ -835,6 +884,7 @@ function renderAccounts() {
           <div class="balance">${moneySpan(account.balance)}</div>
           <div class="cat-note">${accessNote}${ruleOf55Note}${seppNote}</div>
         </div>
+        ${ACTIVE_DATA_SOURCE_MODE === "detached" ? `<button type="button" class="btn secondary acct-remove-btn" data-remove-account="${account.id}">Remove</button>` : ""}
       </div>
       <div class="acct-fields" ${accountFolded ? "hidden" : ""}>
         <div class="field full">
@@ -987,6 +1037,10 @@ function renderAccounts() {
       e.target.textContent = collapsing ? "▶" : "▼"
       row.querySelector(".acct-fields").hidden = collapsing
     })
+    const removeBtn = row.querySelector("[data-remove-account]")
+    if (removeBtn) {
+      removeBtn.addEventListener("click", () => runExclusive(() => removeDetachedAccount(account.id)))
+    }
     row.querySelector("select[data-field='type']").addEventListener("change", (e) => runExclusive(() => patchAccount(account.id, { type: e.target.value })))
     const allocSelect = row.querySelector("select[data-field='allocationPreset']")
     if (allocSelect) {
@@ -2708,12 +2762,11 @@ function revealTopSectionIfReady() {
 // than CSS-blurred, so it needs an actual re-render to pick up the new privacy state.
 let lastCheckResult = null
 
-// containerId defaults to the Retirement page's own #checkResult -- detached mode (issue #38)
-// reuses this same function, unchanged, for its own separate #detachedCheckResult container on
-// #page-detached, since the response shape (and everything downstream -- renderBridgeChart/Table,
+// Every mode (Actual, file, detached) renders into this same #checkResult on the one shared
+// Retirement page -- the response shape (and everything downstream -- renderBridgeChart/Table,
 // renderMonteCarloChart, renderFinding) is identical regardless of which mode produced it.
-function renderCheckResult(result, containerId = "checkResult") {
-  const container = document.getElementById(containerId)
+function renderCheckResult(result) {
+  const container = document.getElementById("checkResult")
   container.innerHTML = ""
   if (result.bridgeFindings.length === 0 && result.monteCarloFindings.length === 0) {
     container.innerHTML = `<div class="empty-note">No findings.</div>`
@@ -2747,7 +2800,9 @@ async function runCheck() {
   const container = document.getElementById("checkResult")
   renderLoadingSkeleton()
   try {
-    const result = await api("/api/retirement/check")
+    const result = ACTIVE_DATA_SOURCE_MODE === "detached"
+      ? await api("/api/retirement/detached/check", { method: "POST", body: JSON.stringify({ dashboard: DETACHED_DRAFT.dashboard, accounts: DETACHED_DRAFT.accounts }) })
+      : await api("/api/retirement/check")
     if (requestId !== checkRequestId) return
     renderSummaryStats(result)
     firstCheckDone = true
@@ -2971,7 +3026,15 @@ document.getElementById("addAccountBtn").addEventListener("click", async () => {
     return
   }
   try {
-    await api("/api/data-source/accounts", { method: "POST", body: JSON.stringify({ name, balance }) })
+    if (ACTIVE_DATA_SOURCE_MODE === "detached") {
+      // Same default a fresh file/linked-mode account gets too (see applyAccountPatch's own
+      // not-found branch in app-server.ts) -- an explicit type from the start, never the "legacy,
+      // guess from the name" path a missing type would otherwise trigger (see classifyAccounts).
+      DETACHED_DRAFT.accounts.push({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name, balance, type: "other" })
+      saveDetachedDraft()
+    } else {
+      await api("/api/data-source/accounts", { method: "POST", body: JSON.stringify({ name, balance }) })
+    }
     nameInput.value = ""
     newAccountBalanceInput.value = ""
     await loadState()
@@ -2981,6 +3044,17 @@ document.getElementById("addAccountBtn").addEventListener("click", async () => {
     errorEl.hidden = false
   }
 })
+
+// Detached mode only (issue #38) -- the only mode where an account is entirely client-invented, so
+// unlike a real Actual/file account (closed externally, never through this UI) there's a genuine
+// "undo the add" action to offer. See its own doc comment in style.css (.acct-remove-btn).
+let detachedAccountCounter = 0
+async function removeDetachedAccount(id) {
+  DETACHED_DRAFT.accounts = DETACHED_DRAFT.accounts.filter((a) => a.id !== id)
+  saveDetachedDraft()
+  await loadState()
+  await runCheck()
+}
 document.getElementById("expenseCategoriesShowHidden").addEventListener("change", (e) => {
   EXPENSE_CATEGORY_VIEW.showHidden = e.target.checked
   saveExpenseCategoryView()
@@ -4401,20 +4475,18 @@ if (retirementToolbarEl) {
 let ACTIVE_DATA_SOURCE_MODE = "actual"
 
 // Function to reflect which data source is active into the parts of the page that care: the
-// Budget tab (disabled entirely in file mode -- it only ever implements Retirement's narrower
-// AccountDataSource needs, see the "companion app north star" comment in app-server.ts) and the
-// logout/disconnect icon's own title (so it always describes what it's actually about to do). Only
-// ever called in "linked" mode (see AppServerOptions.mode) -- a detached server's own boot path
-// (startDetachedApp, via checkSession's mode check) never calls this at all, since neither Budget/
-// Retirement nor a "log out to a different mode" concept exists there; see the logout button's own
-// click handler for detached mode's completely separate "clear my data" meaning instead.
+// Budget tab (disabled entirely in file and detached mode -- neither ever has live category/
+// transaction data, see the "companion app north star" comment in app-server.ts) and the
+// logout/disconnect icon's own title (so it always describes what it's actually about to do).
+// Detached mode's own "log out" is really "clear my data" (see the logout button's own click
+// handler) -- there's no other mode on that SERVER to return to, just a blank plan in place.
 function applyDataSourceMode(mode) {
   ACTIVE_DATA_SOURCE_MODE = mode
   const budgetTab = document.querySelector('.section-item[data-section="budget"]')
-  budgetTab.classList.toggle("disabled", mode === "file")
-  budgetTab.title = mode === "file" ? "Not available while importing from a file" : ""
+  budgetTab.classList.toggle("disabled", mode === "file" || mode === "detached")
+  budgetTab.title = mode === "file" ? "Not available while importing from a file" : mode === "detached" ? "Not available in detached mode" : ""
   const logoutBtn = document.getElementById("logoutBtn")
-  const label = mode === "file" ? "Disconnect file" : "Log out of Actual"
+  const label = mode === "file" ? "Disconnect file" : mode === "detached" ? "Clear my data" : "Log out of Actual"
   logoutBtn.title = label
   logoutBtn.setAttribute("aria-label", label)
 }
@@ -4545,38 +4617,41 @@ document.getElementById("loginModalClose").addEventListener("click", cancelLogin
 document.getElementById("loginCancelBtn").addEventListener("click", cancelLoginModal)
 
 // Detached mode (issue #38) -- a whole server run with AB_MODE=detached (see
-// AppServerOptions.mode in app-server.ts), never a per-request/runtime choice any more (that
-// changed after phase 1's own "Enter manually" login radio -- see this file's own git history for
-// that earlier design). Client state is still fully browser-held, per the issue's own explicit
-// design choice ("data lives only in the browser for that session"): no server round trip at boot,
-// no STATE object (GET /api/retirement/state) at all. Mirrored to localStorage as a same-browser
-// convenience only (explicitly allowed by the issue's own "Design" section) -- never sent anywhere
-// except in the one-off POST /api/retirement/detached/check request itself when "Run check" is
-// clicked. Same caveat as every other localStorage use in this app (SKELETON_CACHE_KEY above,
-// getCookie's own doc comment): this app's own port can change across a `--dev` restart, and
-// localStorage is origin-scoped including the port, so this only reliably survives a refresh on a
-// fixed-port deployment or an unrestarted --dev session -- acceptable here since, per the issue
-// itself, losing this is explicitly "reasonable" behavior, not a bug to work around.
-const DETACHED_STATE_KEY = "runway.detachedMode.state.v1"
+// AppServerOptions.mode in app-server.ts). Unified onto the real Retirement page's own STATE/
+// render pipeline (2026-09-22) -- DETACHED_DRAFT holds a client-side, FireConfig-shaped draft
+// ({dashboard, accounts}) that stands in for the config.json linked/file mode reads/writes on
+// disk; detachedState/loadState/patchPlan/patchAccount/reorderAccounts (above) POST it to the
+// stateless POST /api/retirement/detached/state whenever it changes and use the real StateResponse
+// that comes back, so every card/field on the page -- Plan, Expense Projection, Simulation
+// Settings, Retirement income, the full per-account editor -- works completely unmodified here,
+// same as linked/file mode. Mirrored to localStorage as a same-browser convenience only (per the
+// issue's own explicit "data lives only in the browser for that session" design) -- never sent
+// anywhere except in that one route's own request body. Same caveat as every other localStorage
+// use in this app (SKELETON_CACHE_KEY above, getCookie's own doc comment): this app's own port can
+// change across a `--dev` restart, and localStorage is origin-scoped including the port, so this
+// only reliably survives a refresh on a fixed-port deployment or an unrestarted --dev session --
+// acceptable here since, per the issue itself, losing this is explicitly "reasonable" behavior,
+// not a bug to work around.
+const DETACHED_DRAFT_KEY = "runway.detachedMode.draft.v1"
 
-function defaultDetachedState() {
-  return { birthDate: "", retirementAgesText: "", planToAge: "", annualExpensesCents: null, accounts: [] }
+function defaultDetachedDraft() {
+  return { dashboard: {}, accounts: [] }
 }
 
-let DETACHED_STATE = defaultDetachedState()
+let DETACHED_DRAFT = defaultDetachedDraft()
 
-function loadDetachedState() {
+function loadDetachedDraft() {
   try {
-    const raw = localStorage.getItem(DETACHED_STATE_KEY)
-    DETACHED_STATE = raw ? { ...defaultDetachedState(), ...JSON.parse(raw) } : defaultDetachedState()
+    const raw = localStorage.getItem(DETACHED_DRAFT_KEY)
+    DETACHED_DRAFT = raw ? { ...defaultDetachedDraft(), ...JSON.parse(raw) } : defaultDetachedDraft()
   } catch {
-    DETACHED_STATE = defaultDetachedState()
+    DETACHED_DRAFT = defaultDetachedDraft()
   }
 }
 
-function saveDetachedState() {
+function saveDetachedDraft() {
   try {
-    localStorage.setItem(DETACHED_STATE_KEY, JSON.stringify(DETACHED_STATE))
+    localStorage.setItem(DETACHED_DRAFT_KEY, JSON.stringify(DETACHED_DRAFT))
   } catch {
     // Storage disabled/unavailable -- the mode still works for this page view, it just won't
     // survive a reload, the same tradeoff every other localStorage use in this app already accepts.
@@ -4584,149 +4659,18 @@ function saveDetachedState() {
 }
 
 // "Clear my data" (the logout icon's own detached-mode meaning, see its click handler below) --
-// resets to a blank plan and re-renders in place. Unlike linked mode's own logout, there's no
-// other mode to return to (a detached SERVER has nothing else to offer), so this never reloads or
-// navigates anywhere -- clearing and re-rendering the same page is the whole action.
-function clearDetachedState() {
+// resets to a blank draft and reloads/re-renders the real page in place (loadState/render, same
+// as every other draft change). Unlike linked mode's own logout, there's no other mode to return
+// to (a detached SERVER has nothing else to offer), so this never reloads the whole page or
+// navigates anywhere -- refreshing this same page's own content is the whole action.
+function clearDetachedDraft() {
   try {
-    localStorage.removeItem(DETACHED_STATE_KEY)
+    localStorage.removeItem(DETACHED_DRAFT_KEY)
   } catch {
-    // Nothing else to do -- DETACHED_STATE is reset below regardless, so the page's own fields
+    // Nothing else to do -- DETACHED_DRAFT is reset below regardless, so the page's own fields
     // still end up blank even if the stale storage entry itself couldn't be removed.
   }
-  DETACHED_STATE = defaultDetachedState()
-  document.getElementById("detachedBirthDate").value = ""
-  document.getElementById("detachedRetireAges").value = ""
-  document.getElementById("detachedPlanToAge").value = ""
-  document.getElementById("detachedAnnualExpenses").value = ""
-  renderDetachedAccounts()
-  document.getElementById("detachedCheckResult").innerHTML = `<div class="empty-note">Add at least one account, fill in the fields above, and click Run check.</div>`
-  lastDetachedCheckResult = null
-}
-
-// Fetched once per page load (plain reference data, see GET /api/account-types' own doc comment)
-// and cached -- every render of the account list/the Add-account type dropdown reads this same
-// object rather than re-fetching.
-let DETACHED_ACCOUNT_TYPE_LABELS = null
-
-async function loadDetachedAccountTypeLabels() {
-  if (!DETACHED_ACCOUNT_TYPE_LABELS) DETACHED_ACCOUNT_TYPE_LABELS = await api("/api/account-types")
-  const select = document.getElementById("detachedNewAccountType")
-  select.innerHTML = Object.entries(DETACHED_ACCOUNT_TYPE_LABELS)
-    .map(([type, info]) => `<option value="${escapeHtml(type)}">${escapeHtml(info.label)}</option>`)
-    .join("")
-}
-
-function renderDetachedAccounts() {
-  const list = document.getElementById("detachedAccountsList")
-  if (DETACHED_STATE.accounts.length === 0) {
-    list.innerHTML = `<div class="empty-note">No accounts yet -- add one below.</div>`
-    return
-  }
-  list.innerHTML = DETACHED_STATE.accounts
-    .map(
-      (account, index) => `<div class="detached-account-row">
-        <span class="name">${escapeHtml(account.name)}</span>
-        <span class="money">${moneyHtml(usd(account.balance))}</span>
-        <span class="type">${escapeHtml(DETACHED_ACCOUNT_TYPE_LABELS?.[account.type]?.label ?? account.type)}</span>
-        <button type="button" class="btn secondary" data-remove-detached-account="${index}">Remove</button>
-      </div>`,
-    )
-    .join("")
-}
-
-attachMoneyFormatting(document.getElementById("detachedAnnualExpenses"))
-attachMoneyFormatting(document.getElementById("detachedNewAccountBalance"))
-
-let detachedAccountCounter = 0
-document.getElementById("detachedAddAccountBtn").addEventListener("click", () => {
-  const errorEl = document.getElementById("detachedAccountError")
-  errorEl.hidden = true
-  const name = document.getElementById("detachedNewAccountName").value.trim()
-  const balanceInput = document.getElementById("detachedNewAccountBalance")
-  const balance = parseMoneyInputCents(balanceInput.value)
-  const type = document.getElementById("detachedNewAccountType").value
-  if (!name || balance === null || !type) {
-    errorEl.textContent = "Name, balance, and type are all required."
-    errorEl.hidden = false
-    return
-  }
-  DETACHED_STATE.accounts.push({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name, balance, type })
-  saveDetachedState()
-  renderDetachedAccounts()
-  document.getElementById("detachedNewAccountName").value = ""
-  balanceInput.value = ""
-})
-document.getElementById("detachedAccountsList").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-remove-detached-account]")
-  if (!btn) return
-  DETACHED_STATE.accounts.splice(Number(btn.dataset.removeDetachedAccount), 1)
-  saveDetachedState()
-  renderDetachedAccounts()
-})
-
-// Reads the plan fields straight from the DOM (not relying on DETACHED_STATE already reflecting
-// them -- this IS what makes them authoritative, the same "commit point" role a real submit
-// button plays elsewhere) and runs the same stateless check every other mode's own runCheck
-// eventually reaches, just POSTed with everything in the body instead of read back off disk
-// server-side. See POST /api/retirement/detached/check's own doc comment in app-server.ts for the
-// full reasoning on why this route -- and not the shared GET /api/retirement/check -- exists.
-let lastDetachedCheckResult = null
-async function runDetachedCheck() {
-  const errorEl = document.getElementById("detachedCheckError")
-  errorEl.hidden = true
-  const container = document.getElementById("detachedCheckResult")
-  const birthDate = document.getElementById("detachedBirthDate").value
-  const retirementAgesText = document.getElementById("detachedRetireAges").value
-  const planToAge = parseInt(document.getElementById("detachedPlanToAge").value, 10)
-  const annualExpenses = parseMoneyInputCents(document.getElementById("detachedAnnualExpenses").value)
-  try {
-    if (!birthDate) throw new Error("Birth date is required.")
-    const retirementAges = parseRetirementAges(retirementAgesText)
-    if (!Number.isFinite(planToAge)) throw new Error("Plan-to-age is required.")
-    if (annualExpenses === null) throw new Error("Annual expenses is required.")
-
-    DETACHED_STATE.birthDate = birthDate
-    DETACHED_STATE.retirementAgesText = retirementAgesText
-    DETACHED_STATE.planToAge = planToAge
-    DETACHED_STATE.annualExpensesCents = annualExpenses
-    saveDetachedState()
-
-    container.innerHTML = `<div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Running…</div>`
-    const result = await api("/api/retirement/detached/check", {
-      method: "POST",
-      body: JSON.stringify({
-        accounts: DETACHED_STATE.accounts.map((a) => ({ id: a.id, name: a.name, balance: a.balance, type: a.type })),
-        birthDate,
-        retirementAges,
-        planToAge,
-        annualExpenses,
-      }),
-    })
-    lastDetachedCheckResult = result
-    renderCheckResult(result, "detachedCheckResult")
-  } catch (error) {
-    errorEl.textContent = error.message
-    errorEl.hidden = false
-    container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
-  }
-}
-document.getElementById("detachedRunCheckBtn").addEventListener("click", () => runExclusive(runDetachedCheck))
-
-async function startDetachedApp() {
-  loadDetachedState()
-  document.getElementById("detachedBirthDate").value = DETACHED_STATE.birthDate
-  document.getElementById("detachedRetireAges").value = DETACHED_STATE.retirementAgesText
-  document.getElementById("detachedPlanToAge").value = DETACHED_STATE.planToAge
-  document.getElementById("detachedAnnualExpenses").value = formatMoneyInputValue(DETACHED_STATE.annualExpensesCents)
-  activateSection("detached")
-  // Awaited before the first render -- renderDetachedAccounts reads DETACHED_ACCOUNT_TYPE_LABELS
-  // to show a real label per row; rendering before this resolves would show each account's
-  // raw type key (e.g. "brokerage") for one flash instead of "Taxable brokerage / investment
-  // account", or permanently on a restored (localStorage) account list with no re-render to
-  // ever pick the label up afterward.
-  await loadDetachedAccountTypeLabels()
-  renderDetachedAccounts()
+  DETACHED_DRAFT = defaultDetachedDraft()
 }
 
 // "linked" (default) or "detached" -- read once at boot from GET /api/mode (see checkSession
@@ -4740,16 +4684,14 @@ async function checkSession() {
     // Checked before either linked-mode-only round trip below -- a detached server has neither an
     // Actual session nor a file-mode data source to report on at all (both routes are gated off
     // entirely in that mode, see app-server.ts's own MODE gate), so there's nothing to ask.
-    // Detached mode also has no login screen of any kind -- it's the whole app for that server,
-    // reached directly (see startDetachedApp).
+    // Detached mode also has no login screen of any kind -- startApp() below is the whole app for
+    // that server, reached directly.
     const modeStatus = await api("/api/mode")
     SERVER_MODE = modeStatus.mode
     if (SERVER_MODE === "detached") {
-      document.querySelector(".sections").hidden = true
-      const logoutBtn = document.getElementById("logoutBtn")
-      logoutBtn.title = "Clear my data"
-      logoutBtn.setAttribute("aria-label", "Clear my data")
-      startDetachedApp()
+      applyDataSourceMode("detached")
+      loadDetachedDraft()
+      startApp()
       return
     }
     const [sessionStatus, dataSourceStatus] = await Promise.all([api("/api/session"), api("/api/data-source")])
@@ -4860,9 +4802,12 @@ document.getElementById("dataSourceChip").addEventListener("click", () => showLo
 document.getElementById("transactionsChip").addEventListener("click", () => showLoginModal(true))
 document.getElementById("logoutBtn").addEventListener("click", async () => {
   if (SERVER_MODE === "detached") {
-    // Nothing server-side to DELETE, and no other mode to return to -- clearDetachedState resets
-    // and re-renders #page-detached directly, in place; no reload needed (see its own doc comment).
-    clearDetachedState()
+    // Nothing server-side to DELETE, and no other mode to return to -- clearDetachedDraft resets
+    // the draft, then a plain loadState()+runCheck() re-renders the same real page in place with a
+    // blank plan; no whole-page reload needed (see clearDetachedDraft's own doc comment).
+    clearDetachedDraft()
+    await loadState()
+    await runCheck()
     return
   }
   try {

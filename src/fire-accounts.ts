@@ -1118,6 +1118,11 @@ export interface LoadedFireConfig {
 // this schema grew a `dashboard` section, or before AccountType existed) is NOT an error -- see the
 // migration notes on FireAccountOverride/DashboardConfig above; read-compatible with both older
 // shapes, the next write always produces the current one.
+//
+// Thin now -- reads the file and parses JSON, then hands off to parseFireConfig for everything
+// else. Split out (2026-09-22, detached mode's own unification pass) so detached mode's own
+// stateless routes can validate a request body through the EXACT SAME shape/range checks a real
+// config.json file already gets, without needing a fake path on disk to read from at all.
 export function loadFireConfig(path: string): LoadedFireConfig {
   let raw: string
   try {
@@ -1133,6 +1138,16 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     throw new Error(`Invalid JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`)
   }
 
+  return { config: parseFireConfig(parsed, path), found: true }
+}
+
+// Function to validate an already-parsed value into a real FireConfig -- every check loadFireConfig
+// itself used to inline, factored out so a request body (detached mode's own stateless routes) gets
+// the identical validation a real config.json file already gets, not a second hand-rolled copy that
+// could quietly drift from it over time. `path` is only ever used in error message text below (e.g.
+// "Invalid config in data/config.json: ...") -- a caller with no real file can pass any label that
+// reads sensibly there (detached mode's own routes use a fixed string, not a path).
+export function parseFireConfig(parsed: unknown, path: string): FireConfig {
   if (
     !parsed ||
     typeof parsed !== "object" ||
@@ -1388,7 +1403,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
     },
   }
 
-  return { config, found: true }
+  return config
 }
 
 // Function to write config.json, e.g. after an account edit in the app's web UI

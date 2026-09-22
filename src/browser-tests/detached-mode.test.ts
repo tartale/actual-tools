@@ -11,12 +11,17 @@ import type { RunningServer } from "../app-server.ts"
 
 // Browser-driven tests for detached mode (issue #38) -- a whole server run with AB_MODE=detached,
 // not a runtime login choice (see app-server.ts's own MODE gate, which is what makes this
-// server-driven design real rather than cosmetic). POST /api/retirement/detached/check and the
-// MODE gate itself are covered at the route level (app-server.test.ts); what neither reaches is
-// the client's own half: that a detached server skips the login modal entirely and lands straight
-// on #page-detached, that the account-add/remove UI works, and (the whole point of "data lives
-// only in the browser") that the plan and account list actually survive a reload via localStorage
-// with no server ever told about it.
+// server-driven design real rather than cosmetic). Unified onto the real Retirement page's own
+// Plan/Expense Projection/Accounts/Simulation Settings cards and STATE/render pipeline
+// (2026-09-22) -- there's no bespoke #page-detached or minimal account editor left at all, so
+// these tests drive the exact same elements the linked/file-mode browser tests do
+// (src/browser-tests/app-ui.test.ts). POST /api/retirement/detached/{check,state} and the MODE
+// gate itself are covered at the route level (app-server.test.ts); what neither reaches is the
+// client's own half: that a detached server skips the login modal entirely and lands straight on
+// #page-retirement, that the real rich account editor actually persists a detached-mode edit
+// (there's no server-side override store to fall back on if the client-side merge is wrong), and
+// (the whole point of "data lives only in the browser") that the plan and account list actually
+// survive a reload via localStorage with no server ever told about it.
 //
 // No mocked Actual fetch needed at all -- detached mode never talks to Actual (that's the point),
 // and its own routes are reachable with no login step of any kind.
@@ -66,114 +71,129 @@ async function openDetachedPage(): Promise<{ page: Page; errors: string[] }> {
   const errors: string[] = []
   opened.on("pageerror", (error) => errors.push(error.message))
   await opened.goto(server.url)
-  await opened.waitForSelector("#page-detached.active", { timeout: 10000 })
+  await opened.waitForSelector("#page-retirement.active", { timeout: 10000 })
   return { page: opened, errors }
 }
 
+// Fills the Plan card's own fields and commits each -- .press("Tab") forces the blur every one of
+// these fields' own "change" (or, for the money field, "moneycommit" on blur -- see
+// attachMoneyFormatting) listener needs, the same as a real person tabbing to the next field.
+async function fillPlanFields(ui: Page): Promise<void> {
+  await ui.locator("#birthDate").fill("1975-01-01")
+  await ui.locator("#birthDate").press("Tab")
+  await ui.locator("#retireAges").fill("55")
+  await ui.locator("#retireAges").press("Tab")
+  await ui.locator("#planToAge").fill("90")
+  await ui.locator("#planToAge").press("Tab")
+  await ui.locator("#fileModeAnnualExpense").fill("40000")
+  await ui.locator("#fileModeAnnualExpense").press("Tab")
+}
+
 describe.skipIf(!browser)("Detached mode in a browser", () => {
-  it("lands directly on #page-detached with no login modal, and the nav is hidden entirely", async () => {
+  it("lands directly on #page-retirement with no login modal, nav visible but Budget disabled", async () => {
     const { page: ui, errors } = await openDetachedPage()
     expect(await ui.locator("#loginBackdrop").isVisible()).toBe(false)
-    expect(await ui.locator(".sections").isHidden()).toBe(true)
+    expect(await ui.locator(".sections").isHidden()).toBe(false)
+    expect(await ui.locator('.section-item[data-section="budget"]').evaluate((el) => el.classList.contains("disabled"))).toBe(true)
+    expect(await ui.locator("#logoutBtn").getAttribute("title")).toBe("Clear my data")
     expect(errors).toEqual([])
   }, 60000)
 
-  it("adds an account, runs a real check, and renders an actual Bridge/Monte Carlo result -- the full stateless round trip", async () => {
+  it("adds an account through the real Accounts card, edits its type/allocation, and renders a real Bridge/Monte Carlo result", async () => {
     const { page: ui, errors } = await openDetachedPage()
+    await fillPlanFields(ui)
 
-    await ui.locator("#detachedBirthDate").fill("1975-01-01")
-    await ui.locator("#detachedRetireAges").fill("55")
-    await ui.locator("#detachedPlanToAge").fill("90")
-    await ui.locator("#detachedAnnualExpenses").fill("40000")
+    await ui.locator("#newAccountName").fill("Brokerage")
+    await ui.locator("#newAccountBalance").fill("500000")
+    await ui.locator("#addAccountBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false)
 
-    await ui.locator("#detachedNewAccountName").fill("Brokerage")
-    await ui.locator("#detachedNewAccountBalance").fill("500000")
-    await ui.locator("#detachedNewAccountType").selectOption("brokerage")
-    await ui.locator("#detachedAddAccountBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#detachedAccountsList")?.textContent?.includes("Brokerage") ?? false)
-    // A real label, not the raw type key -- confirms GET /api/account-types actually resolved
-    // before this render, not just that SOME text showed up.
-    expect(await ui.locator("#detachedAccountsList").textContent()).toContain("Taxable brokerage")
+    // A fresh account defaults to type "other" (same as a fresh file/linked-mode account -- see
+    // applyAccountPatch's own not-found branch), so the portfolio-only fields (allocation, expected
+    // return) start hidden -- picking a real portfolio type here is what a person configuring a
+    // brand new detached-mode account would actually do next.
+    const row = ui.locator("#accountsList .account-row", { hasText: "Brokerage" })
+    await row.locator("select[data-field='type']").selectOption("brokerage")
+    await ui.waitForFunction(() => (document.querySelector("#accountsList") as HTMLElement)?.innerText?.includes("Allocation"))
+    const rowAfterType = ui.locator("#accountsList .account-row", { hasText: "Brokerage" })
+    await rowAfterType.locator("select[data-field='allocationPreset']").selectOption({ index: 1 })
 
-    await ui.locator("#detachedRunCheckBtn").click()
-    await ui.waitForSelector("#detachedCheckResult .findings-group", { timeout: 20000 })
-    const resultText = await ui.locator("#detachedCheckResult").textContent()
+    // A findings-group already exists from the boot-time check (type "other" -- not part of the
+    // investable portfolio, so nothing is reachable yet); poll for the SPECIFIC content the
+    // type+allocation edits above should produce, not just "a findings-group exists," since that
+    // would pass on the stale pre-edit result too (scheduleRecheck's own 500ms debounce means the
+    // real recheck settles slightly after the last edit, not synchronously with it).
+    await expect.poll(async () => (await ui.locator("#checkResult").textContent()) ?? "", { timeout: 20000 }).toContain("Monte Carlo")
+    const resultText = await ui.locator("#checkResult").textContent()
     expect(resultText).toContain("Bridge")
-    expect(resultText).toContain("Monte Carlo")
-    expect(resultText).toMatch(/\$500,000\.00|\$643,233\.18|reachable/)
+    expect(resultText).toContain("reachable at retirement (100%)")
     expect(errors).toEqual([])
   }, 60000)
 
-  it("shows an inline error (not a blank/broken result) when required fields are missing", async () => {
+  it("shows an inline error (not a blank/broken result) when required plan fields are missing", async () => {
     const { page: ui, errors } = await openDetachedPage()
-    await ui.locator("#detachedRunCheckBtn").click()
-    await ui.waitForSelector("#detachedCheckError:not([hidden])")
-    expect(await ui.locator("#detachedCheckError").textContent()).toContain("Birth date")
+    // The initial boot-time check fires automatically (activateSection's own "land on Retirement"
+    // behavior, unchanged from linked/file mode) against a completely empty draft.
+    await ui.waitForSelector("#checkResult .empty-note", { timeout: 20000 })
+    expect(await ui.locator("#checkResult").textContent()).toContain("birth date")
     expect(errors).toEqual([])
   }, 60000)
 
   it("the plan fields and account list survive a reload -- mirrored to localStorage, never the server", async () => {
     const { page: ui, errors } = await openDetachedPage()
+    await fillPlanFields(ui)
 
-    await ui.locator("#detachedBirthDate").fill("1980-06-15")
-    await ui.locator("#detachedRetireAges").fill("60")
-    await ui.locator("#detachedPlanToAge").fill("95")
-    await ui.locator("#detachedAnnualExpenses").fill("50000")
-    await ui.locator("#detachedNewAccountName").fill("Savings")
-    await ui.locator("#detachedNewAccountBalance").fill("20000")
-    await ui.locator("#detachedNewAccountType").selectOption("savings")
-    await ui.locator("#detachedAddAccountBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#detachedAccountsList")?.textContent?.includes("Savings") ?? false)
-    // The account list persists immediately (an explicit add), but the plan fields only get
-    // written to localStorage at Run-check time (see runDetachedCheck's own doc comment) -- run
-    // one so birthDate/retirementAges/planToAge/annualExpenses are part of what a reload restores.
-    await ui.locator("#detachedRunCheckBtn").click()
-    await ui.waitForSelector("#detachedCheckResult .findings-group", { timeout: 20000 })
+    await ui.locator("#newAccountName").fill("Savings")
+    await ui.locator("#newAccountBalance").fill("20000")
+    await ui.locator("#addAccountBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Savings") ?? false)
+    await ui.waitForSelector("#checkResult .findings-group", { timeout: 20000 })
 
     await ui.reload()
-    await ui.waitForSelector("#page-detached.active", { timeout: 10000 })
-    expect(await ui.locator("#detachedBirthDate").inputValue()).toBe("1980-06-15")
-    expect(await ui.locator("#detachedRetireAges").inputValue()).toBe("60")
-    expect(await ui.locator("#detachedPlanToAge").inputValue()).toBe("95")
-    expect(await ui.locator("#detachedAnnualExpenses").inputValue()).toContain("50,000.00")
-    expect(await ui.locator("#detachedAccountsList").textContent()).toContain("Savings")
+    await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Savings") ?? false)
+    expect(await ui.locator("#birthDate").inputValue()).toBe("1975-01-01")
+    expect(await ui.locator("#retireAges").inputValue()).toBe("55")
+    expect(await ui.locator("#planToAge").inputValue()).toBe("90")
+    expect(await ui.locator("#fileModeAnnualExpense").inputValue()).toContain("40,000.00")
     expect(errors).toEqual([])
   }, 60000)
 
   it("removing an account drops it from the list and from what a reload restores", async () => {
     const { page: ui, errors } = await openDetachedPage()
 
-    await ui.locator("#detachedNewAccountName").fill("Brokerage")
-    await ui.locator("#detachedNewAccountBalance").fill("500000")
-    await ui.locator("#detachedNewAccountType").selectOption("brokerage")
-    await ui.locator("#detachedAddAccountBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#detachedAccountsList")?.textContent?.includes("Brokerage") ?? false)
+    await ui.locator("#newAccountName").fill("Brokerage")
+    await ui.locator("#newAccountBalance").fill("500000")
+    await ui.locator("#addAccountBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false)
 
-    await ui.locator("[data-remove-detached-account]").click()
-    await ui.waitForFunction(() => document.querySelector("#detachedAccountsList")?.textContent?.includes("No accounts yet") ?? false)
+    await ui.locator("#accountsList [data-remove-account]").click()
+    await ui.waitForFunction(() => !(document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false))
 
     await ui.reload()
-    await ui.waitForSelector("#page-detached.active", { timeout: 10000 })
-    expect(await ui.locator("#detachedAccountsList").textContent()).toContain("No accounts yet")
+    await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
     expect(errors).toEqual([])
   }, 60000)
 
   it("\"Clear my data\" (the logout icon) resets in place, with no reload and nothing left for a later visit to restore", async () => {
     const { page: ui, errors } = await openDetachedPage()
-    await ui.locator("#detachedNewAccountName").fill("Brokerage")
-    await ui.locator("#detachedNewAccountBalance").fill("500000")
-    await ui.locator("#detachedNewAccountType").selectOption("brokerage")
-    await ui.locator("#detachedAddAccountBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#detachedAccountsList")?.textContent?.includes("Brokerage") ?? false)
+    await fillPlanFields(ui)
+    await ui.locator("#newAccountName").fill("Brokerage")
+    await ui.locator("#newAccountBalance").fill("500000")
+    await ui.locator("#addAccountBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false)
 
     await ui.locator("#logoutBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#detachedAccountsList")?.textContent?.includes("No accounts yet") ?? false)
-    // Still on the same page -- no navigation, no reload (there's nowhere else to go).
-    expect(await ui.locator("#page-detached").isVisible()).toBe(true)
+    await ui.waitForFunction(() => !(document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false))
+    // Still on the same page -- no navigation, no whole-page reload (there's nowhere else to go).
+    expect(await ui.locator("#page-retirement").isVisible()).toBe(true)
+    expect(await ui.locator("#birthDate").inputValue()).toBe("")
 
     await ui.reload()
-    await ui.waitForSelector("#page-detached.active", { timeout: 10000 })
-    expect(await ui.locator("#detachedAccountsList").textContent()).toContain("No accounts yet")
+    await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
+    expect(await ui.locator("#birthDate").inputValue()).toBe("")
     expect(errors).toEqual([])
   }, 60000)
 })

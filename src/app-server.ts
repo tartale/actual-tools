@@ -12,13 +12,13 @@ import type { AccountDataSource } from "./account-data-source.ts"
 import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
 import { accountIdFromName, appendAccountRow, categoryGroupsFromTransactions, fileAccountDataSource, parseTransactionRows } from "./file-account-data-source.ts"
 import { detachedAccountDataSource } from "./detached-account-data-source.ts"
+import type { DetachedAccount } from "./detached-account-data-source.ts"
 import { clearFileDataSourceSession, loadFileDataSourceSession, writeFileDataSourceSession } from "./data-source-session.ts"
 import type { FileDataSourceSession } from "./data-source-session.ts"
 import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import {
   ACCOUNT_TYPES,
   ACCOUNT_TYPE_TRAITS,
-  DEFAULT_DASHBOARD_CONFIG,
   DEFAULT_FILE_MODE_ANNUAL_EXPENSE,
   MONTE_CARLO_ALLOCATION_PRESETS,
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
@@ -33,6 +33,7 @@ import {
   isPortfolioCategory,
   loadFireConfig,
   overrideIndexFor,
+  parseFireConfig,
   pruneStaleOverrides,
   writeFireConfig,
 } from "./fire-accounts.ts"
@@ -53,10 +54,13 @@ import type {
   MonteCarloWithdrawalStrategy,
 } from "./fire-accounts.ts"
 import { loadIrsLimits } from "./irs-limits.ts"
+import type { IrsLimits } from "./irs-limits.ts"
 import { FILING_STATUSES, loadFederalTaxBrackets } from "./federal-tax-brackets.ts"
+import type { FederalTaxBrackets } from "./federal-tax-brackets.ts"
 import type { FilingStatus } from "./federal-tax-brackets.ts"
 import { loadFederalPovertyGuidelines } from "./federal-poverty-guidelines.ts"
 import { loadIrsLifeExpectancy } from "./irs-life-expectancy.ts"
+import type { IrsLifeExpectancyTable } from "./irs-life-expectancy.ts"
 import { SEPP_METHODS, seppAmount } from "./fire-sepp.ts"
 import type { SeppMethod } from "./fire-sepp.ts"
 import { calculateMortgagePayoff, projectAccountBalance, toBridgeAccounts } from "./fire-analysis.ts"
@@ -207,10 +211,20 @@ interface AccountState {
 // real cause of "Max feels delayed": a dozen real accounts' full histories, refetched after every
 // keystroke. Cached here per server process, keyed by account id; "fresh" (GET
 // /api/retirement/state) always refetches everything, "cached" (every mutating route's response)
-// reuses what's known and only fetches an account this process has never seen before.
+// reuses what's known and only fetches an account this process has never seen before. "uncached"
+// (detached mode's own routes, via buildStateFromConfig) skips this shared cache in BOTH
+// directions -- detached mode's own balances are already fully known synchronously from the
+// request body (detachedAccountDataSource.fetchAccountBalance does no real I/O at all, so there's
+// nothing to gain by caching), and its own account ids are freshly minted per add
+// (`detached-${Date.now()}-...`), never reused -- writing them into this cache would just leak
+// forever on a long-running detached server, for zero benefit.
 const balanceCache = new Map<string, number>()
 
-async function getBalances(dataSource: AccountDataSource, accounts: readonly { id: string }[], mode: "fresh" | "cached"): Promise<Map<string, number>> {
+async function getBalances(dataSource: AccountDataSource, accounts: readonly { id: string }[], mode: "fresh" | "cached" | "uncached"): Promise<Map<string, number>> {
+  if (mode === "uncached") {
+    const balances = await Promise.all(accounts.map((account) => dataSource.fetchAccountBalance(account.id)))
+    return new Map(accounts.map((account, index) => [account.id, balances[index] as number]))
+  }
   const needsFetch = mode === "fresh" ? accounts : accounts.filter((account) => !balanceCache.has(account.id))
   if (needsFetch.length > 0) {
     const fetched = await Promise.all(needsFetch.map((account) => dataSource.fetchAccountBalance(account.id)))
@@ -233,18 +247,36 @@ interface StateResponse {
 // Function to build the one JSON snapshot both GET /api/retirement/state and every mutating route
 // return after persisting a change -- so the client always renders from the same shape and never
 // has to separately recompute what a "max" contribution resolves to or which fields a type implies.
+//
+// Thin now -- loads everything from its own path options, then hands off to buildStateFromConfig
+// for the actual computation. Split out (2026-09-22, detached mode's own unification pass) so
+// detached mode's own stateless routes can produce the exact same StateResponse shape from a
+// request body's own FireConfig instead of one read off disk, and share every line of the
+// classification/mortgage-payoff/SEPP/contribution-limit logic below rather than a second copy of
+// it that could quietly drift from this one.
 async function buildState(
   dataSource: AccountDataSource,
   configPath: string,
   irsLimitsPath: string,
   federalTaxBracketsPath: string,
   irsLifeExpectancyPath: string,
-  balanceMode: "fresh" | "cached",
+  balanceMode: "fresh" | "cached" | "uncached",
 ): Promise<StateResponse> {
   const { config: fireConfig } = loadFireConfig(configPath)
   const irsLimits = loadIrsLimits(irsLimitsPath)
   const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
   const irsLifeExpectancy = loadIrsLifeExpectancy(irsLifeExpectancyPath)
+  return buildStateFromConfig(dataSource, fireConfig, irsLimits, federalTaxBrackets, irsLifeExpectancy, balanceMode)
+}
+
+async function buildStateFromConfig(
+  dataSource: AccountDataSource,
+  fireConfig: FireConfig,
+  irsLimits: IrsLimits | null,
+  federalTaxBrackets: FederalTaxBrackets | null,
+  irsLifeExpectancy: IrsLifeExpectancyTable | null,
+  balanceMode: "fresh" | "cached" | "uncached",
+): Promise<StateResponse> {
   const birthDate = fireConfig.dashboard.birthDate
   const currentAge = birthDate === null ? null : ageFromBirthDate(birthDate)
   // SEPP amounts are reported against the latest configured retirement age, same convention as
@@ -837,7 +869,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         sendJson(res, 200, { mode })
         return
       }
-      if (mode === "detached" && path !== "/api/retirement/detached/check") {
+      if (mode === "detached" && path !== "/api/retirement/detached/check" && path !== "/api/retirement/detached/state") {
         sendJson(res, 404, { error: `Detached mode has no connection of any kind -- ${req.method} ${path} isn't available on this server.` })
         return
       }
@@ -1290,24 +1322,21 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         return
       }
 
-      // Issue #38: detached mode's own stateless counterpart to GET /api/retirement/check above --
-      // fully ephemeral by design (see the issue's own "Design" section), so this reads NOTHING
-      // from disk and writes NOTHING to disk. The entire plan and account list travel in the
-      // request body itself, every time; the server holds none of it between requests (unlike
-      // Actual/file mode's own actualConfig/fileDataSourceSession module-level state) -- "data
-      // lives only in the browser for that session" is a real architectural property here, not
-      // just a UI framing. Reuses requirePlan/classifyAccounts/checkDashboard unchanged, fed from a
-      // synthetic, in-memory-only FireConfig instead of one loadFireConfig read off config.json --
-      // same validation and derivation logic as every other mode, zero duplicated business logic.
-      // Also reachable from a linked-mode server (not just a detached deployment) -- the MODE gate
-      // above only blocks the reverse (a detached server can't reach linked-only routes); nothing
-      // about this route itself depends on which server it's running on.
-      if (req.method === "POST" && path === "/api/retirement/detached/check") {
-        const body = (await readJsonBody(req)) as Record<string, unknown>
-        if (!Array.isArray(body.accounts)) {
+      // Function to turn a detached-mode request body's own "accounts" array (each entry the same
+      // shape the real Accounts card already edits -- id/name/balance plus every FireAccountOverride
+      // field, keyed by id instead of match) into the two shapes the rest of the app already works
+      // with: a raw account list (for detachedAccountDataSource) and a FireAccountOverride list (for
+      // a synthetic FireConfig). Shared by both detached routes below so their own request-body
+      // handling can't drift apart from each other. Per-override field validation (unknown type,
+      // bad allocationPreset, ...) is NOT duplicated here -- parseFireConfig, called by both callers
+      // right after this, already does it, identically to a real config.json's own accounts.
+      function detachedAccountsFromBody(rawAccounts: unknown): { detachedAccounts: DetachedAccount[]; overrides: FireAccountOverride[] } {
+        if (!Array.isArray(rawAccounts)) {
           throw new Error("accounts must be an array.")
         }
-        const detachedAccounts = body.accounts.map((raw, index) => {
+        const detachedAccounts: DetachedAccount[] = []
+        const overrides: FireAccountOverride[] = []
+        rawAccounts.forEach((raw, index) => {
           const account = raw as Record<string, unknown>
           if (typeof account.id !== "string" || !account.id) {
             throw new Error(`accounts[${index}].id must be a non-empty string.`)
@@ -1318,36 +1347,68 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           if (typeof account.balance !== "number") {
             throw new Error(`accounts[${index}].balance must be a number (cents).`)
           }
-          if (typeof account.type !== "string" || !ACCOUNT_TYPES.includes(account.type as AccountType)) {
-            throw new Error(`accounts[${index}].type "${String(account.type)}" is unknown. Valid types: ${ACCOUNT_TYPES.join(", ")}.`)
-          }
-          return { id: account.id, name: account.name.trim(), balance: account.balance, type: account.type as AccountType }
+          detachedAccounts.push({ id: account.id, name: account.name.trim(), balance: account.balance })
+          // Spreads the WHOLE account (id/name/balance included) -- the extra fields ride along
+          // harmlessly (nothing reads .id/.name/.balance off a FireAccountOverride, only .match,
+          // set explicitly right after), simpler than destructuring three fields out just to
+          // discard them.
+          overrides.push({ ...account, match: account.id })
         })
-        if (typeof body.annualExpenses !== "number" || body.annualExpenses < 0) {
-          throw new Error("annualExpenses must be a non-negative number (cents).")
-        }
-        // Everything else (filing status, household size, Monte Carlo assumptions, ...) stays at
-        // DEFAULT_DASHBOARD_CONFIG's own defaults for this phase -- the same "optional, sensible
-        // default" story every other mode already has for these fields, not something detached
-        // mode's own minimal entry form needs to ask for yet.
-        const syntheticFireConfig: FireConfig = {
-          version: 1,
-          accounts: detachedAccounts.map((account) => ({ match: account.id, type: account.type })),
-          dashboard: { ...DEFAULT_DASHBOARD_CONFIG, birthDate: typeof body.birthDate === "string" ? body.birthDate : null, retirementAges: Array.isArray(body.retirementAges) ? (body.retirementAges as number[]) : [], planToAge: typeof body.planToAge === "number" ? body.planToAge : DEFAULT_DASHBOARD_CONFIG.planToAge },
-        }
+        return { detachedAccounts, overrides }
+      }
+
+      // Issue #38: detached mode's own stateless counterpart to GET /api/retirement/check above --
+      // fully ephemeral by design (see the issue's own "Design" section), so this reads NOTHING
+      // from disk and writes NOTHING to disk. The entire plan and account list travel in the
+      // request body itself, every time; the server holds none of it between requests (unlike
+      // Actual/file mode's own actualConfig/fileDataSourceSession module-level state) -- "data
+      // lives only in the browser for that session" is a real architectural property here, not
+      // just a UI framing. Reuses requirePlan/classifyAccounts/checkDashboard/parseFireConfig
+      // unchanged, fed from a synthetic, in-memory-only FireConfig instead of one loadFireConfig
+      // read off config.json -- same validation and derivation logic as every other mode, zero
+      // duplicated business logic. Also reachable from a linked-mode server (not just a detached
+      // deployment) -- the MODE gate above only blocks the reverse (a detached server can't reach
+      // linked-only routes); nothing about this route itself depends on which server it's running on.
+      if (req.method === "POST" && path === "/api/retirement/detached/check") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const { detachedAccounts, overrides } = detachedAccountsFromBody(body.accounts)
+        const syntheticFireConfig = parseFireConfig({ version: 1, accounts: overrides, dashboard: body.dashboard ?? {} }, "detached mode request")
         const plan = requirePlan(syntheticFireConfig)
         const dataSource = detachedAccountDataSource(detachedAccounts)
         const rawAccounts = await dataSource.fetchAccounts()
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, syntheticFireConfig, syntheticFireConfig.dashboard.birthDate, null)
         const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
         const federalPovertyGuidelines = loadFederalPovertyGuidelines(federalPovertyGuidelinesPath)
+        // Same "manual figure only" story file mode's own fileModeSpend helper falls back to when
+        // there's no transactions file -- detached mode never has one, so there's no precedence to
+        // resolve, just the flat figure the (now shared, see index.html/app.js) Expense Projection
+        // card's own Initial Annual Expenses field already writes to fileModeAnnualExpense.
         const result = await checkDashboard(null, dataSource, accounts, {
           ...plan,
           fallbackInflationMean: 0.03,
           federalTaxBrackets,
           federalPovertyGuidelines,
-          fileModeSpend: { annualSpend: body.annualExpenses, basis: null },
+          fileModeSpend: { annualSpend: syntheticFireConfig.dashboard.fileModeAnnualExpense ?? DEFAULT_FILE_MODE_ANNUAL_EXPENSE, basis: null },
         })
+        sendJson(res, 200, result)
+        return
+      }
+
+      // Detached mode's own stateless counterpart to GET /api/retirement/state -- same "everything
+      // travels in the request body, nothing touches disk" design as /detached/check above, just
+      // returning the fuller StateResponse shape (classified accounts, account-type info, ...) the
+      // real Plan/Expense Projection/Accounts cards need to render themselves, rather than a check
+      // result. Reuses buildStateFromConfig unchanged -- this route's whole job is producing a
+      // synthetic FireConfig + AccountDataSource for it to run against, nothing more.
+      if (req.method === "POST" && path === "/api/retirement/detached/state") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const { detachedAccounts, overrides } = detachedAccountsFromBody(body.accounts)
+        const syntheticFireConfig = parseFireConfig({ version: 1, accounts: overrides, dashboard: body.dashboard ?? {} }, "detached mode request")
+        const dataSource = detachedAccountDataSource(detachedAccounts)
+        const irsLimits = loadIrsLimits(irsLimitsPath)
+        const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
+        const irsLifeExpectancy = loadIrsLifeExpectancy(irsLifeExpectancyPath)
+        const result = await buildStateFromConfig(dataSource, syntheticFireConfig, irsLimits, federalTaxBrackets, irsLifeExpectancy, "uncached")
         sendJson(res, 200, result)
         return
       }
