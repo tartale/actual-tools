@@ -280,6 +280,24 @@ either chip reopens the same modal (now with a working Cancel) to update
 either file — a plain page reload already re-pulls everything from disk, so
 there's no separate refresh control.
 
+A third radio, **Enter manually**, is a standalone FIRE calculator with no
+connection of any kind — explore the same Bridge/Monte Carlo engine with
+made-up "what if" numbers. Nothing is sent to (or held by) the server at
+all: birth date, retirement age(s), plan-to-age, a flat annual-expenses
+figure, and a plain account list (name, balance, type — each account takes
+its type's own default allocation/return/access-age, with no per-account
+override editor yet) live only in this browser's own local storage,
+mirrored there purely as a same-device convenience so a reload doesn't
+lose it; clicking **Run check** is the only network request this mode ever
+makes, and it carries the whole plan in that one request rather than
+anything accumulated server-side. Both Budget and Retirement are
+unavailable in this mode (there's nothing behind either to show); exiting
+(the icon next to the privacy toggle) clears the locally-held data and
+returns to this same login screen. Still early (issue #38's own phase
+1) — no CSV upload to seed the list yet, and no richer per-account editor
+(allocation, access age, contributions, ...) beyond type — both are
+tracked for a later phase.
+
 Binding every interface means the page also works from another device on
 the same network — e.g. running this on a home server and pulling it up
 on your phone or laptop's browser. **There is no authentication protecting

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -116,6 +116,17 @@ const IRS_LIMITS = {
   ira: { standard: 750000, catchUp50: 110000 },
   hsa: { selfOnly: 440000, family: 875000, catchUp55: 100000 },
 }
+
+describe("GET /api/account-types", () => {
+  it("returns a label for every account type, with no login or config needed at all", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/account-types`)
+    expect(res.status).toBe(200)
+    const body = await readJson<Record<string, { label: string }>>(res)
+    expect(body.brokerage?.label).toBe("Taxable brokerage / investment account")
+    expect(Object.keys(body).length).toBeGreaterThan(5)
+  })
+})
 
 describe("GET /api/retirement/state", () => {
   it("returns plan defaults and a heuristically classified account when config.json doesn't exist yet", async () => {
@@ -1062,6 +1073,74 @@ describe("GET /api/retirement/check", () => {
     const body = await readJson<CheckResult>(res)
     expect(body.annualSpend).toBe(1200000) // 100000 x 12 -- cat-b, not the live widget's cat-a
     expect(body.spendBasis).toContain("Plan section selection")
+  })
+})
+
+describe("POST /api/retirement/manual/check", () => {
+  // No boot-time account/plan fixture at all -- the whole point of this route (issue #38, phase 1)
+  // is that everything it needs travels in the request body itself, every time.
+  const validBody = {
+    accounts: [{ id: "a1", name: "Brokerage", balance: 5000000, type: "brokerage" }],
+    birthDate: "1975-01-01",
+    retirementAges: [65],
+    planToAge: 90,
+    annualExpenses: 4000000, // $40,000
+  }
+
+  it("runs a real check from a request body alone -- one account, no prior setup of any kind", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify(validBody) })
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.currentAge).toBe(51)
+    expect(body.planToAge).toBe(90)
+    expect(body.annualSpend).toBe(4000000)
+  })
+
+  it("writes nothing to config.json -- a second, different request isn't affected by an earlier one", async () => {
+    const url = await boot()
+    expect(existsSync(configPath)).toBe(false) // nothing on disk yet -- boot() never touches it
+    await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify(validBody) })
+    // Still nothing -- this route must never call writeFireConfig, unlike every stateful route.
+    expect(existsSync(configPath)).toBe(false)
+    // A completely different plan -- if the first request had persisted anything at all, this
+    // would either reflect stale leftovers or the write would throw trying to share state that
+    // doesn't belong to a request-scoped, stateless route.
+    const res = await fetch(`${url}api/retirement/manual/check`, {
+      method: "POST",
+      body: JSON.stringify({ ...validBody, birthDate: "1990-01-01", accounts: [] }),
+    })
+    const body = await readJson<CheckResult>(res)
+    expect(body.currentAge).toBe(36)
+    expect(existsSync(configPath)).toBe(false)
+  })
+
+  it("rejects an account with an unknown type", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/manual/check`, {
+      method: "POST",
+      body: JSON.stringify({ ...validBody, accounts: [{ id: "a1", name: "Brokerage", balance: 5000000, type: "bogus" }] }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it("rejects a missing birth date, the same error requirePlan already gives every other mode", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify({ ...validBody, birthDate: undefined }) })
+    expect(res.status).toBe(400)
+    expect((await readJson<{ error: string }>(res)).error).toContain("birth date")
+  })
+
+  it("rejects a negative annualExpenses", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify({ ...validBody, annualExpenses: -1 }) })
+    expect(res.status).toBe(400)
+  })
+
+  it("works with zero accounts -- a degenerate but valid portfolio", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify({ ...validBody, accounts: [] }) })
+    expect(res.status).toBe(200)
   })
 })
 

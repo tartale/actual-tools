@@ -11,12 +11,14 @@ import { actualAccountDataSource } from "./account-data-source.ts"
 import type { AccountDataSource } from "./account-data-source.ts"
 import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
 import { accountIdFromName, appendAccountRow, categoryGroupsFromTransactions, fileAccountDataSource, parseTransactionRows } from "./file-account-data-source.ts"
+import { manualAccountDataSource } from "./manual-account-data-source.ts"
 import { clearFileDataSourceSession, loadFileDataSourceSession, writeFileDataSourceSession } from "./data-source-session.ts"
 import type { FileDataSourceSession } from "./data-source-session.ts"
 import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import {
   ACCOUNT_TYPES,
   ACCOUNT_TYPE_TRAITS,
+  DEFAULT_DASHBOARD_CONFIG,
   DEFAULT_FILE_MODE_ANNUAL_EXPENSE,
   MONTE_CARLO_ALLOCATION_PRESETS,
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
@@ -801,6 +803,17 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         return
       }
 
+      // Plain reference data (account type -> its display label) -- no session, config, or IRS
+      // limits file needed, unlike buildState's own richer accountTypes map (contribution limit
+      // lines, ruleOf55Eligible, ...), which needs all three. Manual mode (issue #38, phase 1) is
+      // the one caller: its own account-add form needs a type dropdown before ANY login has
+      // happened yet, since manual mode has no login step to piggyback a state fetch onto the way
+      // Actual/file mode's post-login GET /api/retirement/state already does.
+      if (req.method === "GET" && path === "/api/account-types") {
+        sendJson(res, 200, Object.fromEntries(ACCOUNT_TYPES.map((type) => [type, { label: ACCOUNT_TYPE_TRAITS[type].label }])))
+        return
+      }
+
       // Never echoes apiKey back -- the client has no legitimate use for reading it again once
       // it's been entered, so there's no reason to put it back on the wire.
       if (req.method === "GET" && path === "/api/session") {
@@ -1244,6 +1257,65 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           federalTaxBrackets,
           federalPovertyGuidelines,
           fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds, fireConfig.dashboard.fileModeSpendSource),
+        })
+        sendJson(res, 200, result)
+        return
+      }
+
+      // Issue #38, phase 1: manual mode's own stateless counterpart to GET /api/retirement/check
+      // above -- fully ephemeral by design (see the issue's own "Design" section), so this reads
+      // NOTHING from disk and writes NOTHING to disk. The entire plan and account list travel in
+      // the request body itself, every time; the server holds none of it between requests (unlike
+      // Actual/file mode's own actualConfig/fileDataSourceSession module-level state) -- "data
+      // lives only in the browser for that session" is a real architectural property here, not
+      // just a UI framing. Reuses requirePlan/classifyAccounts/checkDashboard unchanged, fed from a
+      // synthetic, in-memory-only FireConfig instead of one loadFireConfig read off config.json --
+      // same validation and derivation logic as every other mode, zero duplicated business logic.
+      if (req.method === "POST" && path === "/api/retirement/manual/check") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        if (!Array.isArray(body.accounts)) {
+          throw new Error("accounts must be an array.")
+        }
+        const manualAccounts = body.accounts.map((raw, index) => {
+          const account = raw as Record<string, unknown>
+          if (typeof account.id !== "string" || !account.id) {
+            throw new Error(`accounts[${index}].id must be a non-empty string.`)
+          }
+          if (typeof account.name !== "string" || !account.name.trim()) {
+            throw new Error(`accounts[${index}].name must be a non-empty string.`)
+          }
+          if (typeof account.balance !== "number") {
+            throw new Error(`accounts[${index}].balance must be a number (cents).`)
+          }
+          if (typeof account.type !== "string" || !ACCOUNT_TYPES.includes(account.type as AccountType)) {
+            throw new Error(`accounts[${index}].type "${String(account.type)}" is unknown. Valid types: ${ACCOUNT_TYPES.join(", ")}.`)
+          }
+          return { id: account.id, name: account.name.trim(), balance: account.balance, type: account.type as AccountType }
+        })
+        if (typeof body.annualExpenses !== "number" || body.annualExpenses < 0) {
+          throw new Error("annualExpenses must be a non-negative number (cents).")
+        }
+        // Everything else (filing status, household size, Monte Carlo assumptions, ...) stays at
+        // DEFAULT_DASHBOARD_CONFIG's own defaults for this phase -- the same "optional, sensible
+        // default" story every other mode already has for these fields, not something manual
+        // mode's own minimal entry form needs to ask for yet.
+        const syntheticFireConfig: FireConfig = {
+          version: 1,
+          accounts: manualAccounts.map((account) => ({ match: account.id, type: account.type })),
+          dashboard: { ...DEFAULT_DASHBOARD_CONFIG, birthDate: typeof body.birthDate === "string" ? body.birthDate : null, retirementAges: Array.isArray(body.retirementAges) ? (body.retirementAges as number[]) : [], planToAge: typeof body.planToAge === "number" ? body.planToAge : DEFAULT_DASHBOARD_CONFIG.planToAge },
+        }
+        const plan = requirePlan(syntheticFireConfig)
+        const dataSource = manualAccountDataSource(manualAccounts)
+        const rawAccounts = await dataSource.fetchAccounts()
+        const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, syntheticFireConfig, syntheticFireConfig.dashboard.birthDate, null)
+        const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
+        const federalPovertyGuidelines = loadFederalPovertyGuidelines(federalPovertyGuidelinesPath)
+        const result = await checkDashboard(null, dataSource, accounts, {
+          ...plan,
+          fallbackInflationMean: 0.03,
+          federalTaxBrackets,
+          federalPovertyGuidelines,
+          fileModeSpend: { annualSpend: body.annualExpenses, basis: null },
         })
         sendJson(res, 200, result)
         return

@@ -9,3 +9,4 @@
 - [Live-testing cleanup discipline](live-testing-cleanup-discipline.md) — an unverified `/dev/null`-piped reset left the user's real config.json pinned wrong for a full turn; always confirm a cleanup PATCH's response, never fire-and-forget it
 - [SRE deployment responsibility](sre-deployment-responsibility.md) — this Dev session is also SRE now: rebuild the image + restart the container after shipping, not just merge the PR; the .envrc-sourcing gotcha and the dev-vs-container config.json split
 - [./actual service stop gotcha](actual-service-stop-gotcha.md) — always tears down the prod container regardless of -p/--dev; kill the dev server's own PID instead
+- [Manual entry mode](manual-entry-mode.md) — issue #38's standalone FIRE calculator (no data connection, fully client-held state); phase 1 of 4 shipped 2026-09-22
