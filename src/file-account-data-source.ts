@@ -118,6 +118,26 @@ export function parseAccountRows(content: string, delimiter: "," | "\t"): FileAc
   })
 }
 
+// Function to quote one CSV/TSV cell the same way parseAccountRows/parseTransactionRows' own
+// splitDelimited already reads a quoted cell back -- wraps in double quotes (doubling any internal
+// quote) whenever the value contains the delimiter, a quote, or a newline, otherwise left plain.
+function escapeDelimitedCell(value: string, delimiter: string): string {
+  return value.includes(delimiter) || value.includes('"') || value.includes("\n") || value.includes("\r") ? `"${value.replace(/"/g, '""')}"` : value
+}
+
+// Function to append one new account row onto an existing accounts file's raw content -- adding an
+// account through the UI (issue #34/#35's follow-up, 2026-09-22) modifies the SAME underlying
+// content the file itself holds, so the new account behaves identically to an imported one
+// afterward: configurable in Accounts, included in a later CSV export, survives a reload. Plain
+// string append (not a re-parse-and-reformat round trip) so the rest of the file -- whatever
+// header casing/quoting it already used -- is left exactly as it was. Callers should still re-parse
+// the RESULT to confirm it round-trips correctly (the same "prove it works" discipline every other
+// file-mode write already follows) -- this function itself doesn't validate anything.
+export function appendAccountRow(content: string, delimiter: "," | "\t", name: string, balance: number): string {
+  const trimmed = content.replace(/\s+$/, "")
+  return `${trimmed}\n${escapeDelimitedCell(name, delimiter)}${delimiter}${(balance / 100).toFixed(2)}\n`
+}
+
 export interface FileTransactionRow {
   date: string
   categoryGroup: string

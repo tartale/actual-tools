@@ -1435,6 +1435,44 @@ describe("/api/data-source", () => {
     expect(loadFileDataSourceSession(dataSourceSessionPath)).toBeNull()
   })
 
+  // Issue #34/#35's follow-up (2026-09-22): the login screen's combined picker submits an accounts
+  // file and an OPTIONAL transactions file in the same request.
+  it("imports a bundled transactions file in the same request as the accounts file", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/data-source`, {
+      method: "POST",
+      body: JSON.stringify({
+        fileName: "accounts.csv",
+        content: "name,balance\nBrokerage,50000.00\n",
+        transactions: { fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-1500.00\n" },
+      }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<{ transactionsFileName: string; transactionsLastLoadedAt: string }>(res)
+    expect(body.transactionsFileName).toBe("transactions.csv")
+    expect(typeof body.transactionsLastLoadedAt).toBe("string")
+    expect(loadFileDataSourceSession(dataSourceSessionPath)?.transactions).toMatchObject({ fileName: "transactions.csv" })
+  })
+
+  it("rejects the whole import when a bundled transactions file fails to parse -- never a half-applied import", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/data-source`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\n", transactions: { fileName: "bad.csv", content: "Date,Category\n2026-09-01,Rent\n" } }),
+    })
+    expect(res.status).toBe(400)
+    expect(loadFileDataSourceSession(dataSourceSessionPath)).toBeNull()
+  })
+
+  it("GET reports transactionsLastLoadedAt alongside transactionsFileName", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\n" }) })
+    await fetch(`${url}api/data-source/transactions`, { method: "POST", body: JSON.stringify({ fileName: "t.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-1500.00\n" }) })
+    const body = await readJson<{ transactionsFileName: string; transactionsLastLoadedAt: string }>(await fetch(`${url}api/data-source`))
+    expect(body.transactionsFileName).toBe("t.csv")
+    expect(typeof body.transactionsLastLoadedAt).toBe("string")
+  })
+
   it("rejects an empty fileName or content", async () => {
     const url = await boot({}, { loggedIn: false })
     const noName = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "", content: "name,balance\nA,1\n" }) })
@@ -1567,6 +1605,97 @@ describe("/api/retirement/check and /api/retirement/suggestions in file mode (no
 
     const res = await fetch(`${url}api/retirement/suggestions`)
     expect(res.status).toBe(200)
+  })
+})
+
+// Issue #34/#35's follow-up (2026-09-22): an explicit Manual/Transactions radio, rather than a
+// transactions file silently overriding the manual figure just because one happens to be uploaded.
+describe("fileModeSpendSource", () => {
+  async function setUpWithBothSources(url: string) {
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,500000.00\n" }) })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90, fileModeAnnualExpense: 40000_00, crossoverSpendHistoryMonths: 1 }),
+    })
+    const oneMonthAgo = new Date()
+    oneMonthAgo.setUTCMonth(oneMonthAgo.getUTCMonth() - 1)
+    await fetch(`${url}api/data-source/transactions`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "transactions.csv", content: `Date,Category_Group,Category,Amount\n${oneMonthAgo.toISOString().slice(0, 10)},Bills,Rent,-2000.00\n` }),
+    })
+  }
+
+  it("rejects a value other than manual, transactions, or null", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ fileModeSpendSource: "nonsense" }) })
+    expect(res.status).toBe(400)
+  })
+
+  it('"manual" ignores an uploaded transactions file entirely, even though one exists', async () => {
+    const url = await boot({}, { loggedIn: false })
+    await setUpWithBothSources(url)
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ fileModeSpendSource: "manual" }) })
+
+    const body = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    expect(body.annualSpend).toBe(40000_00) // the manual figure, not the $24,000/yr transactions would compute
+  })
+
+  it('"transactions" is honored literally -- reverting to manual only via an explicit switch, not automatically', async () => {
+    const url = await boot({}, { loggedIn: false })
+    await setUpWithBothSources(url)
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ fileModeSpendSource: "transactions" }) })
+
+    const body = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    expect(body.annualSpend).toBe(24000_00)
+  })
+
+  it("null (never touched) keeps the original default -- transactions wins when present, else manual", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await setUpWithBothSources(url)
+    // fileModeSpendSource never set -- defaults to null.
+    const body = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    expect(body.annualSpend).toBe(24000_00) // transactions wins, same as before this field existed
+  })
+})
+
+describe("POST /api/data-source/accounts", () => {
+  it("adds a new account, persisted the same as an imported one", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\n" }) })
+
+    const res = await fetch(`${url}api/data-source/accounts`, { method: "POST", body: JSON.stringify({ name: "Savings", balance: 10000_00 }) })
+    expect(res.status).toBe(200)
+    expect(await readJson<{ accountCount: number }>(res)).toMatchObject({ accountCount: 2 })
+
+    const state = await readJson<StateResponse>(await fetch(`${url}api/retirement/state`))
+    expect(state.accounts.map((a) => a.name)).toEqual(["Brokerage", "Savings"])
+    // Persisted into the session's own content -- survives independently of this one request.
+    expect(loadFileDataSourceSession(dataSourceSessionPath)?.content).toContain("Savings,10000.00")
+  })
+
+  it("rejects a duplicate account name", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\n" }) })
+
+    const res = await fetch(`${url}api/data-source/accounts`, { method: "POST", body: JSON.stringify({ name: "Brokerage", balance: 1_00 }) })
+    expect(res.status).toBe(400)
+    expect((await readJson<ErrorBody>(res)).error).toContain("already exists")
+  })
+
+  it("rejects an empty name or a missing balance", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\n" }) })
+
+    const noName = await fetch(`${url}api/data-source/accounts`, { method: "POST", body: JSON.stringify({ name: "", balance: 100_00 }) })
+    expect(noName.status).toBe(400)
+    const noBalance = await fetch(`${url}api/data-source/accounts`, { method: "POST", body: JSON.stringify({ name: "Savings" }) })
+    expect(noBalance.status).toBe(400)
+  })
+
+  it("rejects adding an account before an accounts file has ever been imported", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/data-source/accounts`, { method: "POST", body: JSON.stringify({ name: "Savings", balance: 100_00 }) })
+    expect(res.status).toBe(400)
   })
 })
 

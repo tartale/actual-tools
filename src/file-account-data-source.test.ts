@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { FileParseError, accountIdFromName, categoryGroupsFromTransactions, categoryIdFromName, fileAccountDataSource, parseAccountRows, parseTransactionRows, transactionCutoff } from "./file-account-data-source.ts"
+import { FileParseError, accountIdFromName, appendAccountRow, categoryGroupsFromTransactions, categoryIdFromName, fileAccountDataSource, parseAccountRows, parseTransactionRows, transactionCutoff } from "./file-account-data-source.ts"
 import type { FileTransactionRow } from "./file-account-data-source.ts"
 
 // Dates relative to "now" (not hardcoded) -- see fire-generate.test.ts's own monthsAgo for why.
@@ -221,5 +221,37 @@ describe("transactionCutoff", () => {
     expected.setUTCHours(0, 0, 0, 0)
     expected.setUTCMonth(expected.getUTCMonth() - 3)
     expect(cutoff.getTime()).toBe(expected.getTime())
+  })
+})
+
+describe("appendAccountRow", () => {
+  it("appends a new row onto existing content, preserving what was already there", () => {
+    const result = appendAccountRow("name,balance\nBrokerage,50000.00\n", ",", "Savings", 10000_00)
+    expect(result).toBe("name,balance\nBrokerage,50000.00\nSavings,10000.00\n")
+    expect(parseAccountRows(result, ",")).toEqual([
+      { name: "Brokerage", balance: 50000_00 },
+      { name: "Savings", balance: 10000_00 },
+    ])
+  })
+
+  it("works with TSV content", () => {
+    const result = appendAccountRow("name\tbalance\nBrokerage\t50000.00\n", "\t", "Savings", 10000_00)
+    expect(parseAccountRows(result, "\t")).toEqual([
+      { name: "Brokerage", balance: 50000_00 },
+      { name: "Savings", balance: 10000_00 },
+    ])
+  })
+
+  it("quotes a name containing the delimiter", () => {
+    const result = appendAccountRow("name,balance\n", ",", "Smith, John's IRA", 500_00)
+    expect(parseAccountRows(result, ",")).toEqual([{ name: "Smith, John's IRA", balance: 500_00 }])
+  })
+
+  it("tolerates content with no trailing newline", () => {
+    const result = appendAccountRow("name,balance\nBrokerage,50000.00", ",", "Savings", 100_00)
+    expect(parseAccountRows(result, ",")).toEqual([
+      { name: "Brokerage", balance: 50000_00 },
+      { name: "Savings", balance: 100_00 },
+    ])
   })
 })

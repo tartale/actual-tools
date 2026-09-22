@@ -262,6 +262,20 @@ validates them against that server before saving, so a typo surfaces
 immediately rather than on the first real page load. **Log out** (the
 icon next to the privacy toggle) clears them again.
 
+The same screen's **Import files** radio is a second way in with no Actual
+connection at all: an accounts file (CSV/TSV, `name,balance` — one row per
+account, required) and an optional transactions file (`Date,Category_Group,
+Category,Amount` — one row per transaction) upload together in one submit,
+with a **Download Template** button for each showing the exact columns
+expected. A transactions file, when present, lets Retirement compute a real
+trailing-spend figure instead of a flat manual one — see **Expense
+Projection** below. In this mode the Budget tab is disabled entirely (no
+live Actual connection for it to work against) and the topbar shows a
+filename + last-loaded-time chip per file instead of Log out; clicking
+either chip reopens the same modal (now with a working Cancel) to update
+either file — a plain page reload already re-pulls everything from disk, so
+there's no separate refresh control.
+
 Binding every interface means the page also works from another device on
 the same network — e.g. running this on a home server and pulling it up
 on your phone or laptop's browser. **There is no authentication protecting
@@ -426,13 +440,13 @@ up to keep editing. Editing a field re-runs the same
 stop typing, so the right column stays live as you work. Each card is
 independently foldable and remembers its own fold state per browser
 across a reload, via a cookie, the same way which of Budget/Retirement
-was open already was. **Refresh** (re-runs that same check on demand —
-its real job is pulling in a change made directly in Actual, like a new
-transaction, since editing a field here already triggers the same
-re-check on its own) and **Expand all**/**Collapse all** (the left
+was open already was. **Expand all**/**Collapse all** (the left
 column's own cards only — Analysis has its own single fold toggle,
-deliberately not swept up in a left-column bulk action) sit atop the
-left column. Both charts
+deliberately not swept up in a left-column bulk action) sits atop the
+left column — editing a field already triggers a re-check on its own, and
+in Actual mode a plain reload picks up a change made directly in Actual
+(there's no separate Refresh control; in file mode, see the header chips
+under **Import files** above). Both charts
 have a click-to-zoom button (appears on hover) that opens the same
 chart, larger, in a modal — not a re-render, the chart's own DOM node
 moves there and back, so its hover/tooltip keeps working unchanged.
@@ -454,6 +468,19 @@ Each group has its own select-all-in-group checkbox and a live N/total
 count, so a folded group's selection is still legible without opening
 it. This selection drives every simulation on the page directly (Bridge,
 Monte Carlo, the Spend tile).
+
+In file mode (no live Actual connection — see **Import files** above), an
+**Expense source** radio picks between a flat **Initial Annual Expenses**
+figure and a real one computed from an imported transactions file; picking
+Transactions file with none imported yet opens the Import modal directly
+rather than saving a source with nothing behind it, and canceling reverts
+to Manual. Successfully importing a transactions file — through that
+detour or just updating files via a header chip — selects Transactions
+file automatically, even overriding a prior explicit Manual choice.
+Everything above that's derived from spend history (Overall spend scale,
+Spend history, Expense categories) only applies once Transactions file is
+the active source; Manual hides all of it except Planned expense changes,
+which always applies regardless of where the current figure comes from.
 
 **Retirement income** (optional): a pension (start age + monthly amount)
 and Social Security (the three SSA-statement reference figures — at 62, at
@@ -493,7 +520,13 @@ withdrawal rule.
 a coarse category, but a concrete kind (Traditional 401(k)/403(b)/457/TSP,
 Roth 401(k)/403(b), Traditional IRA, Roth IRA, Inherited/Beneficiary IRA,
 HSA, taxable brokerage, high-yield savings/money market, debt, cash,
-other). A high-yield savings account or money market is its own type,
+other). In file mode (no live Actual connection to add/reflect accounts
+from — see **Import files** above), an **Add account** panel below the
+list appends a new row directly to the accounts file's own content,
+persisted and indistinguishable from an imported one afterward; an
+**Export accounts** button gives the current list back in the same
+`name,balance` shape the login screen imports, for hand-editing and
+reimporting. A high-yield savings account or money market is its own type,
 distinct from a plain brokerage: taxable like one, but with no age-based
 withdrawal restriction and a stable, cash-like balance rather than market
 exposure, so it defaults to a cash allocation instead of stocks. The type

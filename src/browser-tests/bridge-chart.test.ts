@@ -146,7 +146,7 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     )
     expect(tiles.some((t) => t.includes("(2 accounts)"))).toBe(true)
     expect(tiles.some((t) => /\$2,040,000\.00/.test(t))).toBe(true)
-    expect(tiles.some((t) => t.includes("Projected Expenditures"))).toBe(true)
+    expect(tiles.some((t) => t.includes("Projected Expenses"))).toBe(true)
 
     expect(await ui.evaluate(() => document.body.textContent ?? "")).not.toContain("withdrawals taxed")
     expect(errors).toEqual([])

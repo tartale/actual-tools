@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
@@ -466,12 +466,16 @@ describe.skipIf(!browser)("File-import data source in a browser", () => {
     await ui.locator("#dataSourceModeFile").check()
     expect(await ui.locator("#actualFields").isVisible()).toBe(false)
     expect(await ui.locator("#fileFields").isVisible()).toBe(true)
-    expect(await ui.locator("#loginSubmitBtn").textContent()).toBe("Import file")
+    expect(await ui.locator("#loginSubmitBtn").textContent()).toBe("Import")
 
     // A real upload -- the file's bytes travel through the browser, not a server-side path (see
     // data-source-session.ts's own 2026-09-21 doc comment on why this replaced the path-based
-    // design). setInputFiles hands Playwright an in-memory file, no disk fixture needed.
+    // design). setInputFiles hands Playwright an in-memory file, no disk fixture needed. The real
+    // "Browse…" trigger button (#importFilePickerBtn) is what a person clicks -- setInputFiles
+    // targets the underlying (visually hidden) input directly, which works regardless of how it's
+    // triggered.
     await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nManual Brokerage,50000.00\n") })
+    expect(await ui.locator("#importFilePickerName").textContent()).toBe("accounts.csv")
     await ui.locator("#loginSubmitBtn").click()
     await ui.waitForSelector("#loginBackdrop", { state: "hidden" })
 
@@ -488,28 +492,13 @@ describe.skipIf(!browser)("File-import data source in a browser", () => {
 
     // The topbar chip reports the file connection, not just silence.
     await ui.waitForSelector("#dataSourceChip:not([hidden])")
-    expect(await ui.locator("#dataSourceChip").textContent()).toContain("File")
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("Accounts")
     expect(errors).toEqual([])
   }, 60000)
 
-  it("Refresh reopens the file picker in file mode, and picking a new file re-imports instead of silently re-reading anything", async () => {
-    const { page: ui, errors } = await openLoginModalPage()
-    await ui.locator("#dataSourceModeFile").check()
-    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nManual Brokerage,50000.00\n") })
-    await ui.locator("#loginSubmitBtn").click()
-    await ui.waitForSelector("#accountsList")
-    expect(await ui.locator("#accountsList").textContent()).toContain("Manual Brokerage")
-
-    // Refresh doesn't just re-hit the check endpoint (there's nothing on disk left to silently
-    // re-read) -- it clicks the hidden #refreshFilePicker, which pops the native file dialog (a
-    // no-op click in headless Playwright, but exercises that code path); setInputFiles on that
-    // same hidden input then simulates the user having picked a DIFFERENT file through it.
-    await ui.locator("#refreshBtn").click()
-    await ui.locator("#refreshFilePicker").setInputFiles({ name: "accounts2.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nUpdated Brokerage,75000.00\n") })
-    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Updated Brokerage") ?? false)
-    expect(await ui.locator("#accountsList").textContent()).not.toContain("Manual Brokerage")
-    expect(errors).toEqual([])
-  }, 60000)
+  // "Refresh reopens the file picker and re-imports" is now covered by "Refresh reopens the login
+  // modal..." below (issue #34/#35's follow-up, 2026-09-22 -- Refresh reopens the full login modal,
+  // not a single hidden file input, so both accounts and transactions can be updated together).
 })
 
 // Regression coverage for the 2026-09-21 debounce fix (see debounce in app.js) -- tabbing through
@@ -547,45 +536,237 @@ describe.skipIf(!browser)("Row-commit debounce in a browser", () => {
   }, 60000)
 })
 
-// Regression coverage for issue #34/#35's transactions-file follow-up (2026-09-21) -- the real
-// upload -> category-derivation -> picker round trip, and the inline (not just page-wide) error
-// path for a file that fails to parse. Route/unit tests already cover parseTransactionRows and
-// categoryGroupsFromTransactions directly; this is what a route test can't reach: the actual
-// <input type="file"> flow and what ends up rendered in the DOM.
+// Issue #34/#35's follow-up (2026-09-22): a transactions file is now only ever imported bundled
+// with the accounts file, through the Import modal -- there's no separate upload UI on the
+// Retirement page any more (the "Transactions file" radio option just picks which source is USED,
+// see fileModeSpendSourceField's own doc comment in index.html). Route/unit tests already cover
+// parseTransactionRows and categoryGroupsFromTransactions directly; this is what a route test can't
+// reach: the actual <input type="file"> flow and what ends up rendered in the DOM.
 describe.skipIf(!browser)("Transactions file import in a browser", () => {
-  async function importAccountsAndLandOnRetirement(ui: Page): Promise<void> {
+  async function importAccountsAndTransactions(ui: Page, transactionsContent: string): Promise<void> {
+    await ui.locator("#dataSourceModeFile").check()
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nBrokerage,500000.00\n") })
+    await ui.locator("#importTransactionsFilePicker").setInputFiles({ name: "transactions.csv", mimeType: "text/csv", buffer: Buffer.from(transactionsContent) })
+  }
+
+  it("imports a transactions file bundled with the accounts file, deriving real categories into the picker", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    const recentDate = new Date().toISOString().slice(0, 10)
+    await importAccountsAndTransactions(ui, `Date,Category_Group,Category,Amount\n${recentDate},Bills,Rent,-1500.00\n`)
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForSelector("#accountsList")
+
+    await ui.waitForFunction(() => document.querySelector("#expenseCategoryPicker")?.textContent?.includes("Rent") ?? false)
+    expect(await ui.locator("#expenseCategoryPicker").textContent()).toContain("Bills")
+    // The header chip names the transactions file too, not just the accounts one.
+    await ui.waitForSelector("#transactionsChip:not([hidden])")
+    expect(await ui.locator("#transactionsChip").textContent()).toContain("transactions.csv")
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("Download Template gives back only the columns parseTransactionRows actually reads, and it re-imports cleanly", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    await ui.locator("#dataSourceModeFile").check()
+    await ui.waitForSelector("#downloadLoginTransactionsTemplateBtn:not([hidden])")
+
+    const [download] = await Promise.all([ui.waitForEvent("download"), ui.locator("#downloadLoginTransactionsTemplateBtn").click()])
+    expect(download.suggestedFilename()).toBe("transactions-template.csv")
+    const path = await download.path()
+    const content = readFileSync(path, "utf8")
+    expect(content.split("\n")[0]).toBe("Date,Category_Group,Category,Amount")
+    // No stray Account/Payee/etc. columns left over from Actual's real export shape.
+    expect(content).not.toMatch(/Account|Payee|Split_Amount|Cleared/)
+
+    // Proves it actually parses, not just that the header line looks right -- the same file this
+    // button hands out is what someone will edit and re-upload.
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nBrokerage,500000.00\n") })
+    await ui.locator("#importTransactionsFilePicker").setInputFiles({ name: "transactions-template.csv", mimeType: "text/csv", buffer: Buffer.from(content) })
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForSelector("#accountsList")
+    expect(await ui.locator("#loginError").isHidden()).toBe(true)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("shows the error in the modal (not a partial import) when the bundled transactions file fails to parse", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    await importAccountsAndTransactions(ui, "Date,Category\n2026-01-01,Rent\n")
+    await ui.locator("#loginSubmitBtn").click()
+
+    await ui.waitForSelector("#loginError:not([hidden])")
+    expect(await ui.locator("#loginError").textContent()).toContain("Missing required column")
+    // Still on the modal -- the whole import (accounts included) was rejected, not half-applied.
+    expect(await ui.locator("#loginBackdrop").isVisible()).toBe(true)
+    expect(errors).toEqual([])
+  }, 60000)
+})
+
+// Issue #34/#35's follow-up (2026-09-22): the Manual/Transactions radio, the header chips
+// reopening the login modal to update files, and adding an account directly in the UI. Route tests
+// already cover the underlying server logic (fileModeSpendSource precedence, POST
+// /api/data-source/accounts) -- this is what a route test can't reach: real DOM visibility (caught
+// a real bug here -- .data-source-mode's own display:flex silently overwon its [hidden] attribute
+// the first time this was written, exactly the class of bug a route test has no way to see).
+describe.skipIf(!browser)("File-mode radio, chip-triggered updates, and Add account in a browser", () => {
+  async function importAccountsAndTransactions(ui: Page): Promise<void> {
+    await ui.locator("#dataSourceModeFile").check()
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nBrokerage,500000.00\n") })
+    const recentDate = new Date().toISOString().slice(0, 10)
+    await ui.locator("#importTransactionsFilePicker").setInputFiles({ name: "transactions.csv", mimeType: "text/csv", buffer: Buffer.from(`Date,Category_Group,Category,Amount\n${recentDate},Bills,Rent,-1500.00\n`) })
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForSelector("#accountsList")
+    await ui.waitForSelector("#fileModeSpendSourceField")
+    // /api/retirement/check needs a complete plan (requirePlan) to return a real result at all.
+    await ui.evaluate(() => fetch("/api/retirement/plan", { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90 }) }))
+  }
+
+  it("shows only the selected source's own fields, and switching actually changes what's used", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    await importAccountsAndTransactions(ui)
+
+    // A transactions file was just imported -- defaults to that source, not manual, so the manual
+    // figure's own field stays hidden.
+    await expect.poll(() => ui.locator("#fileModeAnnualExpenseField").isHidden()).toBe(true)
+    // Everything spend-history-based (scale/history/categories) shows for "Transactions file".
+    expect(await ui.locator("#expenseHistoryFields").isHidden()).toBe(false)
+    expect(await ui.locator("#expenseCategoriesField").isHidden()).toBe(false)
+    // Captured once, up front, so the later "switched back" assertion is an exact equality (not a
+    // weaker .not.toBe -- a poll's own first attempt can pass a negative assertion on transient
+    // state, and this repo has already been burned by that once this same session).
+    const transactionsAnnualSpend = (await ui.evaluate(() => fetch("/api/retirement/check").then((r) => r.json()) as Promise<{ annualSpend: number }>)).annualSpend
+
+    await ui.locator("#fileModeSpendSourceManual").check()
+    await expect.poll(() => ui.locator("#fileModeAnnualExpenseField").isHidden()).toBe(false)
+    // "Manual" hides everything history-based -- only Planned expense changes stays regardless.
+    expect(await ui.locator("#expenseHistoryFields").isHidden()).toBe(true)
+    expect(await ui.locator("#expenseCategoriesField").isHidden()).toBe(true)
+    expect(await ui.locator("#addExpenseAdjustmentBtn").isHidden()).toBe(false)
+    // The radio is a real switch, not just a display toggle -- confirms the underlying figure
+    // actually changed too, not just which section is visible.
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/check").then((r) => r.json()) as Promise<{ annualSpend: number }>)).annualSpend).toBe(50000_00)
+
+    // Switching back to Transactions with a file already on hand persists directly -- no detour
+    // through the Import modal (that's only for the "nothing to compute from yet" case).
+    await ui.locator("#fileModeSpendSourceTransactions").check()
+    expect(await ui.locator("#loginBackdrop").isHidden()).toBe(true)
+    await expect.poll(() => ui.locator("#fileModeAnnualExpenseField").isHidden()).toBe(true)
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/check").then((r) => r.json()) as Promise<{ annualSpend: number }>)).annualSpend, { timeout: 15000 }).toBe(transactionsAnnualSpend)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  async function importAccountsOnly(ui: Page): Promise<void> {
     await ui.locator("#dataSourceModeFile").check()
     await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nBrokerage,500000.00\n") })
     await ui.locator("#loginSubmitBtn").click()
     await ui.waitForSelector("#accountsList")
-    await ui.waitForSelector("#transactionsFilePicker")
+    await ui.waitForSelector("#fileModeSpendSourceField")
+    await ui.evaluate(() => fetch("/api/retirement/plan", { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90 }) }))
   }
 
-  it("imports a transactions file, derives real categories, and shows them in the Expense Categories picker", async () => {
+  it("selecting Transactions file with none imported yet opens the Import modal, and canceling reverts to Manual", async () => {
     const { page: ui, errors } = await openLoginModalPage()
-    await importAccountsAndLandOnRetirement(ui)
+    await importAccountsOnly(ui)
+    // No transactions file yet -- defaults to Manual.
+    expect(await ui.locator("#fileModeSpendSourceManual").isChecked()).toBe(true)
 
-    const recentDate = new Date().toISOString().slice(0, 10)
-    await ui.locator("#transactionsFilePicker").setInputFiles({ name: "transactions.csv", mimeType: "text/csv", buffer: Buffer.from(`Date,Category_Group,Category,Amount\n${recentDate},Bills,Rent,-1500.00\n`) })
-    await ui.waitForFunction(() => document.querySelector("#transactionsImportStatus")?.textContent?.includes("Imported from transactions.csv") ?? false)
+    await ui.locator("#fileModeSpendSourceTransactions").check()
+    await ui.waitForSelector("#loginBackdrop.open")
+    expect(await ui.locator("#loginTitle").textContent()).toBe("Update your data")
 
-    await ui.waitForFunction(() => document.querySelector("#expenseCategoryPicker")?.textContent?.includes("Rent") ?? false)
-    expect(await ui.locator("#expenseCategoryPicker").textContent()).toContain("Bills")
-    // Removing it reverts to the "nothing to pick from" state -- not left showing stale categories.
-    await ui.locator("#removeTransactionsBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#expenseCategoryPicker")?.textContent?.includes("Import a transactions file") ?? false)
+    await ui.locator("#loginCancelBtn").click()
+    expect(await ui.locator("#loginBackdrop").isHidden()).toBe(true)
+    // Reverted -- selecting a source with nothing behind it doesn't stick just because the radio
+    // was clicked; the figure it actually computes from confirms this isn't just cosmetic either.
+    expect(await ui.locator("#fileModeSpendSourceManual").isChecked()).toBe(true)
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/check").then((r) => r.json()) as Promise<{ annualSpend: number }>)).annualSpend).toBe(50000_00)
     expect(errors).toEqual([])
   }, 60000)
 
-  it("shows an inline error next to the picker when the file fails to parse, not just the page-wide banner", async () => {
+  it("completing that import selects Transactions file automatically, overriding a prior explicit Manual choice", async () => {
     const { page: ui, errors } = await openLoginModalPage()
-    await importAccountsAndLandOnRetirement(ui)
+    await importAccountsOnly(ui)
+    // Persist Manual explicitly (not just null, which happens to resolve to Manual too as long as
+    // no transactions file exists -- the auto-select on import below needs a real, confirmed prior
+    // choice to override, not just today's default reached the same way). Direct PATCH, not a UI
+    // click on the radio -- it's already visually checked (that same null-resolves-to-Manual
+    // default), and Playwright's own .check() is a no-op on an already-checked radio, so it'd never
+    // actually fire the change handler that does the persisting.
+    await ui.evaluate(() => fetch("/api/retirement/plan", { method: "PATCH", body: JSON.stringify({ fileModeSpendSource: "manual" }) }))
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/state").then((r) => r.json()) as Promise<{ dashboard: { fileModeSpendSource: string | null } }>)).dashboard.fileModeSpendSource).toBe("manual")
 
-    await ui.locator("#transactionsFilePicker").setInputFiles({ name: "bad.csv", mimeType: "text/csv", buffer: Buffer.from("Date,Category\n2026-01-01,Rent\n") })
-    await ui.waitForSelector("#transactionsImportError:not([hidden])")
-    expect(await ui.locator("#transactionsImportError").textContent()).toContain("Missing required column")
-    // The manual-expense fallback stays in effect -- a failed import doesn't leave the plan broken.
-    expect(await ui.locator("#transactionsImportStatus").textContent()).toContain("Not imported")
+    await ui.locator("#fileModeSpendSourceTransactions").check()
+    await ui.waitForSelector("#loginBackdrop.open")
+    const recentDate = new Date().toISOString().slice(0, 10)
+    // Same "an accounts file is always required to submit" rule as every other modal submit above.
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nBrokerage,500000.00\n") })
+    await ui.locator("#importTransactionsFilePicker").setInputFiles({ name: "transactions.csv", mimeType: "text/csv", buffer: Buffer.from(`Date,Category_Group,Category,Amount\n${recentDate},Bills,Rent,-1500.00\n`) })
+    await ui.locator("#loginSubmitBtn").click()
+    await expect.poll(() => ui.locator("#loginBackdrop").isHidden()).toBe(true)
+
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/state").then((r) => r.json()) as Promise<{ dashboard: { fileModeSpendSource: string | null } }>)).dashboard.fileModeSpendSource).toBe("transactions")
+    await expect.poll(() => ui.locator("#fileModeSpendSourceTransactions").isChecked()).toBe(true)
+    expect(await ui.locator("#fileModeSpendSourceManual").isChecked()).toBe(false)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("clicking the accounts chip reopens the login modal (with filenames shown), with a working cancel", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    await importAccountsAndTransactions(ui)
+    await ui.waitForSelector("#dataSourceChip:not([hidden])")
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("accounts.csv")
+    expect(await ui.locator("#transactionsChip").textContent()).toContain("transactions.csv")
+
+    await ui.locator("#dataSourceChip").click()
+    await ui.waitForSelector("#loginBackdrop.open")
+    expect(await ui.locator("#loginTitle").textContent()).toBe("Update your data")
+    expect(await ui.locator("#dataSourceModeField").isHidden()).toBe(true) // no need to re-choose a mode
+    expect(await ui.locator("#loginModalClose").isVisible()).toBe(true) // unlike first-connect, this one can be cancelled
+    expect(await ui.locator("#loginCancelBtn").isVisible()).toBe(true)
+
+    await ui.locator("#loginCancelBtn").click()
+    expect(await ui.locator("#loginBackdrop").isHidden()).toBe(true)
+
+    // A real update: picking a new accounts file through the chip actually replaces the account
+    // list. The transactions chip reopens the exact same modal.
+    await ui.locator("#transactionsChip").click()
+    await ui.waitForSelector("#loginBackdrop.open")
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts2.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nUpdated Brokerage,75000.00\n") })
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Updated Brokerage") ?? false)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("adds an account through the UI, persisted the same as an imported one", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    await ui.locator("#dataSourceModeFile").check()
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nBrokerage,500000.00\n") })
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForSelector("#accountsList")
+    await ui.waitForSelector("#addAccountField")
+
+    await ui.locator("#newAccountName").fill("Savings")
+    await ui.locator("#newAccountBalance").fill("10000")
+    await ui.locator("#addAccountBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Savings") ?? false)
+
+    // Persisted -- a page reload still shows it, not just the in-memory STATE from the add itself.
+    await ui.reload()
+    await ui.waitForSelector("#accountsList")
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Savings") ?? false)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("exports the current accounts back to the same name,balance shape the login screen imports", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    await ui.locator("#dataSourceModeFile").check()
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from('name,balance\n"Smith, John\'s IRA",50000.00\n') })
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForSelector("#exportAccountsBtn:not([hidden])")
+
+    const [download] = await Promise.all([ui.waitForEvent("download"), ui.locator("#exportAccountsBtn").click()])
+    expect(download.suggestedFilename()).toBe("accounts-export.csv")
+    const path = await download.path()
+    const content = readFileSync(path, "utf8")
+    expect(content).toBe('name,balance\n"Smith, John\'s IRA",50000.00\n')
     expect(errors).toEqual([])
   }, 60000)
 })

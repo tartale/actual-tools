@@ -53,7 +53,10 @@ describe("loadFileDataSourceSession", () => {
   })
 
   it("loads a real transactions sub-object", () => {
-    const withTransactions: FileDataSourceSession = { ...SESSION, transactions: { fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-1500.00\n" } }
+    const withTransactions: FileDataSourceSession = {
+      ...SESSION,
+      transactions: { fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-1500.00\n", lastLoadedAt: "2026-09-22T00:00:00.000Z" },
+    }
     writeFileSync(TEST_PATH, JSON.stringify(withTransactions))
     expect(loadFileDataSourceSession(TEST_PATH)).toEqual(withTransactions)
   })
@@ -66,6 +69,14 @@ describe("loadFileDataSourceSession", () => {
   it("returns null when transactions is present but malformed", () => {
     writeFileSync(TEST_PATH, JSON.stringify({ fileName: SESSION.fileName, content: SESSION.content, lastLoadedAt: SESSION.lastLoadedAt, transactions: { fileName: "t.csv" } }))
     expect(loadFileDataSourceSession(TEST_PATH)).toBeNull()
+  })
+
+  it("falls back to the accounts file's own lastLoadedAt when the transactions sub-object doesn't have one yet -- a session written before that field existed (2026-09-22)", () => {
+    writeFileSync(TEST_PATH, JSON.stringify({ fileName: SESSION.fileName, content: SESSION.content, lastLoadedAt: SESSION.lastLoadedAt, transactions: { fileName: "t.csv", content: "Date,Category_Group,Category,Amount\n" } }))
+    expect(loadFileDataSourceSession(TEST_PATH)).toEqual({
+      ...SESSION,
+      transactions: { fileName: "t.csv", content: "Date,Category_Group,Category,Amount\n", lastLoadedAt: SESSION.lastLoadedAt },
+    })
   })
 })
 

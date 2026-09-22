@@ -10,7 +10,7 @@ import type { Action, ActualConfig, CategoryGroup } from "./actual-helpers.ts"
 import { actualAccountDataSource } from "./account-data-source.ts"
 import type { AccountDataSource } from "./account-data-source.ts"
 import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
-import { categoryGroupsFromTransactions, fileAccountDataSource, parseTransactionRows } from "./file-account-data-source.ts"
+import { accountIdFromName, appendAccountRow, categoryGroupsFromTransactions, fileAccountDataSource, parseTransactionRows } from "./file-account-data-source.ts"
 import { clearFileDataSourceSession, loadFileDataSourceSession, writeFileDataSourceSession } from "./data-source-session.ts"
 import type { FileDataSourceSession } from "./data-source-session.ts"
 import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
@@ -736,27 +736,40 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
   }
 
   // Function to compute file mode's own spend figure -- see CheckOptions.fileModeSpend and
-  // checkDashboard's own doc comment for the full precedence: a transactions file's real trailing
-  // spend (see fire-generate.ts's annualSpendFromTransactions) when one's been imported AND it
-  // comes back nonzero, else the flat manual fileModeAnnualExpense (defaulting to
-  // DEFAULT_FILE_MODE_ANNUAL_EXPENSE so a freshly-imported plan always has a real number to project
-  // from). Callers only invoke this once they already know fileDataSourceSession is non-null.
+  // checkDashboard's own doc comment for the source precedence. spendSource is the dashboard's own
+  // fileModeSpendSource, an EXPLICIT choice once the person has touched the Manual/Transactions
+  // radio (see its own doc comment in fire-accounts.ts):
+  //   - "manual": the transactions file (even if one's uploaded) is ignored entirely.
+  //   - "transactions": trusted as-is, including a real 0 for a window with nothing in it -- never
+  //      silently substitutes the manual figure just because the computed result happens to be 0.
+  //   - null (never touched -- the original default, before this radio existed): a transactions
+  //      file's real spend when one's been imported AND it comes back nonzero, else the manual
+  //      figure -- unchanged from before, so an existing plan that's never seen this field keeps
+  //      behaving exactly as it did.
+  // fileModeAnnualExpense defaults to DEFAULT_FILE_MODE_ANNUAL_EXPENSE so a freshly-imported plan
+  // always has a real number to project from. Callers only invoke this once they already know
+  // fileDataSourceSession is non-null.
   function fileModeSpend(
     session: FileDataSourceSession,
     expenseAdjustmentFactor: number,
     spendHistoryMonths: number,
     fileModeAnnualExpense: number | null,
     crossoverExpenseCategoryIds: readonly string[] | null,
+    spendSource: "manual" | "transactions" | null,
   ): { annualSpend: number; basis: string | null } {
+    const manual = { annualSpend: fileModeAnnualExpense ?? DEFAULT_FILE_MODE_ANNUAL_EXPENSE, basis: null }
+    if (spendSource === "manual") {
+      return manual
+    }
     if (session.transactions != null) {
       const delimiter = session.transactions.fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
       const rows = parseTransactionRows(session.transactions.content, delimiter)
       const fromTransactions = annualSpendFromTransactions(rows, spendHistoryMonths, expenseAdjustmentFactor, crossoverExpenseCategoryIds)
-      if (fromTransactions.annualSpend > 0) {
+      if (spendSource === "transactions" || fromTransactions.annualSpend > 0) {
         return fromTransactions
       }
     }
-    return { annualSpend: fileModeAnnualExpense ?? DEFAULT_FILE_MODE_ANNUAL_EXPENSE, basis: null }
+    return manual
   }
 
   // A fresh id per process start -- the page polls this (see app.js's hot-reload polling) and
@@ -835,6 +848,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
                 fileName: fileDataSourceSession.fileName,
                 lastLoadedAt: fileDataSourceSession.lastLoadedAt,
                 transactionsFileName: fileDataSourceSession.transactions?.fileName ?? null,
+                transactionsLastLoadedAt: fileDataSourceSession.transactions?.lastLoadedAt ?? null,
               },
         )
         return
@@ -846,19 +860,37 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         if (!fileName || !content) {
           throw new Error("fileName and content are both required.")
         }
+        // An OPTIONAL transactions file bundled into the SAME request -- the login screen's own
+        // combined picker (issue #34/#35's follow-up, 2026-09-22) submits both at once. Still a
+        // logically separate file (see FileDataSourceSession's own doc comment); this is just a
+        // convenience for the common case of setting both together. Validated (and rejected)
+        // alongside the accounts file -- all or nothing, so a bad transactions file never leaves a
+        // half-applied import.
+        const rawTransactions = body.transactions as { fileName?: unknown; content?: unknown } | null | undefined
+        const transactionsFileName = typeof rawTransactions?.fileName === "string" ? rawTransactions.fileName.trim() : ""
+        const transactionsContent = typeof rawTransactions?.content === "string" ? rawTransactions.content : ""
+        if (rawTransactions != null && (!transactionsFileName || !transactionsContent)) {
+          throw new Error("transactions.fileName and transactions.content are both required when transactions is provided.")
+        }
         // Proves the content actually parses (same "prove it works before persisting anything"
         // pattern POST /api/session already uses for Actual credentials) before switching modes --
         // a malformed file fails here, with a real error message, not on the first page load after
         // "connecting".
         await fileAccountDataSource(fileName, content).fetchAccounts()
-        // A fresh accounts file starts with no transactions file -- even if one was already
-        // imported, it may well describe a completely different plan/set of accounts now, so
-        // carrying it over silently risks a spend figure that doesn't match. Re-upload it after,
-        // same as the very first time.
-        const session: FileDataSourceSession = { fileName, content, lastLoadedAt: new Date().toISOString(), transactions: null }
+        let transactions: FileDataSourceSession["transactions"] = null
+        if (rawTransactions != null) {
+          const delimiter = transactionsFileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
+          parseTransactionRows(transactionsContent, delimiter)
+          transactions = { fileName: transactionsFileName, content: transactionsContent, lastLoadedAt: new Date().toISOString() }
+        }
+        // A fresh accounts file with NO bundled transactions starts with none at all -- even if one
+        // was already imported, it may well describe a completely different plan/set of accounts
+        // now, so carrying it over silently risks a spend figure that doesn't match. Re-upload it
+        // after (or bundle it this time), same as the very first time.
+        const session: FileDataSourceSession = { fileName, content, lastLoadedAt: new Date().toISOString(), transactions }
         writeFileDataSourceSession(dataSourceSessionPath, session)
         fileDataSourceSession = session
-        sendJson(res, 200, { mode: "file", fileName, lastLoadedAt: session.lastLoadedAt, transactionsFileName: null })
+        sendJson(res, 200, { mode: "file", fileName, lastLoadedAt: session.lastLoadedAt, transactionsFileName: transactions?.fileName ?? null, transactionsLastLoadedAt: transactions?.lastLoadedAt ?? null })
         return
       }
       if (req.method === "DELETE" && path === "/api/data-source") {
@@ -872,7 +904,9 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
       // file-mode plan compute real spend (see fire-generate.ts's annualSpendFromTransactions)
       // instead of the flat manual fileModeAnnualExpense. A SEPARATE upload from the accounts file
       // above, not bundled into it (see FileDataSourceSession's own doc comment) -- requires an
-      // accounts file to already be imported (file mode active) first.
+      // accounts file to already be imported (file mode active) first. This is also what updates an
+      // ALREADY-bundled transactions file (POST /api/data-source above) later on, e.g. from the
+      // Retirement page's own Transactions file section, or Refresh's file picker.
       if (req.method === "POST" && path === "/api/data-source/transactions") {
         if (fileDataSourceSession === null) {
           throw new Error("Import an accounts file first -- there's no file-mode session to attach a transactions file to.")
@@ -886,9 +920,10 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         // Same "prove it parses before persisting" pattern as the accounts file above.
         const delimiter = fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
         parseTransactionRows(content, delimiter)
-        fileDataSourceSession = { ...fileDataSourceSession, transactions: { fileName, content } }
+        const transactions = { fileName, content, lastLoadedAt: new Date().toISOString() }
+        fileDataSourceSession = { ...fileDataSourceSession, transactions }
         writeFileDataSourceSession(dataSourceSessionPath, fileDataSourceSession)
-        sendJson(res, 200, { mode: "file", fileName: fileDataSourceSession.fileName, lastLoadedAt: fileDataSourceSession.lastLoadedAt, transactionsFileName: fileName })
+        sendJson(res, 200, { mode: "file", fileName: fileDataSourceSession.fileName, lastLoadedAt: fileDataSourceSession.lastLoadedAt, transactionsFileName: fileName, transactionsLastLoadedAt: transactions.lastLoadedAt })
         return
       }
       if (req.method === "DELETE" && path === "/api/data-source/transactions") {
@@ -897,6 +932,36 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           writeFileDataSourceSession(dataSourceSessionPath, fileDataSourceSession)
         }
         sendJson(res, 200, { mode: "file", transactionsFileName: null })
+        return
+      }
+
+      // Adding an account directly through the UI (issue #34/#35's follow-up, 2026-09-22) --
+      // file mode's own counterpart to "add an account in Actual and it shows up here": there's no
+      // live account list to reflect, so this appends a real row to the accounts file's own content
+      // instead (see appendAccountRow), fully persisted from then on -- indistinguishable from one
+      // that came from the original import.
+      if (req.method === "POST" && path === "/api/data-source/accounts") {
+        if (fileDataSourceSession === null) {
+          throw new Error("Import an accounts file first -- there's no file-mode session to add an account to.")
+        }
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const name = typeof body.name === "string" ? body.name.trim() : ""
+        const balance = typeof body.balance === "number" ? body.balance : null
+        if (!name || balance === null) {
+          throw new Error("name and balance are both required.")
+        }
+        const delimiter = fileDataSourceSession.fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
+        const existing = await fileAccountDataSource(fileDataSourceSession.fileName, fileDataSourceSession.content).fetchAccounts()
+        if (existing.some((account) => account.id === accountIdFromName(name))) {
+          throw new Error(`An account named "${name}" already exists.`)
+        }
+        const content = appendAccountRow(fileDataSourceSession.content, delimiter, name, balance)
+        // Proves the appended content actually round-trips (same "prove it works before persisting"
+        // discipline as every other file-mode write) before persisting it.
+        const accounts = await fileAccountDataSource(fileDataSourceSession.fileName, content).fetchAccounts()
+        fileDataSourceSession = { ...fileDataSourceSession, content, lastLoadedAt: new Date().toISOString() }
+        writeFileDataSourceSession(dataSourceSessionPath, fileDataSourceSession)
+        sendJson(res, 200, { mode: "file", fileName: fileDataSourceSession.fileName, lastLoadedAt: fileDataSourceSession.lastLoadedAt, accountCount: accounts.length })
         return
       }
 
@@ -1084,6 +1149,13 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           }
           dashboard.fileModeAnnualExpense = value
         }
+        if ("fileModeSpendSource" in body) {
+          const value = body.fileModeSpendSource
+          if (value !== null && value !== "manual" && value !== "transactions") {
+            throw new Error('fileModeSpendSource must be "manual", "transactions", or null.')
+          }
+          dashboard.fileModeSpendSource = value
+        }
         if ("monteCarloWithdrawalRule" in body) {
           const rule = body.monteCarloWithdrawalRule
           if (rule !== null) {
@@ -1171,7 +1243,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           fallbackInflationMean: 0.03,
           federalTaxBrackets,
           federalPovertyGuidelines,
-          fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds),
+          fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds, fireConfig.dashboard.fileModeSpendSource),
         })
         sendJson(res, 200, result)
         return
@@ -1201,7 +1273,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
             fallbackInflationMean: 0.03,
             federalTaxBrackets,
             federalPovertyGuidelines,
-            fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds),
+            fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds, fireConfig.dashboard.fileModeSpendSource),
           },
           irsLifeExpectancy,
         )

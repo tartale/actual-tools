@@ -34,10 +34,13 @@ export interface FileDataSourceSession {
   // path (see its doc comment) falls back to a flat manual number (fire-accounts.ts's
   // fileModeAnnualExpense) unless this is also set, in which case it computes a real trailing-spend
   // figure from these rows instead (see fire-generate.ts's annualSpendFromTransactions). null until
-  // imported via POST /api/data-source/transactions; a SEPARATE upload from the accounts file
-  // above, not bundled into it -- Actual's own account-balance export and transaction export are
-  // two different files in practice, and this mirrors that.
-  transactions: { fileName: string; content: string } | null
+  // imported via POST /api/data-source/transactions (or bundled into the same POST
+  // /api/data-source call that sets the accounts file, from the login screen's own combined
+  // picker); a logically SEPARATE file from the accounts file above -- Actual's own account-balance
+  // export and transaction export are two different files in practice, and this mirrors that. Its
+  // own lastLoadedAt (independent of the accounts file's) is what the topbar chip shows -- see
+  // refreshDataSourceChip in app.js.
+  transactions: { fileName: string; content: string; lastLoadedAt: string } | null
 }
 
 export const DEFAULT_DATA_SOURCE_SESSION_PATH = "data-source.json"
@@ -57,7 +60,7 @@ export function loadFileDataSourceSession(path: string = DEFAULT_DATA_SOURCE_SES
       return null
     }
     const rawTransactions = (parsed as { transactions?: unknown }).transactions
-    let transactions: { fileName: string; content: string } | null = null
+    let transactions: { fileName: string; content: string; lastLoadedAt: string } | null = null
     if (rawTransactions !== null && rawTransactions !== undefined) {
       if (
         typeof rawTransactions !== "object" ||
@@ -66,7 +69,12 @@ export function loadFileDataSourceSession(path: string = DEFAULT_DATA_SOURCE_SES
       ) {
         return null
       }
-      transactions = rawTransactions as { fileName: string; content: string }
+      const rawLastLoadedAt = (rawTransactions as { lastLoadedAt?: unknown }).lastLoadedAt
+      // Tolerant of a session written before this field existed (2026-09-22) -- falls back to the
+      // accounts file's own lastLoadedAt rather than invalidating the whole session over one
+      // missing timestamp on a file that's otherwise perfectly valid.
+      const lastLoadedAt = typeof rawLastLoadedAt === "string" ? rawLastLoadedAt : (parsed as { lastLoadedAt: string }).lastLoadedAt
+      transactions = { fileName: (rawTransactions as { fileName: string }).fileName, content: (rawTransactions as { content: string }).content, lastLoadedAt }
     }
     return { ...(parsed as Omit<FileDataSourceSession, "transactions">), transactions }
   } catch {

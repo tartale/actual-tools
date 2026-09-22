@@ -59,6 +59,27 @@ function debounce(fn, delay = 500) {
   }
 }
 
+// Function to trigger a client-side download of a small text file -- every "Download
+// template"/"Export" button on this page (accounts template, transactions template, account
+// export) is a fixed or STATE-derived string with no server route of its own, so this one Blob/
+// object-URL dance covers all of them instead of repeating it per button.
+function downloadTextFile(filename, content, mimeType = "text/csv") {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// A starter transactions CSV -- only the columns parseTransactionRows (file-account-data-source.ts)
+// actually reads, so someone building this by hand isn't misled into thinking the other columns of
+// a real Actual export (Account, Payee, etc.) matter here.
+function transactionsTemplateCsv() {
+  return "Date,Category_Group,Category,Amount\n2026-01-15,Bills,Rent,-1500.00\n2026-01-20,Food,Groceries,-120.50\n"
+}
+
 function usd(cents) {
   const sign = cents < 0 ? "-" : ""
   return sign + "$" + (Math.abs(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -302,6 +323,7 @@ function renderIncome() {
 // monteCarloAssumptionsWithOverrides) so every retirement-age comparison widget uses the same
 // value -- an empty field means "not entered," not zero.
 function renderSimSettings() {
+  if (!STATE) return
   const d = STATE.dashboard
   const setIfIdle = (id, value) => {
     const el = document.getElementById(id)
@@ -316,9 +338,27 @@ function renderSimSettings() {
   setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
   setIfIdle("crossoverExpenseAdjustment", d.crossoverExpenseAdjustmentFactor == null ? "" : Math.round(d.crossoverExpenseAdjustmentFactor * 100))
   setIfIdle("crossoverSpendHistoryMonths", d.crossoverSpendHistoryMonths ?? "")
-  // File mode only -- see the field's own hidden attribute in index.html.
-  document.getElementById("fileModeAnnualExpenseField").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
-  document.getElementById("transactionsImportField").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
+  // File mode only -- an explicit Manual/Transactions choice (see fileModeSpendSource's own doc
+  // comment in fire-accounts.ts). null (never touched) keeps the original default: transactions if
+  // one's been imported (CURRENT_TRANSACTIONS_FILE_NAME, kept in sync by refreshDataSourceChip),
+  // else manual. Overall spend scale/Spend history/Expense categories (#expenseHistoryFields,
+  // #expenseCategoriesField) only mean anything when there's real spend history behind them --
+  // Actual mode always has that; file mode only does once "Transactions file" is selected, so
+  // those hide together with the manual figure whenever "Manual" is picked instead (2026-09-22
+  // refinement -- everything on this card except Planned expense changes is about deriving THIS
+  // year's figure from history, meaningless once that's just a fixed manual number instead).
+  document.getElementById("fileModeSpendSourceField").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
+  if (ACTIVE_DATA_SOURCE_MODE === "file") {
+    const source = d.fileModeSpendSource ?? (CURRENT_TRANSACTIONS_FILE_NAME ? "transactions" : "manual")
+    document.getElementById("fileModeSpendSourceManual").checked = source === "manual"
+    document.getElementById("fileModeSpendSourceTransactions").checked = source === "transactions"
+    document.getElementById("fileModeAnnualExpenseField").hidden = source !== "manual"
+    document.getElementById("expenseHistoryFields").hidden = source === "manual"
+    document.getElementById("expenseCategoriesField").hidden = source === "manual"
+  } else {
+    document.getElementById("expenseHistoryFields").hidden = false
+    document.getElementById("expenseCategoriesField").hidden = false
+  }
   setIfIdle("fileModeAnnualExpense", formatMoneyInputValue(d.fileModeAnnualExpense))
 }
 
@@ -707,50 +747,6 @@ async function loadExpenseCategoryOptions() {
   }
 }
 
-// The one Refresh button (top of page, beside Expand/Collapse all) pulls fresh data for the whole
-// page at once, from a single /api/retirement/check call. In file mode there's nothing on disk
-// left to silently re-read (see data-source-session.ts's own 2026-09-21 doc comment) -- Refresh
-// instead reopens the native file picker (#refreshFilePicker, hidden), and its own "change"
-// listener below does the actual re-import + recheck once a file is chosen.
-async function refreshAll() {
-  if (ACTIVE_DATA_SOURCE_MODE === "file") {
-    document.getElementById("refreshFilePicker").click()
-    return
-  }
-  const btn = document.getElementById("refreshBtn")
-  btn.disabled = true
-  try {
-    await runCheck()
-  } finally {
-    btn.disabled = false
-  }
-}
-
-document.getElementById("refreshFilePicker").addEventListener("change", async (e) => {
-  const file = e.target.files[0]
-  e.target.value = "" // reset so picking the same file again still fires "change" next time
-  if (!file) return
-  const btn = document.getElementById("refreshBtn")
-  btn.disabled = true
-  try {
-    const content = await file.text()
-    await api("/api/data-source", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
-    // A new file can add/remove/rename accounts, not just change balances -- loadState() (not
-    // just runCheck()) is what actually re-renders #accountsList from the new STATE.accounts.
-    await loadState()
-    await runCheck()
-    refreshDataSourceChip()
-    // A fresh accounts import clears any transactions file server-side (see the POST
-    // /api/data-source route's own doc comment) -- reflect that here too.
-    refreshTransactionsStatus()
-    loadExpenseCategoryOptions()
-  } catch (error) {
-    showError(error.message)
-  } finally {
-    btn.disabled = false
-  }
-})
-
 function parseRetirementAges(text) {
   const tokens = text.split(/[,\s]+/).filter((t) => t !== "")
   const ages = tokens.map(Number)
@@ -761,6 +757,10 @@ function parseRetirementAges(text) {
 }
 
 function renderAccounts() {
+  // File mode only -- adding/exporting accounts directly only makes sense without a live Actual
+  // connection managing them instead (see the buttons' own doc comments in index.html).
+  document.getElementById("addAccountField").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
+  document.getElementById("exportAccountsBtn").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
   const list = document.getElementById("accountsList")
   list.innerHTML = ""
   const typeKeys = Object.keys(STATE.accountTypes)
@@ -2427,7 +2427,7 @@ function renderFinding(finding) {
 function renderSummaryStats(result) {
   const container = document.getElementById("summaryTiles")
   container.querySelectorAll(".tile-dynamic").forEach((el) => el.remove())
-  const tiles = [{ label: "Projected Expenditures", value: `${moneySpan(result.annualSpend)}/yr` }]
+  const tiles = [{ label: "Projected Expenses", value: `${moneySpan(result.annualSpend)}/yr` }]
   result.ruleOf55Boosts.forEach((b) => {
     tiles.push({ label: escapeHtml(b.accountName), value: `Rule of 55, age <span class="num money">${b.to}</span>` })
   })
@@ -2889,75 +2889,30 @@ attachMoneyFormatting(fileModeAnnualExpenseInput)
 fileModeAnnualExpenseInput.addEventListener("moneycommit", (e) => {
   runExclusive(() => patchPlan({ fileModeAnnualExpense: parseMoneyInputCents(e.target.value) }, "savedSpendConfig"))
 })
+document.getElementById("fileModeSpendSourceManual").addEventListener("change", () => {
+  runExclusive(() => patchPlan({ fileModeSpendSource: "manual" }, "savedSpendConfig"))
+})
+document.getElementById("fileModeSpendSourceTransactions").addEventListener("change", () => {
+  if (CURRENT_TRANSACTIONS_FILE_NAME == null) {
+    // Nothing to compute from yet -- send the user straight to the Import modal to pick a file,
+    // rather than silently saving a source with nothing behind it. Canceling reverts the radio to
+    // Manual, the source that was actually in effect a moment ago (see cancelLoginModal).
+    LOGIN_MODAL_ON_CANCEL = () => {
+      document.getElementById("fileModeSpendSourceManual").checked = true
+    }
+    showLoginModal(true)
+    return
+  }
+  runExclusive(() => patchPlan({ fileModeSpendSource: "transactions" }, "savedSpendConfig"))
+})
 
-// Function to render the transactions-import status line/buttons under "Transactions file" --
-// separate from refreshDataSourceChip's own topbar chip (this is plan-section detail, not a
-// page-wide status), but reads the same GET /api/data-source response, which reports both at once.
-async function refreshTransactionsStatus() {
-  if (ACTIVE_DATA_SOURCE_MODE !== "file") return
-  try {
-    const status = await api("/api/data-source")
-    const fileName = status.mode === "file" ? status.transactionsFileName : null
-    document.getElementById("transactionsImportStatus").textContent = fileName ? `Imported from ${fileName} -- overrides the manual annual expense above.` : "Not imported -- using the manual annual expense above."
-    document.getElementById("removeTransactionsBtn").hidden = !fileName
-  } catch {
-    // Leave whatever was last shown -- same "don't flash a misleading state on a failed request"
-    // reasoning as refreshDataSourceChip.
-  }
-}
-document.getElementById("transactionsFilePicker").addEventListener("change", async (e) => {
-  const file = e.target.files[0]
-  e.target.value = "" // reset so picking the same file again (e.g. after fixing it) still fires "change"
-  if (!file) return
-  const errorEl = document.getElementById("transactionsImportError")
-  const statusEl = document.getElementById("transactionsImportStatus")
-  errorEl.hidden = true
-  // Resetting the input above means its own native filename display disappears immediately, so
-  // this status line is the only place the person sees confirmation their file was even picked --
-  // shown right away, before the (network) import even resolves.
-  statusEl.textContent = `Importing ${file.name}…`
-  try {
-    const content = await file.text()
-    await api("/api/data-source/transactions", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
-    await refreshTransactionsStatus()
-    await loadExpenseCategoryOptions() // now has real categories to derive -- see its own doc comment
-    await runCheck()
-  } catch (error) {
-    // Inline, next to the picker -- see #transactionsImportError's own doc comment in index.html
-    // for why this doesn't rely on the page-wide #topError banner alone.
-    errorEl.textContent = `${file.name}: ${error.message}`
-    errorEl.hidden = false
-    await refreshTransactionsStatus()
-  }
-})
-document.getElementById("removeTransactionsBtn").addEventListener("click", async () => {
-  try {
-    document.getElementById("transactionsImportError").hidden = true
-    await api("/api/data-source/transactions", { method: "DELETE" })
-    await refreshTransactionsStatus()
-    await loadExpenseCategoryOptions() // no transactions file left -- back to "nothing to pick from"
-    await runCheck()
-  } catch (error) {
-    showError(error.message)
-  }
-})
-document.getElementById("downloadTransactionsTemplateBtn").addEventListener("click", () => {
-  // Matches Actual's own real export header row exactly (see file-account-data-source.ts's
-  // parseTransactionRows) -- only Date/Category_Group/Category/Amount are ever read, but the
-  // template includes every real column so it also doubles as a preview of what a genuine export
-  // looks like.
-  const csv =
-    "Account,Date,Payee,Notes,Category_Group,Category,Amount,Split_Amount,Cleared\n" +
-    "Checking,2026-01-15,Landlord,,Bills,Rent,-1500.00,,Cleared\n" +
-    "Checking,2026-01-20,Grocery Store,,Food,Groceries,-120.50,,Cleared\n"
-  const blob = new Blob([csv], { type: "text/csv" })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = "transactions-template.csv"
-  a.click()
-  URL.revokeObjectURL(url)
-})
+// Tracked so renderSimSettings' own fileModeSpendSource default (null -- never touched) can
+// resolve synchronously ("transactions if one's imported, else manual") without re-fetching
+// /api/data-source itself -- kept in sync by refreshDataSourceChip, the one place that already
+// fetches this (both files are imported/updated through the same Import modal now -- see its own
+// 2026-09-22 doc comment -- so there's no separate transactions-specific status to track here).
+let CURRENT_TRANSACTIONS_FILE_NAME = null
+
 document.getElementById("expenseCategoriesExpandAll").addEventListener("click", () => {
   if (!EXPENSE_CATEGORY_GROUPS) return
   EXPENSE_CATEGORY_GROUPS.forEach((group) => EXPENSE_CATEGORY_FOLDS.delete(group.id))
@@ -2981,6 +2936,46 @@ document.getElementById("accountsCollapseAll").addEventListener("click", () => {
   STATE.accounts.forEach((account) => ACCOUNT_FOLDS.add(account.id))
   saveAccountFolds()
   renderAccounts()
+})
+// Quotes a CSV/TSV cell the same way the server's own escapeDelimitedCell does (see
+// file-account-data-source.ts) -- wraps in double quotes (doubling any internal quote) whenever the
+// value contains the delimiter, a quote, or a newline.
+function escapeCsvCell(value) {
+  return /[,"\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
+}
+document.getElementById("exportAccountsBtn").addEventListener("click", () => {
+  if (!STATE) return
+  const rows = STATE.accounts.map((account) => `${escapeCsvCell(account.name)},${(account.balance / 100).toFixed(2)}`)
+  downloadTextFile("accounts-export.csv", ["name,balance", ...rows].join("\n") + "\n")
+})
+const newAccountBalanceInput = document.getElementById("newAccountBalance")
+attachMoneyFormatting(newAccountBalanceInput)
+document.getElementById("addAccountBtn").addEventListener("click", async () => {
+  const nameInput = document.getElementById("newAccountName")
+  const errorEl = document.getElementById("addAccountError")
+  errorEl.hidden = true
+  const name = nameInput.value.trim()
+  const balance = parseMoneyInputCents(newAccountBalanceInput.value)
+  if (!name) {
+    errorEl.textContent = "Enter an account name."
+    errorEl.hidden = false
+    return
+  }
+  if (balance == null) {
+    errorEl.textContent = "Enter a balance."
+    errorEl.hidden = false
+    return
+  }
+  try {
+    await api("/api/data-source/accounts", { method: "POST", body: JSON.stringify({ name, balance }) })
+    nameInput.value = ""
+    newAccountBalanceInput.value = ""
+    await loadState()
+    await runCheck()
+  } catch (error) {
+    errorEl.textContent = error.message
+    errorEl.hidden = false
+  }
 })
 document.getElementById("expenseCategoriesShowHidden").addEventListener("change", (e) => {
   EXPENSE_CATEGORY_VIEW.showHidden = e.target.checked
@@ -3036,8 +3031,6 @@ document.getElementById("addExpenseAdjustmentBtn").addEventListener("click", () 
   const next = [...STATE.dashboard.expenseAdjustments, { id: nextExpenseAdjustmentId(), name: "New expense", annualAmount: 0, startAge, endAge: null, inflate: true }]
   runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
 })
-document.getElementById("refreshBtn").addEventListener("click", refreshAll)
-
 // --- Chart zoom ---
 //
 // Reparents each chart AND its own finding rows into the modal at once (not a clone/re-render, and
@@ -4418,32 +4411,50 @@ function applyDataSourceMode(mode) {
   logoutBtn.setAttribute("aria-label", label)
 }
 
-// Function to poll the current file-import session and update the topbar's own info chip -- shows
-// which file is active and when it was imported. A no-op, chip left hidden, in Actual mode. Since
-// the 2026-09-21 redesign (see data-source-session.ts's own doc comment), there's no external file
-// left that could go missing/change underneath the app between requests, so this is a plain status
-// display now, not a live health probe -- no warn state to report.
+// Function to poll the current file-import session and update the topbar's own two info chips --
+// one for the accounts file, one for the transactions file (issue #34/#35's follow-up, 2026-09-22:
+// a single combined chip read as one ambiguous status once there were two separate imports with
+// their own timestamps to show; each now names its own file, not just a generic "File"). Both
+// hidden in Actual mode; the transactions chip is ALSO hidden whenever none has been imported, same
+// "nothing to report" reasoning as the accounts chip in Actual mode. Since the 2026-09-21 redesign
+// (see data-source-session.ts's own doc comment), there's no external file left that could go
+// missing/change underneath the app between requests, so this is a plain status display, not a live
+// health probe -- no warn state to report. Also the one place CURRENT_TRANSACTIONS_FILE_NAME (the
+// Expense source radio's own default-resolution input) gets refreshed from the server, so it keeps
+// that in sync too -- both chips and the radio read the exact same GET /api/data-source response,
+// no reason to fetch it twice.
 async function refreshDataSourceChip() {
-  const chip = document.getElementById("dataSourceChip")
+  const accountsChip = document.getElementById("dataSourceChip")
+  const transactionsChip = document.getElementById("transactionsChip")
   if (ACTIVE_DATA_SOURCE_MODE !== "file") {
-    chip.hidden = true
+    accountsChip.hidden = true
+    transactionsChip.hidden = true
     return
   }
   try {
     const status = await api("/api/data-source")
     if (status.mode !== "file") {
-      chip.hidden = true
+      accountsChip.hidden = true
+      transactionsChip.hidden = true
       return
     }
-    const loadedAt = status.lastLoadedAt ? new Date(status.lastLoadedAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "never"
-    chip.hidden = false
-    chip.classList.remove("warn")
-    chip.classList.add("info")
-    chip.title = `Imported from ${status.fileName}`
-    chip.textContent = `File · imported ${loadedAt}`
+    const formatWhen = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "never")
+    accountsChip.hidden = false
+    accountsChip.title = `Accounts imported from ${status.fileName} -- click to update`
+    accountsChip.textContent = `Accounts: ${status.fileName} · ${formatWhen(status.lastLoadedAt)}`
+    transactionsChip.hidden = status.transactionsFileName == null
+    if (status.transactionsFileName != null) {
+      transactionsChip.title = `Transactions imported from ${status.transactionsFileName} -- click to update`
+      transactionsChip.textContent = `Transactions: ${status.transactionsFileName} · ${formatWhen(status.transactionsLastLoadedAt)}`
+    }
+    const previousTransactionsFileName = CURRENT_TRANSACTIONS_FILE_NAME
+    CURRENT_TRANSACTIONS_FILE_NAME = status.transactionsFileName
+    // Keeps the Expense source radio's own default (untouched) resolution and field visibility in
+    // sync with whether a transactions file actually exists now.
+    if (previousTransactionsFileName !== CURRENT_TRANSACTIONS_FILE_NAME) renderSimSettings()
   } catch {
-    // The request itself failed (server unreachable, etc.) -- leave the chip as it was rather than
-    // flashing a misleading state; the next refresh (or the retry-banner path elsewhere on the
+    // The request itself failed (server unreachable, etc.) -- leave the chips as they were rather
+    // than flashing a misleading state; the next refresh (or the retry-banner path elsewhere on the
     // page) will pick it back up.
   }
 }
@@ -4464,7 +4475,6 @@ function startApp() {
   applySelectedAction()
   applySectionFolds()
   refreshDataSourceChip()
-  refreshTransactionsStatus()
   try {
     const savedSection = getCookie("activeSection")
     const knownSections = [...document.querySelectorAll(".section-item[data-section]")].map((i) => i.dataset.section)
@@ -4473,10 +4483,38 @@ function startApp() {
     activateSection("budget")
   }
 }
+// Whether the login modal is currently open for its ORIGINAL "connect for the first time" purpose,
+// or reopened later (issue #34/#35's follow-up, 2026-09-22) for Refresh's own "update my files"
+// flow -- read by applyLoginFormMode (the submit button's own label) and the submit handler itself
+// (whether a success means "just connected, run startApp()" or "already connected, just re-check").
+let LOGIN_MODAL_REFRESH = false
+
+// Set by a flow that needs to undo some UI state if the user backs out of the modal without
+// completing the import (currently only fileModeSpendSourceTransactions's own change handler,
+// below). cancelLoginModal invokes-and-clears it; a successful submit clears it without invoking,
+// since nothing needs reverting -- so a later, unrelated modal open (e.g. from a header chip) never
+// accidentally re-fires a stale one.
+let LOGIN_MODAL_ON_CANCEL = null
+
 // Same show/hide dance as openChartZoom/closeChartZoom -- .modal-backdrop starts at opacity:0 even
 // once un-hidden, and needs a forced layout read between clearing `hidden` and adding `.open` so
 // the two changes don't land in the same paint (which would skip the fade-in transition entirely).
-function showLoginModal() {
+// refresh: true reopens it for the "update my files" flow instead of the original first-connect one
+// (clicking either header chip, see refreshDataSourceChip) -- see LOGIN_MODAL_REFRESH's own doc
+// comment, and #loginModalClose's in index.html for why THIS case (unlike first-connect) gets a
+// real cancel path (both the × and a text Cancel button, #loginCancelBtn).
+function showLoginModal(refresh = false) {
+  LOGIN_MODAL_REFRESH = refresh
+  document.getElementById("loginTitle").textContent = refresh ? "Update your data" : "Connect your data"
+  document.getElementById("loginModalClose").hidden = !refresh
+  document.getElementById("loginCancelBtn").hidden = !refresh
+  document.getElementById("dataSourceModeField").hidden = refresh
+  document.getElementById("loginError").hidden = true
+  if (refresh) {
+    // Already in file mode to have gotten here -- nothing to choose.
+    document.getElementById("dataSourceModeFile").checked = true
+    applyLoginFormMode("file")
+  }
   const backdrop = document.getElementById("loginBackdrop")
   backdrop.hidden = false
   void backdrop.offsetHeight
@@ -4486,6 +4524,17 @@ function hideLoginModal() {
   document.getElementById("loginBackdrop").classList.remove("open")
   document.getElementById("loginBackdrop").hidden = true
 }
+// The × and Cancel button both back out WITHOUT importing anything -- unlike a successful submit,
+// this runs (and clears) LOGIN_MODAL_ON_CANCEL, see its own doc comment above.
+function cancelLoginModal() {
+  hideLoginModal()
+  if (LOGIN_MODAL_ON_CANCEL) {
+    LOGIN_MODAL_ON_CANCEL()
+    LOGIN_MODAL_ON_CANCEL = null
+  }
+}
+document.getElementById("loginModalClose").addEventListener("click", cancelLoginModal)
+document.getElementById("loginCancelBtn").addEventListener("click", cancelLoginModal)
 async function checkSession() {
   try {
     const [sessionStatus, dataSourceStatus] = await Promise.all([api("/api/session"), api("/api/data-source")])
@@ -4510,23 +4559,29 @@ async function checkSession() {
 function applyLoginFormMode(mode) {
   document.getElementById("actualFields").hidden = mode === "file"
   document.getElementById("fileFields").hidden = mode !== "file"
-  document.getElementById("loginSubmitBtn").textContent = mode === "file" ? "Import file" : "Log in"
+  document.getElementById("loginSubmitBtn").textContent = LOGIN_MODAL_REFRESH ? "Update" : mode === "file" ? "Import" : "Log in"
 }
 document.getElementById("dataSourceModeActual").addEventListener("change", () => applyLoginFormMode("actual"))
 document.getElementById("dataSourceModeFile").addEventListener("change", () => applyLoginFormMode("file"))
 // Produces a starter CSV -- header row plus a couple of example rows -- so someone can see the
-// expected shape without having to read the help copy first. Client-side Blob download, no server
-// route needed for a fixed two-line template.
-document.getElementById("downloadTemplateBtn").addEventListener("click", () => {
-  const csv = "name,balance\nChecking,1000.00\nBrokerage,50000.00\n"
-  const blob = new Blob([csv], { type: "text/csv" })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = "accounts-template.csv"
-  a.click()
-  URL.revokeObjectURL(url)
-})
+// expected shape without having to read the help copy first.
+document.getElementById("downloadTemplateBtn").addEventListener("click", () => downloadTextFile("accounts-template.csv", "name,balance\nChecking,1000.00\nBrokerage,50000.00\n"))
+document.getElementById("downloadLoginTransactionsTemplateBtn").addEventListener("click", () => downloadTextFile("transactions-template.csv", transactionsTemplateCsv()))
+
+// Function to wire a styled "Browse…" button + filename text to a real (visually hidden) file
+// input -- a native file input's own "Browse"/"No file chosen" rendering can't be restyled to
+// match a neighboring button, so this drives the same functionality through a plain <button> +
+// <span> instead (see .file-picker-row's own doc comment in style.css).
+function wireFilePickerButton(inputId, buttonId, nameId, emptyText = "No file chosen") {
+  const input = document.getElementById(inputId)
+  const nameEl = document.getElementById(nameId)
+  document.getElementById(buttonId).addEventListener("click", () => input.click())
+  input.addEventListener("change", () => {
+    nameEl.textContent = input.files[0]?.name ?? emptyText
+  })
+}
+wireFilePickerButton("importFilePicker", "importFilePickerBtn", "importFilePickerName")
+wireFilePickerButton("importTransactionsFilePicker", "importTransactionsFilePickerBtn", "importTransactionsFilePickerName")
 
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault()
@@ -4535,13 +4590,21 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   const submitBtn = document.getElementById("loginSubmitBtn")
   const mode = document.getElementById("dataSourceModeFile").checked ? "file" : "actual"
   submitBtn.disabled = true
-  submitBtn.textContent = mode === "file" ? "Importing…" : "Logging in…"
+  submitBtn.textContent = LOGIN_MODAL_REFRESH ? "Updating…" : mode === "file" ? "Importing…" : "Logging in…"
+  let importedTransactionsFile = false
   try {
     if (mode === "file") {
       const file = document.getElementById("importFilePicker").files[0]
-      if (!file) throw new Error("Choose a file to import.")
-      const content = await file.text()
-      await api("/api/data-source", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
+      if (!file) throw new Error("Choose an accounts file to import.")
+      const body = { fileName: file.name, content: await file.text() }
+      // The transactions file is always optional, whether this is a first connect or a later
+      // update -- an accounts-only import (or update) is a completely normal, supported state.
+      const transactionsFile = document.getElementById("importTransactionsFilePicker").files[0]
+      if (transactionsFile) {
+        body.transactions = { fileName: transactionsFile.name, content: await transactionsFile.text() }
+        importedTransactionsFile = true
+      }
+      await api("/api/data-source", { method: "POST", body: JSON.stringify(body) })
     } else {
       const baseUrl = document.getElementById("loginBaseUrl").value.trim()
       const budgetId = document.getElementById("loginBudgetId").value.trim()
@@ -4549,17 +4612,37 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
       if (!baseUrl || !budgetId || !apiKey) throw new Error("Fill in all three fields.")
       await api("/api/session", { method: "POST", body: JSON.stringify({ baseUrl, budgetId, apiKey }) })
     }
-    applyDataSourceMode(mode)
     hideLoginModal()
-    startApp()
+    LOGIN_MODAL_ON_CANCEL = null
+    if (LOGIN_MODAL_REFRESH) {
+      // Already connected -- just re-pull everything from the files that may have just changed,
+      // not a fresh applyDataSourceMode()/startApp() as if this were a brand new connection.
+      await loadState()
+      // A transactions file just came in through this same submit -- make it the active source
+      // even if Manual was explicitly chosen before now, matching what the user just did rather
+      // than a stale prior choice (fileModeSpendSourceField's own default-resolution logic in
+      // renderSimSettings only covers this automatically when the field was never touched at all).
+      if (importedTransactionsFile) await patchPlan({ fileModeSpendSource: "transactions" }, "savedSpendConfig")
+      await runCheck()
+      await refreshDataSourceChip()
+      loadExpenseCategoryOptions()
+    } else {
+      applyDataSourceMode(mode)
+      startApp()
+    }
   } catch (error) {
     errorEl.textContent = error.message
     errorEl.hidden = false
   } finally {
     submitBtn.disabled = false
-    submitBtn.textContent = mode === "file" ? "Import file" : "Log in"
+    submitBtn.textContent = LOGIN_MODAL_REFRESH ? "Update" : mode === "file" ? "Import" : "Log in"
   }
 })
+// Both header chips reopen the same Import modal (issue #34/#35's follow-up, 2026-09-22) -- the
+// only way back into it now besides the very first connect (Refresh itself was removed: a plain
+// page reload already re-pulls everything fresh, and updating a file is what the chips are for).
+document.getElementById("dataSourceChip").addEventListener("click", () => showLoginModal(true))
+document.getElementById("transactionsChip").addEventListener("click", () => showLoginModal(true))
 document.getElementById("logoutBtn").addEventListener("click", async () => {
   try {
     await api(ACTIVE_DATA_SOURCE_MODE === "file" ? "/api/data-source" : "/api/session", { method: "DELETE" })
