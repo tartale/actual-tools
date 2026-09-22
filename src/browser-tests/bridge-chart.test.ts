@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
@@ -447,6 +447,67 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     // checkDashboard for why it shouldn't (the vendored engine's own fallback default pot).
     expect(await opened.evaluate(() => document.querySelector(".bridge-chart:not(.mc-chart)"))).toBeNull()
     expect(await opened.evaluate(() => document.querySelector(".mc-chart"))).toBeNull()
+    expect(errors).toEqual([])
+  }, 60000)
+})
+
+// Issue #25's "View as table" toggle (renderBridgeTable) -- unit/route tests cover simulateBridge's
+// own per-account math and that it reaches the wire, but nothing exercised the actual toggle, the
+// table's own DOM, or the cookie that remembers the choice across a reload until now.
+describe.skipIf(!browser)("Bridge table view in a browser", () => {
+  it("toggling shows a real table (Age/Expenses/per-account columns, real rows), and the choice survives a reload", async () => {
+    // Retiring at 65 -- past the 401k's own access age, so both accounts are already combined and
+    // there's just one scenario (no picker needed to reach a usable row).
+    const { page: ui, errors } = await openRetirementPage([65])
+    await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
+    expect(await ui.locator(".bridge-table-el").count()).toBe(0)
+
+    await ui.locator("#bridgeViewToggle").click()
+    await ui.waitForSelector(".bridge-table-el", { timeout: 20000 })
+    // :not(.mc-chart) -- the Monte Carlo chart shares the base "bridge-chart" class for its own
+    // zoom wiring (see addChartZoom), and is unaffected by this toggle, so it stays present.
+    expect(await ui.locator(".bridge-chart:not(.mc-chart)").count()).toBe(0)
+    expect(await ui.locator("#bridgeViewToggle").getAttribute("aria-pressed")).toBe("true")
+
+    const headerText = await ui.locator(".bridge-table-el thead").textContent()
+    expect(headerText).toContain("Age")
+    expect(headerText).toContain("Expenses")
+    expect(headerText).toContain("Brokerage")
+    expect(headerText).toContain("Fidelity 401k")
+    // A real row for the current age (50, see birthDateForAge), not just headers with nothing under
+    // them -- the two accounts' own $40,000/$2,000,000 balances show up formatted as dollars.
+    const firstRowText = await ui.locator(".bridge-table-el tbody tr").first().textContent()
+    expect(firstRowText).toContain("50")
+    expect(firstRowText).toMatch(/\$40,000\.00|\$2,040,000\.00/)
+
+    // Persisted via cookie (isBridgeTableView), not just in-memory state -- a reload lands back on
+    // the table with no need to click the toggle again.
+    await ui.reload()
+    await ui.locator('.section-item[data-section="retirement"]').click()
+    await ui.waitForSelector(".bridge-table-el", { timeout: 20000 })
+    expect(await ui.locator(".bridge-chart:not(.mc-chart)").count()).toBe(0)
+
+    // Toggling back reverts to the chart, and un-remembers the table choice.
+    await ui.locator("#bridgeViewToggle").click()
+    await ui.waitForSelector(".bridge-chart:not(.mc-chart)", { timeout: 20000 })
+    expect(await ui.locator(".bridge-table-el").count()).toBe(0)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("Export CSV downloads the table's own rows as plain, unmasked numbers", async () => {
+    const { page: ui, errors } = await openRetirementPage([65])
+    await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
+    await ui.locator("#bridgeViewToggle").click()
+    await ui.waitForSelector(".bridge-table-el", { timeout: 20000 })
+
+    const [download] = await Promise.all([ui.waitForEvent("download"), ui.locator(".bridge-table-export").click()])
+    expect(download.suggestedFilename()).toBe("bridge-retire-at-65.csv")
+    const path = await download.path()
+    const content = readFileSync(path, "utf8")
+    const [header, firstDataRow] = content.split("\r\n")
+    expect(header?.split(",")).toEqual(["Age", "Tax-deferred", "Roth conversion", "Non-taxable", "%FPL", "MAGI", "Expenses", "Brokerage", "Fidelity 401k"])
+    // Plain numbers, not the rendered table's own $-formatted/masked text -- 4000000/100 = 40000.00.
+    expect(firstDataRow).toContain("40000.00")
     expect(errors).toEqual([])
   }, 60000)
 })

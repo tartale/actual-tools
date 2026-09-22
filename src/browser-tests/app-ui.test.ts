@@ -642,7 +642,7 @@ describe.skipIf(!browser)("File-mode radio, chip-triggered updates, and Add acco
     expect(await ui.locator("#addExpenseAdjustmentBtn").isHidden()).toBe(false)
     // The radio is a real switch, not just a display toggle -- confirms the underlying figure
     // actually changed too, not just which section is visible.
-    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/check").then((r) => r.json()) as Promise<{ annualSpend: number }>)).annualSpend).toBe(50000_00)
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/check").then((r) => r.json()) as Promise<{ annualSpend: number }>)).annualSpend, { timeout: 15000 }).toBe(50000_00)
 
     // Switching back to Transactions with a file already on hand persists directly -- no detour
     // through the Import modal (that's only for the "nothing to compute from yet" case).
@@ -677,7 +677,7 @@ describe.skipIf(!browser)("File-mode radio, chip-triggered updates, and Add acco
     // Reverted -- selecting a source with nothing behind it doesn't stick just because the radio
     // was clicked; the figure it actually computes from confirms this isn't just cosmetic either.
     expect(await ui.locator("#fileModeSpendSourceManual").isChecked()).toBe(true)
-    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/check").then((r) => r.json()) as Promise<{ annualSpend: number }>)).annualSpend).toBe(50000_00)
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/check").then((r) => r.json()) as Promise<{ annualSpend: number }>)).annualSpend, { timeout: 15000 }).toBe(50000_00)
     expect(errors).toEqual([])
   }, 60000)
 
@@ -691,7 +691,7 @@ describe.skipIf(!browser)("File-mode radio, chip-triggered updates, and Add acco
     // default), and Playwright's own .check() is a no-op on an already-checked radio, so it'd never
     // actually fire the change handler that does the persisting.
     await ui.evaluate(() => fetch("/api/retirement/plan", { method: "PATCH", body: JSON.stringify({ fileModeSpendSource: "manual" }) }))
-    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/state").then((r) => r.json()) as Promise<{ dashboard: { fileModeSpendSource: string | null } }>)).dashboard.fileModeSpendSource).toBe("manual")
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/state").then((r) => r.json()) as Promise<{ dashboard: { fileModeSpendSource: string | null } }>)).dashboard.fileModeSpendSource, { timeout: 15000 }).toBe("manual")
 
     await ui.locator("#fileModeSpendSourceTransactions").check()
     await ui.waitForSelector("#loginBackdrop.open")
@@ -702,8 +702,12 @@ describe.skipIf(!browser)("File-mode radio, chip-triggered updates, and Add acco
     await ui.locator("#loginSubmitBtn").click()
     await expect.poll(() => ui.locator("#loginBackdrop").isHidden()).toBe(true)
 
-    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/state").then((r) => r.json()) as Promise<{ dashboard: { fileModeSpendSource: string | null } }>)).dashboard.fileModeSpendSource).toBe("transactions")
-    await expect.poll(() => ui.locator("#fileModeSpendSourceTransactions").isChecked()).toBe(true)
+    // Generous timeout -- under the full suite's own parallel worker load this chain (loadState,
+    // then an explicit patchPlan round trip) can genuinely take a few seconds, not a sign the
+    // behavior itself is flaky (confirmed: reintroducing the bug this guards against, see its own
+    // mutation-check earlier this session, fails immediately rather than timing out).
+    await expect.poll(async () => (await ui.evaluate(() => fetch("/api/retirement/state").then((r) => r.json()) as Promise<{ dashboard: { fileModeSpendSource: string | null } }>)).dashboard.fileModeSpendSource, { timeout: 15000 }).toBe("transactions")
+    await expect.poll(() => ui.locator("#fileModeSpendSourceTransactions").isChecked(), { timeout: 15000 }).toBe(true)
     expect(await ui.locator("#fileModeSpendSourceManual").isChecked()).toBe(false)
     expect(errors).toEqual([])
   }, 60000)

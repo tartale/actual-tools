@@ -222,6 +222,10 @@ was.
 - `-s`, `--session PATH` — path to store the Actual credentials entered
   through the app's own login form (default: `session.json`). Missing is
   fine — the app just starts logged out.
+- `--data-source-session PATH` — path to store which file (if any) is being
+  imported instead of syncing with Actual, when using **Import files**
+  below (default: `data-source.json`). Missing is fine — the app just
+  starts in Actual-sync mode.
 - `-i`, `--irs-limits PATH` — path to the IRS contribution limits reference
   file (default: `irs-limits.json`). Missing is fine, just skips that
   context.
@@ -449,7 +453,23 @@ in Actual mode a plain reload picks up a change made directly in Actual
 under **Import files** above). Both charts
 have a click-to-zoom button (appears on hover) that opens the same
 chart, larger, in a modal — not a re-render, the chart's own DOM node
-moves there and back, so its hover/tooltip keeps working unchanged.
+moves there and back, so its hover/tooltip keeps working unchanged. Bridge
+also has a **View as table** toggle (issue #25) next to its zoom button:
+one row per age with a column per account (plus tax-deferred/Roth
+conversion/non-taxable withdrawals, %FPL, and MAGI), reorderable and
+individually hideable via the **Columns** picker, with an **Export CSV**
+of the real, unmasked figures regardless of privacy mode. Which scenario
+(when comparing more than one retirement age) and which view — chart or
+table — persist per browser across a reload, the same cookie-backed way
+fold state does.
+
+An **Early-access suggestions** button in the Analysis card-head (shown
+whenever at least one open account would benefit) surfaces Rule of 55 or
+72(t) SEPP options that aren't elected yet but would unlock money earlier
+at the lowest configured retirement age, each with its own pros/cons.
+Checking any number of them and clicking **Apply** elects those options on
+the accounts directly — the same fields as electing them by hand on each
+account below, just proposed for you first.
 
 **Plan**: birth date, one or more retirement ages to compare (space- or
 comma-separated), and the age to assume the plan needs to last to (a
@@ -660,7 +680,7 @@ the old category field for that account.
 widget of any kind to derive it.** Expense Projection's own **Expense
 categories** selection, if set, is a trailing-average over exactly that
 selection (**Spend history** months, 12 by default — tunable in the same
-card), scaled by **Expense Adjustment %** if set. Left unset, it falls
+card), scaled by **Overall spend scale** if set. Left unset, it falls
 back to every non-income, non-hidden category over that same window — a
 plain default, not a reason to go check what's live in Actual. Whichever
 one is active, it feeds every simulation on the page the same way — Monte

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -338,6 +338,57 @@ describe("PATCH /api/retirement/accounts/:id", () => {
     const res = await fetch(`${secondUrl}api/retirement/accounts/a2`, { method: "PATCH", body: JSON.stringify({ type: "cash" }) })
     const body = await readJson<StateResponse>(res)
     expect(body.accounts.map((a) => a.id)).toEqual(["a2"])
+  })
+})
+
+describe("PATCH /api/retirement/accounts/order", () => {
+  it("persists a drag-and-drop reorder, creating an override for any account that didn't have one yet", async () => {
+    const url = await boot({
+      accounts: [
+        { id: "a1", name: "Checking", offbudget: false, closed: false },
+        { id: "a2", name: "Savings", offbudget: false, closed: false },
+      ],
+    })
+    // a1 already has an override (from an earlier type edit); a2 has none yet -- the route must
+    // upsert both the same way, not just patch an existing entry.
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "cash" }) })
+
+    const res = await fetch(`${url}api/retirement/accounts/order`, { method: "PATCH", body: JSON.stringify({ orderedIds: ["a2", "a1"] }) })
+    expect(res.status).toBe(200)
+    const body = await readJson<StateResponse>(res)
+    // The response's own account list is sorted by withdrawalOrder ascending (see buildState's own
+    // doc comment) -- a2 first confirms the new order actually took, not just that the field is set.
+    expect(body.accounts.map((a) => a.id)).toEqual(["a2", "a1"])
+    expect(body.accounts.map((a) => a.withdrawalOrder)).toEqual([0, 1])
+  })
+
+  it("skips an id that isn't a currently open account, without disturbing the rest of the order", async () => {
+    const url = await boot({
+      accounts: [
+        { id: "a1", name: "Checking", offbudget: false, closed: false },
+        { id: "a2", name: "Savings", offbudget: false, closed: false },
+      ],
+    })
+    const res = await fetch(`${url}api/retirement/accounts/order`, { method: "PATCH", body: JSON.stringify({ orderedIds: ["a1", "closed-or-unknown", "a2"] }) })
+    expect(res.status).toBe(200)
+    const body = await readJson<StateResponse>(res)
+    expect(body.accounts.map((a) => a.id)).toEqual(["a1", "a2"])
+    // Position is assigned from orderedIds' own index, so a2 keeps position 2 (its real index in
+    // the list submitted), not silently renumbered to 1 just because the skipped id took no slot.
+    expect(body.accounts.map((a) => a.withdrawalOrder)).toEqual([0, 2])
+    // The unknown id must not have been written into config.json as a stray override either --
+    // buildState's own account list is re-derived from currently-open accounts, so it can't see
+    // one even if applyAccountOrder wrote it; only a direct config read catches that.
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as { accounts?: { match?: string }[] }
+    expect(config.accounts?.some((a) => a.match === "closed-or-unknown")).toBe(false)
+  })
+
+  it("rejects a non-array or non-string orderedIds", async () => {
+    const url = await boot({ accounts: [{ id: "a1", name: "Checking", offbudget: false, closed: false }] })
+    const notArray = await fetch(`${url}api/retirement/accounts/order`, { method: "PATCH", body: JSON.stringify({ orderedIds: "a1" }) })
+    expect(notArray.status).toBe(400)
+    const notStrings = await fetch(`${url}api/retirement/accounts/order`, { method: "PATCH", body: JSON.stringify({ orderedIds: [1, 2] }) })
+    expect(notStrings.status).toBe(400)
   })
 })
 
@@ -1332,6 +1383,34 @@ describe("POST /api/budget/anomalies", () => {
   it("requires at least one category", async () => {
     const url = await boot()
     const res = await fetch(`${url}api/budget/anomalies`, { method: "POST", body: JSON.stringify({ categories: [], startMonth: "2026-01" }) })
+    expect(res.status).toBe(400)
+  })
+})
+
+describe("POST /api/budget/anomalies/tag", () => {
+  // findAnomalies/tagAnomalyFindings themselves are thoroughly unit-tested (budget-tools.test.ts,
+  // including a real flag-then-tag round trip); what that can't reach is THIS route's own wiring --
+  // that it actually chains the two together and shapes the combined response, and that it applies
+  // the same argument validation as its sibling /anomalies route rather than skipping it.
+  it("chains findAnomalies into tagAnomalyFindings and shapes the combined response", async () => {
+    const url = await boot({
+      monthCategories: [{ id: "c1", name: "Groceries", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -10000, balance: 0, carryover: false }],
+    })
+    const res = await fetch(`${url}api/budget/anomalies/tag`, {
+      method: "POST",
+      body: JSON.stringify({ categories: ["c1"], startMonth: "2026-01" }),
+    })
+    expect(res.status).toBe(200)
+    // Identical spend every month -- findAnomalies flags nothing, so tagAnomalyFindings (which
+    // returns immediately with no fetch at all when given an empty findings list) has nothing to
+    // tag either. Both come back as real, present (if empty) arrays -- confirms the route actually
+    // read tagAnomalyFindings's own return value into the response, not just echoed a stub.
+    expect(await readJson<{ findings: unknown[]; tagResults: unknown[] }>(res)).toEqual({ findings: [], tagResults: [] })
+  })
+
+  it("requires at least one category, same as /anomalies", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/budget/anomalies/tag`, { method: "POST", body: JSON.stringify({ categories: [], startMonth: "2026-01" }) })
     expect(res.status).toBe(400)
   })
 })

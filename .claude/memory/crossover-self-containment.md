@@ -18,6 +18,19 @@ fallback of any kind any more) and the general "Plan section owns it locally" pr
 established, which the Monte Carlo pinned-fields mechanism (still fully live) continues to follow.
 Kept below for the historical reasoning, not as a description of current code.
 
+**Doubly superseded, confirmed 2026-09-22 (routine dead-code audit)**: "Export to Dashboard" (the
+whole generate/export-to-Actual feature) was itself removed entirely in a later commit --
+`FireWidgetType` is now just `"monte-carlo-card"` (see its own doc comment, fire-dashboard.ts:26).
+That takes the rest of this memory's "still current" claims down with it: `crossoverSafeWithdrawalRate`/
+`crossoverEstimatedReturn`/`crossoverProjectionType`/`crossoverAssumptionsWithOverrides`/
+`pinnedCrossoverFields`/`CrossoverProjectionType`, and the withdrawal-rule/tax-bands pinning
+described in "Round three" below, are ALL gone now too -- grepped for zero hits across `src/`. The
+"still open" question at the end of "round two" (whether those three cosmetic fields should ever
+feed a real in-app display) is moot; they don't exist to revisit. What's STILL genuinely current,
+confirmed by the same grep: `crossoverExpenseCategoryIds` and `crossoverExpenseAdjustmentFactor`
+(both still read by `spendFromLocalSelection`/`annualSpendFromTransactions` and still the live Plan
+UI fields) -- everything else below is historical only, kept for the reasoning, not the code shape.
+
 The user asked how feasible it'd be to make the app more self-contained, since needing to open
 Actual's own crossover/Monte Carlo widget config UI to tune assumptions (then come back to Runway
 to see the effect) was exactly the back-and-forth they wanted to move away from. Investigated
