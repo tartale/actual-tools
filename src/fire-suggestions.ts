@@ -79,7 +79,7 @@ function isImprovement(baseline: CheckResult, candidate: CheckResult): boolean {
 // every possible combination of accounts -- combining multiple accounts' own changes is left for
 // the user's own judgment once they see which individual accounts help.
 export async function generateSuggestions(
-  actualConfig: ActualConfig,
+  actualConfig: ActualConfig | null,
   dataSource: AccountDataSource,
   accounts: readonly ClassifiedAccount[],
   options: CheckOptions,

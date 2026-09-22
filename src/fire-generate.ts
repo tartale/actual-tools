@@ -2,6 +2,8 @@ import { averageSpent, fetchCategoryGroups, fetchDashboardWidgets, fetchHistoric
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
 import type { AccountDataSource } from "./account-data-source.ts"
 import type { ClassifiedAccount, ExpenseAdjustment } from "./fire-accounts.ts"
+import { categoryIdFromName, transactionCutoff } from "./file-account-data-source.ts"
+import type { FileTransactionRow } from "./file-account-data-source.ts"
 import { effectiveAccessAge, portfolioAccountIds } from "./fire-dashboard.ts"
 import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream } from "./fire-dashboard.ts"
 import {
@@ -71,6 +73,85 @@ async function spendFromLocalSelection(
   const annualSpend = Math.round((await trailingAnnualSpend(config, categoryIds, historyMonths)) * adjustmentFactor)
   const basis =
     `${categoryIds.length} categories over ${historyMonths} months to ${currentMonth()} (Plan section selection)` +
+    (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
+  return { annualSpend, basis }
+}
+
+// Function to compute annual spend from a file-mode transactions import -- the local-data
+// counterpart to spendFromLocalSelection above, for a plan with no live Actual connection to fetch
+// category history from at all (see checkDashboard's own doc comment on the file-mode spend-source
+// precedence). Trailing historyMonths ending at today's real calendar month, same "as of right now"
+// meaning trailingAnnualSpend itself uses. Every qualifying row's amount is NETTED (summed, sign
+// and all, then negated), not just outflow rows summed on their own -- a positive-amount row inside
+// a real spending category is a refund/return, and Actual's own "spent" figure nets those against
+// the same category's outflows rather than ignoring them; discarding them outright (an earlier
+// version of this function did exactly that) systematically overcounts spend for any category with
+// legitimate refunds mixed in -- found live (2026-09-21) comparing this figure against Actual's own
+// real "spent" total for the same household, about $51K/yr of the gap between them.
+//
+// Two exclusions, found against a REAL export (2026-09-21) that blew this up to $1.4M/yr without
+// them:
+//   1. An empty Category_Group or Category is never counted -- confirmed against real data these
+//      are transfers between the person's own accounts (both a negative AND positive row for the
+//      same dollars, net-zero for the household) and split-transaction parent rows (the real
+//      amount lives on each split CHILD row instead -- see parseTransactionRows's own doc comment).
+//      Neither is real household spend.
+//   2. Everything else needs the SAME selection this app already applies in Actual mode
+//      (crossoverExpenseCategoryIds, via spendFromLocalSelection above) -- without it, categories
+//      like retirement/investment contributions ("Long-Term Savings," in the real export this was
+//      found against) get summed as if they were spend too. selection is a list of
+//      categoryIdFromName ids (file-account-data-source.ts) -- null or empty-after-filtering-to-
+//      known-ids falls back to every non-empty-category row, the SAME "no real choice made yet"
+//      convention spendFromLocalSelection itself uses (not "count everything," now that empty
+//      categories are already excluded by (1) -- categorized savings/investment rows still need an
+//      explicit selection to be excluded, there's no heuristic this function could apply on its own
+//      to guess which category names mean "not spend" for an arbitrary person's own naming).
+//
+// Returns annualSpend: 0 (never null/negative) when nothing in the trailing window qualifies -- the
+// caller (checkDashboard) falls back to the flat manual fileModeAnnualExpense whenever this comes
+// back 0, same as it would for a freshly-imported transactions file with no spend recorded yet.
+export function annualSpendFromTransactions(rows: readonly FileTransactionRow[], historyMonths: number, adjustmentFactor: number, selection: readonly string[] | null): { annualSpend: number; basis: string | null } {
+  const asOfMonth = currentMonth()
+  // Shared with categoryGroupsFromTransactions (file-account-data-source.ts) -- see its own doc
+  // comment on why the picker needs the identical window this spend figure is computed from.
+  const cutoff = transactionCutoff(historyMonths)
+  // crossoverExpenseCategoryIds is the SAME plan field Actual mode's own spendFromLocalSelection
+  // uses, but the ids it holds are mode-specific -- Actual's own real category UUIDs there, this
+  // file's own categoryIdFromName ids here. Switching from Actual mode (where a selection was
+  // already made) into file mode would otherwise inherit a selection that matches NOTHING here,
+  // silently zeroing every row out rather than falling back sensibly -- confirmed live (2026-09-21)
+  // against a real plan that had done exactly that. Filtering to only ids this file's own rows
+  // actually produce, the same safety net spendFromLocalSelection already applies for its own
+  // stale-selection case, fixes it: an all-stale selection filters down to empty, which falls back
+  // to "every category" below, same as a selection that was simply never customized.
+  const allCategoryIds = new Set(rows.filter((row) => row.categoryGroup !== "" && row.category !== "" && row.categoryGroup.toLowerCase() !== "income").map((row) => categoryIdFromName(row.categoryGroup, row.category)))
+  const filteredSelection = selection?.filter((id) => allCategoryIds.has(id)) ?? []
+  const selectedIds = filteredSelection.length > 0 ? new Set(filteredSelection) : null
+  let totalSpent = 0
+  for (const row of rows) {
+    // "Income" itself excluded by name (case-insensitive, same as categoryGroupsFromTransactions'
+    // own is_income heuristic) -- a real export can have NEGATIVE rows under Income (a refund
+    // clawback, a reversal, an accounting adjustment), which are still about tracking income, not
+    // household spend, however they're signed. No sign check here otherwise -- a positive row in a
+    // real spending category nets against that category's own outflows (see this function's own
+    // doc comment), it isn't dropped.
+    if (row.categoryGroup === "" || row.category === "" || row.categoryGroup.toLowerCase() === "income") continue
+    const categoryId = categoryIdFromName(row.categoryGroup, row.category)
+    if (selectedIds != null && !selectedIds.has(categoryId)) continue
+    const date = new Date(row.date)
+    if (Number.isNaN(date.getTime()) || date < cutoff) continue
+    totalSpent += -row.amount
+  }
+  // <= 0, not just === 0 -- refunds/returns netted against a short window's outflows (see this
+  // function's own doc comment) could in principle net out to a negative total, which would
+  // otherwise annualize to a nonsensical negative "spend."
+  if (totalSpent <= 0) {
+    return { annualSpend: 0, basis: null }
+  }
+  const annualSpend = Math.round((totalSpent / historyMonths) * 12 * adjustmentFactor)
+  const basis =
+    (selectedIds != null ? `${selectedIds.size} categories` : "imported transaction file") +
+    `, trailing ${historyMonths} months to ${asOfMonth}` +
     (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
   return { annualSpend, basis }
 }
@@ -185,6 +266,12 @@ export interface CheckOptions {
   // Known future changes to living expenses -- see ExpenseAdjustment's own doc comment
   // (fire-accounts.ts) for each entry's shape.
   expenseAdjustments: readonly ExpenseAdjustment[]
+  // File mode's own spend source (issue #34/#35's follow-up, 2026-09-21) -- see checkDashboard's
+  // own doc comment for the full precedence. Ignored whenever checkDashboard's actualConfig
+  // parameter is non-null (Actual mode always uses spendFromLocalSelection instead); required
+  // (by the caller, app-server.ts) whenever it's null, since there's no live Actual data to fall
+  // back to otherwise.
+  fileModeSpend: { annualSpend: number; basis: string | null } | null
 }
 
 export interface AccountContribution {
@@ -250,8 +337,23 @@ export interface CheckResult {
 // Function to analyze the dashboard that is actually live in Actual, rather than generating a new
 // one. Reads the imported widgets back through ActualQL, so it sees the state a person has been
 // editing in the app -- including changes this tool never made.
+//
+// actualConfig is null in file mode (issue #34/#35's follow-up, 2026-09-21) -- a
+// name,balance-only accounts file has no live Actual connection AND no transaction history at all
+// to derive spend/a Monte Carlo widget from, unlike every account this app otherwise analyzes. Two
+// things change when it's null:
+//   1. No Monte Carlo widget to import -- monteCarloMetas is just empty, the same "nothing
+//      imported yet" state a fresh Actual budget with no widget would produce (falls back to
+//      options.fallbackInflationMean below, same as ever).
+//   2. Spend comes from options.fileModeSpend instead of spendFromLocalSelection's own
+//      Actual-backed category-history lookup -- the caller (app-server.ts) computes it beforehand,
+//      in one of two ways, in this precedence: a transactions file's own real spend (see
+//      fire-generate.ts's annualSpendFromTransactions) when one's been imported and it comes back
+//      nonzero, else fire-accounts.ts's flat fileModeAnnualExpense (defaulting to
+//      DEFAULT_FILE_MODE_ANNUAL_EXPENSE). Required (never null) whenever actualConfig itself is
+//      null -- there's nothing else this function could fall back to.
 export async function checkDashboard(
-  actualConfig: ActualConfig,
+  actualConfig: ActualConfig | null,
   dataSource: AccountDataSource,
   accounts: readonly ClassifiedAccount[],
   options: CheckOptions,
@@ -261,23 +363,33 @@ export async function checkDashboard(
     accounts.flatMap((account) => (account.monthlyContribution == null ? [] : [[account.id, account.monthlyContribution * 12] as [string, number]])),
   )
 
-  const widgets = await fetchDashboardWidgets<unknown>(actualConfig, null)
-  const monteCarloMetas = widgets
-    .filter((widget) => widget.type === "monte-carlo-card")
-    .map((widget) => widget.meta as MonteCarloCardMeta | null)
-    .filter((meta): meta is MonteCarloCardMeta => meta !== null)
+  let monteCarloMetas: MonteCarloCardMeta[] = []
+  let annualSpend: number
+  let spendBasis: string | null
+  if (actualConfig == null) {
+    if (options.fileModeSpend == null) {
+      throw new Error("fileModeSpend is required when actualConfig is null (file mode).")
+    }
+    ;({ annualSpend, basis: spendBasis } = options.fileModeSpend)
+  } else {
+    const widgets = await fetchDashboardWidgets<unknown>(actualConfig, null)
+    monteCarloMetas = widgets
+      .filter((widget) => widget.type === "monte-carlo-card")
+      .map((widget) => widget.meta as MonteCarloCardMeta | null)
+      .filter((meta): meta is MonteCarloCardMeta => meta !== null)
 
-  // Entirely local -- see spendFromLocalSelection's own doc comment for why this never falls back
-  // to reading a live Actual crossover widget's own checklist.
-  const groups = await fetchCategoryGroups(actualConfig)
-  const allExpenseCategoryIds = groups.flatMap((group) => group.categories).filter((category) => !category.is_income && !category.hidden).map((category) => category.id)
-  const { annualSpend, basis: spendBasis } = await spendFromLocalSelection(
-    actualConfig,
-    allExpenseCategoryIds,
-    options.crossoverExpenseCategoryIds,
-    options.expenseAdjustmentFactor,
-    options.spendHistoryMonths,
-  )
+    // Entirely local -- see spendFromLocalSelection's own doc comment for why this never falls
+    // back to reading a live Actual crossover widget's own checklist.
+    const groups = await fetchCategoryGroups(actualConfig)
+    const allExpenseCategoryIds = groups.flatMap((group) => group.categories).filter((category) => !category.is_income && !category.hidden).map((category) => category.id)
+    ;({ annualSpend, basis: spendBasis } = await spendFromLocalSelection(
+      actualConfig,
+      allExpenseCategoryIds,
+      options.crossoverExpenseCategoryIds,
+      options.expenseAdjustmentFactor,
+      options.spendHistoryMonths,
+    ))
+  }
 
   const debtStreams = debtPayoffIncomeStreams(accounts, options.currentAge)
   const incomeStreams = [...options.incomeStreams, ...debtStreams]

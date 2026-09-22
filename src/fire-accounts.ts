@@ -577,6 +577,15 @@ export interface DashboardConfig {
   // How many trailing months of category history the same local-selection spend calculation
   // averages over. Null keeps the default (see DEFAULT_SPEND_HISTORY_MONTHS).
   crossoverSpendHistoryMonths: number | null
+  // File-mode ONLY (see currentAccountDataSource in app-server.ts) -- a plain manual annual spend
+  // figure, cents, used in place of the Actual-backed spend-history computation above, which has
+  // no data to work from without a live Actual connection (a name,balance accounts file carries no
+  // transaction history at all). Null falls back to DEFAULT_FILE_MODE_ANNUAL_EXPENSE ($50,000/yr)
+  // rather than erroring, so a freshly-imported file-mode plan has a real number to project from
+  // immediately. Overridden entirely once a transactions file is also imported (see
+  // FileDataSourceSession's own transactions field) -- see checkDashboard's own doc comment on the
+  // three-way spend-source precedence. Ignored outside file mode.
+  fileModeAnnualExpense: number | null
   // The two Monte Carlo fields the doc comment on MonteCarloWithdrawalStrategy above calls out as
   // deliberately NOT exposed as flat pinnable scalars -- each carries its own internal shape
   // (a withdrawal rule's parameters vary by its own type; tax bands are an open-ended list), so
@@ -625,9 +634,15 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   crossoverExpenseCategoryIds: null,
   crossoverExpenseAdjustmentFactor: null,
   crossoverSpendHistoryMonths: null,
+  fileModeAnnualExpense: null,
   monteCarloWithdrawalRule: null,
   monteCarloTaxBands: null,
 }
+
+// $50,000/yr -- a generic, round starting figure for a freshly-imported file-mode plan with no
+// transactions file yet, so the very first check runs against a real number instead of erroring
+// or silently defaulting to $0. Meant to be edited immediately, not a serious estimate.
+export const DEFAULT_FILE_MODE_ANNUAL_EXPENSE = 50000_00
 
 export const EMPTY_FIRE_CONFIG: FireConfig = {
   version: 1,
@@ -1273,6 +1288,9 @@ export function loadFireConfig(path: string): LoadedFireConfig {
   ) {
     throw new Error(`Invalid config in ${path}: dashboard.crossoverSpendHistoryMonths must be a positive integer.`)
   }
+  if (dashboardSource.fileModeAnnualExpense != null && (typeof dashboardSource.fileModeAnnualExpense !== "number" || dashboardSource.fileModeAnnualExpense < 0)) {
+    throw new Error(`Invalid config in ${path}: dashboard.fileModeAnnualExpense must be a non-negative number.`)
+  }
   if (dashboardSource.monteCarloWithdrawalRule != null) {
     const rule = dashboardSource.monteCarloWithdrawalRule
     if (typeof rule !== "object" || Array.isArray(rule) || !MONTE_CARLO_WITHDRAWAL_RULE_TYPES.includes(rule.type)) {
@@ -1348,6 +1366,7 @@ export function loadFireConfig(path: string): LoadedFireConfig {
       crossoverExpenseCategoryIds: dashboardSource.crossoverExpenseCategoryIds ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseCategoryIds,
       crossoverExpenseAdjustmentFactor: dashboardSource.crossoverExpenseAdjustmentFactor ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseAdjustmentFactor,
       crossoverSpendHistoryMonths: dashboardSource.crossoverSpendHistoryMonths ?? DEFAULT_DASHBOARD_CONFIG.crossoverSpendHistoryMonths,
+      fileModeAnnualExpense: dashboardSource.fileModeAnnualExpense ?? DEFAULT_DASHBOARD_CONFIG.fileModeAnnualExpense,
       monteCarloWithdrawalRule: dashboardSource.monteCarloWithdrawalRule ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalRule,
       monteCarloTaxBands: dashboardSource.monteCarloTaxBands ?? DEFAULT_DASHBOARD_CONFIG.monteCarloTaxBands,
       expenseAdjustments: dashboardSource.expenseAdjustments ?? DEFAULT_DASHBOARD_CONFIG.expenseAdjustments,

@@ -88,15 +88,12 @@
                  Budget tab is disabled entirely while this mode is active (see the dataSourceMode
                  API's own mode field and applyDataSourceMode in app.js), not just left broken. -->
             <div id="fileFields" hidden>
-              <p>A CSV or TSV file with two columns, <code>name,balance</code> -- one row per account. This app re-reads the file from disk on every Refresh, so the path below must be reachable by wherever <em>this app's own server</em> is running, not just your browser -- the file picker only fills in a filename to get you started; a browser can't hand a file's real on-disk path to a web page, so double-check the path once it's filled in.</p>
+              <p>A CSV or TSV file with two columns, <code>name,balance</code> -- one row per account, uploaded once. Nothing on your disk is read or watched afterward -- to pick up a change, hit Refresh, which reopens this same picker.</p>
               <div class="field">
-                <label for="importFilePath">File path (on the server)</label>
-                <input type="text" id="importFilePath" placeholder="/home/user/accounts.csv" autocomplete="off">
-              </div>
-              <div class="field">
-                <label for="importFilePicker">Or pick a file to prefill the name above</label>
+                <label for="importFilePicker">File</label>
                 <input type="file" id="importFilePicker" accept=".csv,.tsv,text/csv,text/tab-separated-values">
               </div>
+              <button type="button" class="btn secondary" id="downloadTemplateBtn">Download template</button>
             </div>
             <div class="derived warn-text" id="loginError" hidden></div>
             <button type="submit" class="btn" id="loginSubmitBtn">Log in</button>
@@ -139,6 +136,10 @@
       <div class="retirement-toolbar" id="retirementToolbar">
         <div class="retirement-toolbar-actions">
           <button type="button" class="btn secondary" id="refreshBtn">Refresh</button>
+          <!-- Hidden -- refreshAll's own file-mode branch (app.js) clicks this to reopen the native
+               file picker instead of silently re-reading anything, since file mode has nothing on
+               disk left to re-read from (see data-source-session.ts's own 2026-09-21 doc comment). -->
+          <input type="file" id="refreshFilePicker" accept=".csv,.tsv,text/csv,text/tab-separated-values" hidden>
           <button type="button" class="btn secondary" id="expandAllBtn">Expand all</button>
           <button type="button" class="btn secondary" id="collapseAllBtn">Collapse all</button>
         </div>
@@ -237,11 +238,33 @@
                 <label for="crossoverSpendHistoryMonths">Spend history<button type="button" class="help-icon" data-help="How many trailing months of category spending to average, for the expense categories selected below.&#10;&#10;A longer window smooths out one-off months (a big trip, a large medical bill); a shorter one reacts faster to a real, lasting change in spending.">?</button></label>
                 <div class="input-affix suffix-months"><input type="number" step="1" min="1" id="crossoverSpendHistoryMonths" placeholder="12"></div>
               </div>
+              <!-- File mode only -- there's no live Actual category history to compute spend from
+                   at all (see checkDashboard's own doc comment), so this plain manual figure is
+                   what Bridge/Monte Carlo project from instead, unless a transactions file below
+                   supplies a real one. -->
+              <div class="field" id="fileModeAnnualExpenseField" hidden>
+                <label for="fileModeAnnualExpense">Manual annual expense<button type="button" class="help-icon" data-help="File mode has no live Actual connection to compute spend history from, so this plain figure is used instead -- defaults to $50,000/yr on a fresh import. Overridden entirely once a transactions file is imported below.">?</button></label>
+                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="fileModeAnnualExpense" placeholder="50,000.00"></div>
+              </div>
             </div>
             <div class="field full spend-config-buffer">
               <label>Planned expense changes<button type="button" class="help-icon" data-help="Known future changes to living expenses -- e.g. a mortgage payoff, a kid finishing college, a planned move. Each one adjusts projected spend by a fixed annual amount over an age range, on top of the overall spend scale above.">?</button><span class="saved-flag" id="savedExpenseAdjustments">saved</span></label>
               <div id="expenseAdjustmentsList"></div>
               <button type="button" class="btn secondary" id="addExpenseAdjustmentBtn">Add planned change</button>
+            </div>
+            <!-- File mode only -- an optional, real spend history from Actual's own transaction
+                 export, in place of the manual figure above. A SEPARATE upload from the accounts
+                 file (login modal) -- see data-source-session.ts's own doc comment. -->
+            <div class="field full spend-config-buffer" id="transactionsImportField" hidden>
+              <label>Transactions file<button type="button" class="help-icon" data-help="Optional -- Actual's own transaction export (Account, Date, Payee, Notes, Category_Group, Category, Amount, Split_Amount, Cleared; only Date/Category_Group/Category/Amount are read). When imported, real trailing spend from these rows replaces the manual annual expense above.">?</button></label>
+              <div class="derived" id="transactionsImportStatus">Not imported -- using the manual annual expense above.</div>
+              <!-- Inline, next to the picker itself -- the page-wide #topError banner sits far
+                   above this card and is easy to miss for a failure this local (confirmed live,
+                   2026-09-21: a real upload failed and the user never noticed the top banner). -->
+              <div class="derived warn-text" id="transactionsImportError" hidden></div>
+              <input type="file" id="transactionsFilePicker" accept=".csv,.tsv,text/csv,text/tab-separated-values">
+              <button type="button" class="btn secondary" id="downloadTransactionsTemplateBtn">Download template</button>
+              <button type="button" class="btn secondary" id="removeTransactionsBtn" hidden>Remove</button>
             </div>
             <div class="field full spend-config-buffer">
               <label>Expense categories<button type="button" class="help-icon" data-help="Used to estimate your future expenses.&#10;&#10;Select the categories that reflect your living expenses in retirement -- e.g. Food, Utilities, Entertainment, Medical.&#10;&#10;Exclude categories that won't continue in retirement -- e.g. retirement savings contributions.">?</button><span class="saved-flag" id="savedExpenseCategories">saved</span></label>
