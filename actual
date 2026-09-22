@@ -7,12 +7,37 @@ cd "${THIS_SCRIPT_DIR}"
 # shellcheck source=lib/cli-format.sh
 source "${THIS_SCRIPT_DIR}/lib/cli-format.sh"
 
-# The port the app serves on, matching compose.yaml's published port and src/app.ts's own default.
-# Ends in 76 (production) / 77 (--dev) -- this user's own convention across every project's ports,
-# so a container and a --dev process default to two different ports and can run side by side
-# without one's "restart the port" ever landing on the other by accident.
-SERVICE_PORT=4276
-DEV_PORT=4277
+# Four fixed ports -- one per (linked|detached) x (container|--dev) combination, so all four can run
+# side by side without any of them ever landing on another by accident, matching compose.yaml's own
+# published ports and src/app.ts's own default. linked keeps its original two (4276 container / 4277
+# --dev, ending in this user's own 76/77 production/dev convention); detached (issue #38's standalone
+# FIRE calculator, see AB_MODE) takes the next two up.
+LINKED_SERVICE_PORT=4276
+DETACHED_SERVICE_PORT=4277
+LINKED_DEV_PORT=4278
+DETACHED_DEV_PORT=4279
+
+# Function to print the right default port for a mode+dev combination -- the one place this
+# 4-way mapping is computed, so serviceStart/serviceStatus/serviceStop can't drift from each other.
+function defaultPort() {
+  local mode="$1" dev="$2"
+  if [[ "${mode}" == "detached" ]]; then
+    if [[ "${dev}" == true ]]; then echo "${DETACHED_DEV_PORT}"; else echo "${DETACHED_SERVICE_PORT}"; fi
+  else
+    if [[ "${dev}" == true ]]; then echo "${LINKED_DEV_PORT}"; else echo "${LINKED_SERVICE_PORT}"; fi
+  fi
+}
+
+# Function to print the container name for a mode -- matches compose.yaml's own container_name for
+# each service.
+function containerNameForMode() {
+  if [[ "$1" == "detached" ]]; then echo "actual-tools-detached"; else echo "actual-tools"; fi
+}
+
+# Function to print the compose service name for a mode -- matches compose.yaml's own service keys.
+function composeServiceForMode() {
+  if [[ "$1" == "detached" ]]; then echo "app-detached"; else echo "app"; fi
+}
 
 # Function to display usage and exit. Takes the exit code: 0 for an explicit --help, 1 for an error.
 function usage() {
@@ -81,7 +106,8 @@ function serviceUsage() {
   echo >&2
   cliSection "Options" \
     "--dev" "start: run the sources directly instead, in the foreground, restarting on every edit. The container is not involved." \
-    "-p, --port N" "Port to check or serve on (default: ${SERVICE_PORT}, or ${DEV_PORT} with --dev)."
+    "--mode linked|detached" "Which deployment to act on (default: linked -- today's app). detached is issue #38's standalone FIRE calculator, no connection of any kind." \
+    "-p, --port N" "Port to check or serve on (default: ${LINKED_SERVICE_PORT} linked / ${DETACHED_SERVICE_PORT} detached, or ${LINKED_DEV_PORT} / ${DETACHED_DEV_PORT} with --dev)."
   exit "${exitCode}"
 }
 
@@ -339,11 +365,20 @@ function commandVendor() {
 # tab left open on it. A container would have to be rebuilt for each of those edits.
 function serviceStart() {
   local dev=false
+  local mode="linked"
   local port=""
   local passthrough=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dev) dev=true; shift ;;
+      --mode)
+        mode="${2:-}"
+        if [[ "${mode}" != "linked" && "${mode}" != "detached" ]]; then
+          echo "Invalid --mode \"${mode}\" -- must be \"linked\" or \"detached\"." >&2
+          serviceUsage
+        fi
+        shift 2
+        ;;
       -p | --port)
         port="${2:-}"
         if [[ -z "${port}" ]]; then
@@ -358,12 +393,12 @@ function serviceStart() {
   done
 
   if [[ "${dev}" == true ]]; then
-    # A different default than the container's own (77 vs. 76) so a --dev run and a running
-    # container never collide on the same port by default -- each is reachable at once, and
-    # `service stop`/`stop -p` on one can't accidentally take down the other.
-    exec node --watch ./src/app.ts --port "${port:-${DEV_PORT}}" "${passthrough[@]}"
+    # A different default per mode (see defaultPort) so up to four of these (two modes x
+    # container/--dev) never collide on a port by default -- each is reachable at once, and
+    # `service stop`/`stop -p` on one can't accidentally take down another.
+    AB_MODE="${mode}" exec node --watch ./src/app.ts --port "${port:-$(defaultPort "${mode}" true)}" "${passthrough[@]}"
   fi
-  port="${port:-${SERVICE_PORT}}"
+  port="${port:-$(defaultPort "${mode}" false)}"
 
   # Only --dev has anywhere to forward an option like --no-open to (app.ts itself, above); outside
   # --dev those were silently collected and then never used at all, so a typo'd flag looked accepted
@@ -378,31 +413,50 @@ function serviceStart() {
     echo "No actual-tools:local image yet -- building it now (first run only)." >&2
     buildImage
   fi
-  # config.json is written here, so the directory has to exist before the mount does: docker would
-  # otherwise create it as root and the app could not write into it. Only for the default location --
-  # an AB_DATA_DIR pointing at the daemon's host may well not be a path this side can create, and
-  # silently making a local directory of that name would hide the real problem rather than fix it.
-  if [[ -z "${AB_DATA_DIR:-}" ]]; then
-    mkdir -p "${THIS_SCRIPT_DIR}/data"
+  local composeService
+  composeService="$(composeServiceForMode "${mode}")"
+  if [[ "${mode}" == "linked" ]]; then
+    # config.json is written here, so the directory has to exist before the mount does: docker
+    # would otherwise create it as root and the app could not write into it. Only for the default
+    # location -- an AB_DATA_DIR pointing at the daemon's host may well not be a path this side can
+    # create, and silently making a local directory of that name would hide the real problem rather
+    # than fix it. Detached mode has no volume at all (see compose.yaml's own doc comment on why),
+    # so there's nothing to create here for it.
+    if [[ -z "${AB_DATA_DIR:-}" ]]; then
+      mkdir -p "${THIS_SCRIPT_DIR}/data"
+    fi
+    # Published port only; inside the container it is always LINKED_SERVICE_PORT (4276). See
+    # compose.yaml.
+    AB_PORT="${port}" docker compose up -d "${composeService}"
+  else
+    # Same "published port only, always 4276 inside the container" story as AB_PORT above.
+    AB_DETACHED_PORT="${port}" docker compose up -d "${composeService}"
   fi
-  # Published port only; inside the container it is always SERVICE_PORT (4276). See compose.yaml.
-  AB_PORT="${port}" docker compose up -d
   echo
-  serviceStatus --port "${port}"
+  serviceStatus --mode "${mode}" --port "${port}"
 }
 
 # Function to report whether the app is up. The port is the question that matters -- a container can
 # be running with a wedged server inside it -- so that is what decides "up"; the container is then
 # reported alongside as context, and only when docker is actually available.
 function serviceStatus() {
-  local port="${SERVICE_PORT}"
+  local mode="linked"
+  local port=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -p | --port) port="${2:-${SERVICE_PORT}}"; shift 2 ;;
+      --mode) mode="${2:-linked}"; shift 2 ;;
+      -p | --port) port="${2:-}"; shift 2 ;;
       -h | --help) serviceUsage 0 ;;
       *) shift ;;
     esac
   done
+  port="${port:-$(defaultPort "${mode}" false)}"
+  local containerName
+  containerName="$(containerNameForMode "${mode}")"
+  # Only named in the hints below when it's not the default -- keeps the common (linked) case
+  # reading exactly as it did before --mode existed.
+  local modeFlag=""
+  [[ "${mode}" == "detached" ]] && modeFlag=" --mode detached"
 
   if portListening "${port}"; then
     echo "● up      http://localhost:${port}/"
@@ -412,7 +466,7 @@ function serviceStatus() {
 
   if command -v docker &> /dev/null && docker info &> /dev/null; then
     local container
-    container="$(docker ps -a --filter "name=^actual-tools$" --format '{{.Status}}' 2> /dev/null || true)"
+    container="$(docker ps -a --filter "name=^${containerName}$" --format '{{.Status}}' 2> /dev/null || true)"
     if [[ -n "${container}" ]]; then
       echo "          container: ${container}"
     else
@@ -421,29 +475,37 @@ function serviceStatus() {
   fi
 
   if portListening "${port}"; then
-    echo "          Stop with: ./actual service stop"
+    echo "          Stop with: ./actual service stop${modeFlag}"
   else
-    echo "          Start with: ./actual service start"
+    echo "          Start with: ./actual service start${modeFlag}"
   fi
 }
 
 # Function to stop the app, whichever way it was started. Both are attempted rather than one being
 # inferred: a --dev run and a container can each be holding the port, and stopping only the kind
-# that was asked about leaves the other one running and the port still taken.
+# that was asked about leaves the other one running and the port still taken. Scoped to the one
+# compose SERVICE for this mode (docker compose rm -sf, not `down`) -- `down` tears down the whole
+# project, including the network the other mode's own service shares and depends on still being up.
 function serviceStop() {
-  local port="${SERVICE_PORT}"
+  local mode="linked"
+  local port=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -p | --port) port="${2:-${SERVICE_PORT}}"; shift 2 ;;
+      --mode) mode="${2:-linked}"; shift 2 ;;
+      -p | --port) port="${2:-}"; shift 2 ;;
       -h | --help) serviceUsage 0 ;;
       *) shift ;;
     esac
   done
+  port="${port:-$(defaultPort "${mode}" false)}"
+  local containerName composeService
+  containerName="$(containerNameForMode "${mode}")"
+  composeService="$(composeServiceForMode "${mode}")"
 
   local stopped=false
   if command -v docker &> /dev/null && docker info &> /dev/null; then
-    if [[ -n "$(docker ps -a --filter "name=^actual-tools$" --format '{{.ID}}' 2> /dev/null || true)" ]]; then
-      docker compose down
+    if [[ -n "$(docker ps -a --filter "name=^${containerName}$" --format '{{.ID}}' 2> /dev/null || true)" ]]; then
+      docker compose rm -sf "${composeService}"
       stopped=true
     fi
   fi

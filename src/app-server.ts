@@ -11,7 +11,7 @@ import { actualAccountDataSource } from "./account-data-source.ts"
 import type { AccountDataSource } from "./account-data-source.ts"
 import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
 import { accountIdFromName, appendAccountRow, categoryGroupsFromTransactions, fileAccountDataSource, parseTransactionRows } from "./file-account-data-source.ts"
-import { manualAccountDataSource } from "./manual-account-data-source.ts"
+import { detachedAccountDataSource } from "./detached-account-data-source.ts"
 import { clearFileDataSourceSession, loadFileDataSourceSession, writeFileDataSourceSession } from "./data-source-session.ts"
 import type { FileDataSourceSession } from "./data-source-session.ts"
 import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
@@ -93,6 +93,15 @@ export interface AppServerOptions {
   uiDir: string
   // 0 (the default) asks the OS for an unused port -- see startAppServer's doc comment for why.
   port?: number
+  // "linked" (the default) is today's app -- Actual sync and file import both available, exactly
+  // as before this option existed. "detached" is issue #38's standalone FIRE calculator: no
+  // connection of any kind, ever -- see the MODE gate right at the top of the request handler
+  // below, which enforces this server-side (not just by hiding the login UI), since the whole
+  // point of detached mode is being safe to deploy somewhere more public later with zero real
+  // financial data ever reaching this process at all. Set via the AB_MODE env var (app.ts), not a
+  // per-request choice -- which mode a given server is running is fixed for its whole process
+  // lifetime, matching the two-separate-deployments plan (linked on one port, detached on another).
+  mode?: "linked" | "detached"
 }
 
 export interface RunningServer {
@@ -701,7 +710,7 @@ function applyAccountOrder(fireConfig: FireConfig, configPath: string, orderedId
 // Function to start the local companion-app server: serves the static UI, and everything under
 // /api/retirement/ that the Retirement section needs. Returns immediately once listening.
 export async function startAppServer(options: AppServerOptions): Promise<RunningServer> {
-  const { sessionPath, dataSourceSessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir } = options
+  const { sessionPath, dataSourceSessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir, mode = "linked" } = options
 
   // Mutable, unlike every other *Path option above: login/logout (see /api/session below) change
   // this at runtime, so route handlers below always read the CURRENT value via requireActualConfig
@@ -805,12 +814,31 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
 
       // Plain reference data (account type -> its display label) -- no session, config, or IRS
       // limits file needed, unlike buildState's own richer accountTypes map (contribution limit
-      // lines, ruleOf55Eligible, ...), which needs all three. Manual mode (issue #38, phase 1) is
-      // the one caller: its own account-add form needs a type dropdown before ANY login has
-      // happened yet, since manual mode has no login step to piggyback a state fetch onto the way
-      // Actual/file mode's post-login GET /api/retirement/state already does.
+      // lines, ruleOf55Eligible, ...), which needs all three. Detached mode is the one caller: its
+      // own account-add form needs a type dropdown before ANY login has happened yet, since
+      // detached mode has no login step at all to piggyback a state fetch onto the way Actual/file
+      // mode's post-login GET /api/retirement/state already does.
       if (req.method === "GET" && path === "/api/account-types") {
         sendJson(res, 200, Object.fromEntries(ACCOUNT_TYPES.map((type) => [type, { label: ACCOUNT_TYPE_TRAITS[type].label }])))
+        return
+      }
+
+      // Tells the client which mode this server is running in, so it knows whether to show the
+      // Actual/file login screen at all or go straight to the detached-mode page -- see
+      // AppServerOptions.mode's own doc comment. Static/dev-build-id/account-types above stay
+      // reachable in either mode (the app shell, hot-reload, and detached mode's own account-type
+      // dropdown all need them); everything else is gated right below, by an ALLOWLIST rather than
+      // a blocklist -- a new route added later is unreachable in detached mode by default unless
+      // explicitly added to it, not exposed by default and only caught if someone remembers to gate
+      // it. This is a real server-side boundary, not just a client-side UI choice: issue #38's own
+      // "safe to deploy somewhere more public later" claim for detached mode depends on THIS
+      // actually blocking every Actual/file/config-backed route, not merely hiding their buttons.
+      if (req.method === "GET" && path === "/api/mode") {
+        sendJson(res, 200, { mode })
+        return
+      }
+      if (mode === "detached" && path !== "/api/retirement/detached/check") {
+        sendJson(res, 404, { error: `Detached mode has no connection of any kind -- ${req.method} ${path} isn't available on this server.` })
         return
       }
 
@@ -1262,21 +1290,24 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         return
       }
 
-      // Issue #38, phase 1: manual mode's own stateless counterpart to GET /api/retirement/check
-      // above -- fully ephemeral by design (see the issue's own "Design" section), so this reads
-      // NOTHING from disk and writes NOTHING to disk. The entire plan and account list travel in
-      // the request body itself, every time; the server holds none of it between requests (unlike
+      // Issue #38: detached mode's own stateless counterpart to GET /api/retirement/check above --
+      // fully ephemeral by design (see the issue's own "Design" section), so this reads NOTHING
+      // from disk and writes NOTHING to disk. The entire plan and account list travel in the
+      // request body itself, every time; the server holds none of it between requests (unlike
       // Actual/file mode's own actualConfig/fileDataSourceSession module-level state) -- "data
       // lives only in the browser for that session" is a real architectural property here, not
       // just a UI framing. Reuses requirePlan/classifyAccounts/checkDashboard unchanged, fed from a
       // synthetic, in-memory-only FireConfig instead of one loadFireConfig read off config.json --
       // same validation and derivation logic as every other mode, zero duplicated business logic.
-      if (req.method === "POST" && path === "/api/retirement/manual/check") {
+      // Also reachable from a linked-mode server (not just a detached deployment) -- the MODE gate
+      // above only blocks the reverse (a detached server can't reach linked-only routes); nothing
+      // about this route itself depends on which server it's running on.
+      if (req.method === "POST" && path === "/api/retirement/detached/check") {
         const body = (await readJsonBody(req)) as Record<string, unknown>
         if (!Array.isArray(body.accounts)) {
           throw new Error("accounts must be an array.")
         }
-        const manualAccounts = body.accounts.map((raw, index) => {
+        const detachedAccounts = body.accounts.map((raw, index) => {
           const account = raw as Record<string, unknown>
           if (typeof account.id !== "string" || !account.id) {
             throw new Error(`accounts[${index}].id must be a non-empty string.`)
@@ -1297,15 +1328,15 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         }
         // Everything else (filing status, household size, Monte Carlo assumptions, ...) stays at
         // DEFAULT_DASHBOARD_CONFIG's own defaults for this phase -- the same "optional, sensible
-        // default" story every other mode already has for these fields, not something manual
+        // default" story every other mode already has for these fields, not something detached
         // mode's own minimal entry form needs to ask for yet.
         const syntheticFireConfig: FireConfig = {
           version: 1,
-          accounts: manualAccounts.map((account) => ({ match: account.id, type: account.type })),
+          accounts: detachedAccounts.map((account) => ({ match: account.id, type: account.type })),
           dashboard: { ...DEFAULT_DASHBOARD_CONFIG, birthDate: typeof body.birthDate === "string" ? body.birthDate : null, retirementAges: Array.isArray(body.retirementAges) ? (body.retirementAges as number[]) : [], planToAge: typeof body.planToAge === "number" ? body.planToAge : DEFAULT_DASHBOARD_CONFIG.planToAge },
         }
         const plan = requirePlan(syntheticFireConfig)
-        const dataSource = manualAccountDataSource(manualAccounts)
+        const dataSource = detachedAccountDataSource(detachedAccounts)
         const rawAccounts = await dataSource.fetchAccounts()
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, syntheticFireConfig, syntheticFireConfig.dashboard.birthDate, null)
         const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)

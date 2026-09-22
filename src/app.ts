@@ -31,6 +31,20 @@ import type { HelpPage } from "./cli-format.ts"
 const DEFAULT_PORT = 4276
 const uiDir = join(dirname(fileURLToPath(import.meta.url)), "app-ui")
 
+// "linked" (default) is today's app -- Actual sync and file import both available. "detached"
+// (issue #38) is the standalone FIRE calculator: no connection of any kind, ever. An env var, not
+// a CLI flag -- this is meant to be fixed per DEPLOYMENT (compose.yaml pins one per service, one
+// port for each), not something to toggle per invocation the way --port/--config are. Any other
+// value fails fast and loud at startup rather than silently falling back to "linked" -- a typo'd
+// AB_MODE on a deployment meant to be detached (e.g. "public-facing, no real data should ever
+// reach it") failing SILENTLY into linked mode would be exactly the wrong direction to fail in.
+function parseMode(): "linked" | "detached" {
+  const raw = process.env.AB_MODE
+  if (raw === undefined || raw === "linked") return "linked"
+  if (raw === "detached") return "detached"
+  throw new Error(`Invalid AB_MODE "${raw}" -- must be "linked" or "detached" (or unset, which defaults to "linked").`)
+}
+
 interface Options {
   configPath: string
   sessionPath: string
@@ -48,7 +62,9 @@ const HELP_PAGE: HelpPage = {
   description:
     "Launches the local companion app: a web page for configuring retirement/FIRE accounts and " +
     "assumptions, and checking them against a Bridge/Monte Carlo analysis. More sections (bulk " +
-    "budget edits, spending analysis) are planned; this is the first.",
+    "budget edits, spending analysis) are planned; this is the first. Set the AB_MODE environment " +
+    'variable to "detached" to run the standalone FIRE calculator instead (no Actual/file ' +
+    'connection of any kind) -- unset or "linked" (the default) is today\'s app.',
   sections: [
     {
       label: "Options",
@@ -175,6 +191,7 @@ function tryOpenBrowser(url: string): void {
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2))
+  const mode = parseMode()
 
   const server = await startAppServer({
     sessionPath: options.sessionPath,
@@ -186,9 +203,10 @@ async function main(): Promise<void> {
     federalPovertyGuidelinesPath: options.federalPovertyGuidelinesPath,
     uiDir,
     port: options.port,
+    mode,
   })
 
-  console.log(`Runway is running at ${server.url}`)
+  console.log(`Runway is running at ${server.url}${mode === "detached" ? " (detached mode -- no connection of any kind)" : ""}`)
   if (server.networkUrls.length > 0) {
     console.log("Also reachable from another device on your network at:")
     for (const networkUrl of server.networkUrls) {
