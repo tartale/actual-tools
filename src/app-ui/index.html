@@ -65,15 +65,20 @@
         <div class="modal modal-login" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
           <button type="button" class="modal-close" id="loginModalClose" title="Cancel" aria-label="Cancel" hidden>×</button>
           <h2 id="loginTitle">Connect your data</h2>
-          <!-- Mutually exclusive per issue #22/#35 -- syncing with Actual and importing a file are
-               two different AccountDataSource implementations on the server (see app-server.ts's
-               currentAccountDataSource), never both at once. Toggling shows/hides the matching
-               field group below (see the dataSourceMode radios' change handler in app.js); the
-               submit button's own label follows suit so it never reads "Log in" while the file
-               fields are the ones actually visible. -->
+          <!-- Mutually exclusive per issue #22/#35/#38 -- syncing with Actual, importing a file,
+               and entering data by hand are three different AccountDataSource implementations on
+               the server (see app-server.ts's currentAccountDataSource for the first two; manual
+               mode -- POST /api/retirement/manual/check -- never goes through that function at
+               all, since it's stateless), never more than one at once. Toggling shows/hides the
+               matching field group below (see the dataSourceMode radios' change handler in app.js);
+               the submit button's own label follows suit so it never reads "Log in" while a
+               different mode's own fields are the ones actually visible. Manual mode has no fields
+               of its own here at all -- submitting just enters the mode itself, with nothing to
+               connect to or validate first (see applyLoginFormMode/the submit handler in app.js). -->
           <div class="field data-source-mode" id="dataSourceModeField">
             <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeActual" value="actual" checked> Sync with Actual</label>
             <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeFile" value="file"> Import files</label>
+            <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeManual" value="manual"> Enter manually</label>
           </div>
           <form id="loginForm">
             <div id="actualFields">
@@ -118,6 +123,11 @@
                   <button type="button" class="btn secondary" id="downloadLoginTransactionsTemplateBtn">Download Template</button>
                 </div>
               </div>
+            </div>
+            <!-- No fields at all -- entering manual mode has nothing to connect to or validate
+                 first, unlike Actual/file mode (see submit handler in app.js). -->
+            <div id="manualFields" hidden>
+              <p>Explore the plan/Bridge/Monte Carlo engine with made-up numbers -- nothing synced, nothing saved. Data stays in this browser only (this device's local storage), never sent anywhere but the one-off check itself.</p>
             </div>
             <div class="derived warn-text" id="loginError" hidden></div>
             <div class="login-form-actions">
@@ -576,6 +586,72 @@
       </div>
       </div>
 
+      </div>
+      </div>
+
+      <!-- Manual entry mode (issue #38, phase 1) -- a minimal, self-contained slice proving the
+           stateless client/server shape out (see POST /api/retirement/manual/check in
+           app-server.ts): one card to build a made-up plan/account list, one to show the same
+           Bridge/Monte Carlo result every other mode already produces. Deliberately NOT the full
+           Plan/Expense Projection/Accounts card set Actual/file mode get -- those assume a
+           server-persisted STATE object (GET /api/retirement/state, patchPlan/patchAccount) this
+           mode has none of by design (see runManualCheck's own doc comment in app.js). A richer
+           account-row editor (allocation, access age, ...) is phase 2's own job, not this one's --
+           every account here just takes the type's own defaults, the same as a freshly-classified
+           account with no override anywhere else in the app. -->
+      <div class="page" id="page-manual">
+      <div class="retirement-split">
+      <div class="retirement-inputs">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-head-title"><h2>Manual entry</h2></span>
+          </div>
+          <div class="card-body">
+            <div class="plan-grid">
+              <div class="field">
+                <label for="manualBirthDate">Birth date</label>
+                <input type="date" id="manualBirthDate">
+              </div>
+              <div class="field">
+                <label for="manualRetireAges">Retirement ages</label>
+                <input type="text" id="manualRetireAges" placeholder="e.g. 55, 65">
+                <div class="derived">Space- or comma-separated</div>
+              </div>
+              <div class="field">
+                <label for="manualPlanToAge">Plan to age</label>
+                <input type="number" id="manualPlanToAge" placeholder="95">
+              </div>
+              <div class="field">
+                <label for="manualAnnualExpenses">Annual expenses</label>
+                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="manualAnnualExpenses" placeholder="50,000.00"></div>
+              </div>
+            </div>
+            <div class="field full spend-config-buffer">
+              <label>Accounts</label>
+              <div class="accounts" id="manualAccountsList"><div class="empty-note">No accounts yet -- add one below.</div></div>
+              <div class="add-account-row">
+                <input type="text" id="manualNewAccountName" placeholder="Account name">
+                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="manualNewAccountBalance" placeholder="0.00"></div>
+                <select id="manualNewAccountType"><option value="">Loading types…</option></select>
+                <button type="button" class="btn secondary" id="manualAddAccountBtn">Add account</button>
+              </div>
+              <div class="derived warn-text" id="manualAccountError" hidden></div>
+            </div>
+            <button type="button" class="btn" id="manualRunCheckBtn">Run check</button>
+            <div class="derived warn-text" id="manualCheckError" hidden></div>
+          </div>
+        </div>
+      </div>
+      <div class="retirement-live-sticky">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-head-title"><h2>Analysis</h2></span>
+          </div>
+          <div class="card-body">
+            <div id="manualCheckResult"><div class="empty-note">Add at least one account, fill in the fields above, and click Run check.</div></div>
+          </div>
+        </div>
+      </div>
       </div>
       </div>
 

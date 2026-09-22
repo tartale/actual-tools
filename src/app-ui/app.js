@@ -2708,8 +2708,12 @@ function revealTopSectionIfReady() {
 // than CSS-blurred, so it needs an actual re-render to pick up the new privacy state.
 let lastCheckResult = null
 
-function renderCheckResult(result) {
-  const container = document.getElementById("checkResult")
+// containerId defaults to the Retirement page's own #checkResult -- manual mode (issue #38, phase
+// 1) reuses this same function, unchanged, for its own separate #manualCheckResult container on
+// #page-manual, since the response shape (and everything downstream -- renderBridgeChart/Table,
+// renderMonteCarloChart, renderFinding) is identical regardless of which mode produced it.
+function renderCheckResult(result, containerId = "checkResult") {
+  const container = document.getElementById(containerId)
   container.innerHTML = ""
   if (result.bridgeFindings.length === 0 && result.monteCarloFindings.length === 0) {
     container.innerHTML = `<div class="empty-note">No findings.</div>`
@@ -4397,16 +4401,21 @@ if (retirementToolbarEl) {
 let ACTIVE_DATA_SOURCE_MODE = "actual"
 
 // Function to reflect which data source is active into the parts of the page that care: the
-// Budget tab (disabled entirely in file mode -- it only ever implements Retirement's narrower
-// AccountDataSource needs, see the "companion app north star" comment in app-server.ts) and the
+// Budget/Retirement tabs (Budget disabled entirely in file mode -- it only ever implements
+// Retirement's narrower AccountDataSource needs, see the "companion app north star" comment in
+// app-server.ts; manual mode disables BOTH, since it's its own separate page -- see #page-manual
+// in index.html -- reached only through the login screen, never through either nav tab) and the
 // logout/disconnect icon's own title (so it always describes what it's actually about to do).
 function applyDataSourceMode(mode) {
   ACTIVE_DATA_SOURCE_MODE = mode
   const budgetTab = document.querySelector('.section-item[data-section="budget"]')
-  budgetTab.classList.toggle("disabled", mode === "file")
-  budgetTab.title = mode === "file" ? "Not available while importing from a file" : ""
+  const retirementTab = document.querySelector('.section-item[data-section="retirement"]')
+  budgetTab.classList.toggle("disabled", mode === "file" || mode === "manual")
+  budgetTab.title = mode === "file" ? "Not available while importing from a file" : mode === "manual" ? "Not available in manual entry mode" : ""
+  retirementTab.classList.toggle("disabled", mode === "manual")
+  retirementTab.title = mode === "manual" ? "Not available in manual entry mode" : ""
   const logoutBtn = document.getElementById("logoutBtn")
-  const label = mode === "file" ? "Disconnect file" : "Log out of Actual"
+  const label = mode === "file" ? "Disconnect file" : mode === "manual" ? "Exit manual entry" : "Log out of Actual"
   logoutBtn.title = label
   logoutBtn.setAttribute("aria-label", label)
 }
@@ -4535,7 +4544,204 @@ function cancelLoginModal() {
 }
 document.getElementById("loginModalClose").addEventListener("click", cancelLoginModal)
 document.getElementById("loginCancelBtn").addEventListener("click", cancelLoginModal)
+
+// Manual entry mode (issue #38, phase 1) -- fully client-held, per that issue's own explicit
+// design choice ("data lives only in the browser for that session"), so unlike Actual/file mode
+// there is no server round trip at login, and no STATE object (GET /api/retirement/state) at all.
+// Two localStorage keys: MANUAL_MODE_ACTIVE_KEY is just a flag checkSession reads on every page
+// load (there's no server session to ask instead -- see its own call site); MANUAL_STATE_KEY holds
+// the actual plan fields + account list. Kept as two keys so exiting the mode (clearManualState)
+// drops both together rather than risking one lingering without the other. Mirrored to
+// localStorage as a same-browser convenience only (explicitly allowed by the issue's own "Design"
+// section) -- never sent anywhere except in the one-off POST /api/retirement/manual/check request
+// itself when "Run check" is clicked. Same caveat as every other localStorage use in this app
+// (SKELETON_CACHE_KEY above, getCookie's own doc comment): this app's own port can change across a
+// `--dev` restart, and localStorage is origin-scoped including the port, so this only reliably
+// survives a refresh on the deployed container (a fixed port) or an unrestarted --dev session --
+// acceptable here since, per the issue itself, losing this is explicitly "reasonable" behavior,
+// not a bug to work around.
+const MANUAL_MODE_ACTIVE_KEY = "runway.manualMode.active.v1"
+const MANUAL_STATE_KEY = "runway.manualMode.state.v1"
+
+function isManualModeActive() {
+  try {
+    return localStorage.getItem(MANUAL_MODE_ACTIVE_KEY) === "true"
+  } catch {
+    return false
+  }
+}
+
+function defaultManualState() {
+  return { birthDate: "", retirementAgesText: "", planToAge: "", annualExpensesCents: null, accounts: [] }
+}
+
+let MANUAL_STATE = defaultManualState()
+
+function loadManualState() {
+  try {
+    const raw = localStorage.getItem(MANUAL_STATE_KEY)
+    MANUAL_STATE = raw ? { ...defaultManualState(), ...JSON.parse(raw) } : defaultManualState()
+  } catch {
+    MANUAL_STATE = defaultManualState()
+  }
+}
+
+function saveManualState() {
+  try {
+    localStorage.setItem(MANUAL_MODE_ACTIVE_KEY, "true")
+    localStorage.setItem(MANUAL_STATE_KEY, JSON.stringify(MANUAL_STATE))
+  } catch {
+    // Storage disabled/unavailable -- the mode still works for this page view, it just won't
+    // survive a reload, the same tradeoff every other localStorage use in this app already accepts.
+  }
+}
+
+function clearManualState() {
+  try {
+    localStorage.removeItem(MANUAL_MODE_ACTIVE_KEY)
+    localStorage.removeItem(MANUAL_STATE_KEY)
+  } catch {
+    // Nothing else to do -- the reload right after this still lands wherever checkSession's other
+    // checks say it should.
+  }
+  MANUAL_STATE = defaultManualState()
+}
+
+// Fetched once per page load (plain reference data, see GET /api/account-types' own doc comment)
+// and cached -- every render of the account list/the Add-account type dropdown reads this same
+// object rather than re-fetching.
+let MANUAL_ACCOUNT_TYPE_LABELS = null
+
+async function loadManualAccountTypeLabels() {
+  if (!MANUAL_ACCOUNT_TYPE_LABELS) MANUAL_ACCOUNT_TYPE_LABELS = await api("/api/account-types")
+  const select = document.getElementById("manualNewAccountType")
+  select.innerHTML = Object.entries(MANUAL_ACCOUNT_TYPE_LABELS)
+    .map(([type, info]) => `<option value="${escapeHtml(type)}">${escapeHtml(info.label)}</option>`)
+    .join("")
+}
+
+function renderManualAccounts() {
+  const list = document.getElementById("manualAccountsList")
+  if (MANUAL_STATE.accounts.length === 0) {
+    list.innerHTML = `<div class="empty-note">No accounts yet -- add one below.</div>`
+    return
+  }
+  list.innerHTML = MANUAL_STATE.accounts
+    .map(
+      (account, index) => `<div class="manual-account-row">
+        <span class="name">${escapeHtml(account.name)}</span>
+        <span class="money">${moneyHtml(usd(account.balance))}</span>
+        <span class="type">${escapeHtml(MANUAL_ACCOUNT_TYPE_LABELS?.[account.type]?.label ?? account.type)}</span>
+        <button type="button" class="btn secondary" data-remove-manual-account="${index}">Remove</button>
+      </div>`,
+    )
+    .join("")
+}
+
+attachMoneyFormatting(document.getElementById("manualAnnualExpenses"))
+attachMoneyFormatting(document.getElementById("manualNewAccountBalance"))
+
+let manualAccountCounter = 0
+document.getElementById("manualAddAccountBtn").addEventListener("click", () => {
+  const errorEl = document.getElementById("manualAccountError")
+  errorEl.hidden = true
+  const name = document.getElementById("manualNewAccountName").value.trim()
+  const balanceInput = document.getElementById("manualNewAccountBalance")
+  const balance = parseMoneyInputCents(balanceInput.value)
+  const type = document.getElementById("manualNewAccountType").value
+  if (!name || balance === null || !type) {
+    errorEl.textContent = "Name, balance, and type are all required."
+    errorEl.hidden = false
+    return
+  }
+  MANUAL_STATE.accounts.push({ id: `manual-${Date.now()}-${manualAccountCounter++}`, name, balance, type })
+  saveManualState()
+  renderManualAccounts()
+  document.getElementById("manualNewAccountName").value = ""
+  balanceInput.value = ""
+})
+document.getElementById("manualAccountsList").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-remove-manual-account]")
+  if (!btn) return
+  MANUAL_STATE.accounts.splice(Number(btn.dataset.removeManualAccount), 1)
+  saveManualState()
+  renderManualAccounts()
+})
+
+// Reads the plan fields straight from the DOM (not relying on MANUAL_STATE already reflecting
+// them -- this IS what makes them authoritative, the same "commit point" role a real submit
+// button plays elsewhere) and runs the same stateless check every other mode's own runCheck
+// eventually reaches, just POSTed with everything in the body instead of read back off disk
+// server-side. See POST /api/retirement/manual/check's own doc comment in app-server.ts for the
+// full reasoning on why this route -- and not the shared GET /api/retirement/check -- exists.
+let lastManualCheckResult = null
+async function runManualCheck() {
+  const errorEl = document.getElementById("manualCheckError")
+  errorEl.hidden = true
+  const container = document.getElementById("manualCheckResult")
+  const birthDate = document.getElementById("manualBirthDate").value
+  const retirementAgesText = document.getElementById("manualRetireAges").value
+  const planToAge = parseInt(document.getElementById("manualPlanToAge").value, 10)
+  const annualExpenses = parseMoneyInputCents(document.getElementById("manualAnnualExpenses").value)
+  try {
+    if (!birthDate) throw new Error("Birth date is required.")
+    const retirementAges = parseRetirementAges(retirementAgesText)
+    if (!Number.isFinite(planToAge)) throw new Error("Plan-to-age is required.")
+    if (annualExpenses === null) throw new Error("Annual expenses is required.")
+
+    MANUAL_STATE.birthDate = birthDate
+    MANUAL_STATE.retirementAgesText = retirementAgesText
+    MANUAL_STATE.planToAge = planToAge
+    MANUAL_STATE.annualExpensesCents = annualExpenses
+    saveManualState()
+
+    container.innerHTML = `<div class="panel-loading"><div class="spinner" aria-hidden="true"></div>Running…</div>`
+    const result = await api("/api/retirement/manual/check", {
+      method: "POST",
+      body: JSON.stringify({
+        accounts: MANUAL_STATE.accounts.map((a) => ({ id: a.id, name: a.name, balance: a.balance, type: a.type })),
+        birthDate,
+        retirementAges,
+        planToAge,
+        annualExpenses,
+      }),
+    })
+    lastManualCheckResult = result
+    renderCheckResult(result, "manualCheckResult")
+  } catch (error) {
+    errorEl.textContent = error.message
+    errorEl.hidden = false
+    container.innerHTML = `<div class="empty-note">${escapeHtml(error.message)}</div>`
+  }
+}
+document.getElementById("manualRunCheckBtn").addEventListener("click", () => runExclusive(runManualCheck))
+
+async function startManualApp() {
+  loadManualState()
+  document.getElementById("manualBirthDate").value = MANUAL_STATE.birthDate
+  document.getElementById("manualRetireAges").value = MANUAL_STATE.retirementAgesText
+  document.getElementById("manualPlanToAge").value = MANUAL_STATE.planToAge
+  document.getElementById("manualAnnualExpenses").value = formatMoneyInputValue(MANUAL_STATE.annualExpensesCents)
+  activateSection("manual")
+  // Awaited before the first render -- renderManualAccounts reads MANUAL_ACCOUNT_TYPE_LABELS
+  // to show a real label per row; rendering before this resolves would show each account's
+  // raw type key (e.g. "brokerage") for one flash instead of "Taxable brokerage / investment
+  // account", or permanently on a restored (localStorage) account list with no re-render to
+  // ever pick the label up afterward.
+  await loadManualAccountTypeLabels()
+  renderManualAccounts()
+}
+
 async function checkSession() {
+  // Checked before either server round trip below -- manual mode (issue #38) has no server-side
+  // session for either of those routes to report at all, so the ONLY record of "was I last in
+  // manual mode" is this same-browser flag (see startManualApp's own doc comment on the full
+  // localStorage design).
+  if (isManualModeActive()) {
+    applyDataSourceMode("manual")
+    startManualApp()
+    return
+  }
   try {
     const [sessionStatus, dataSourceStatus] = await Promise.all([api("/api/session"), api("/api/data-source")])
     if (dataSourceStatus.mode === "file") {
@@ -4557,12 +4763,14 @@ async function checkSession() {
 // Toggles the field group shown below the radios, and the submit button's own label, so neither
 // can ever disagree with whichever mode is actually selected.
 function applyLoginFormMode(mode) {
-  document.getElementById("actualFields").hidden = mode === "file"
+  document.getElementById("actualFields").hidden = mode !== "actual"
   document.getElementById("fileFields").hidden = mode !== "file"
-  document.getElementById("loginSubmitBtn").textContent = LOGIN_MODAL_REFRESH ? "Update" : mode === "file" ? "Import" : "Log in"
+  document.getElementById("manualFields").hidden = mode !== "manual"
+  document.getElementById("loginSubmitBtn").textContent = LOGIN_MODAL_REFRESH ? "Update" : mode === "file" ? "Import" : mode === "manual" ? "Enter manually" : "Log in"
 }
 document.getElementById("dataSourceModeActual").addEventListener("change", () => applyLoginFormMode("actual"))
 document.getElementById("dataSourceModeFile").addEventListener("change", () => applyLoginFormMode("file"))
+document.getElementById("dataSourceModeManual").addEventListener("change", () => applyLoginFormMode("manual"))
 // Produces a starter CSV -- header row plus a couple of example rows -- so someone can see the
 // expected shape without having to read the help copy first.
 document.getElementById("downloadTemplateBtn").addEventListener("click", () => downloadTextFile("accounts-template.csv", "name,balance\nChecking,1000.00\nBrokerage,50000.00\n"))
@@ -4588,9 +4796,9 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   const errorEl = document.getElementById("loginError")
   errorEl.hidden = true
   const submitBtn = document.getElementById("loginSubmitBtn")
-  const mode = document.getElementById("dataSourceModeFile").checked ? "file" : "actual"
+  const mode = document.getElementById("dataSourceModeFile").checked ? "file" : document.getElementById("dataSourceModeManual").checked ? "manual" : "actual"
   submitBtn.disabled = true
-  submitBtn.textContent = LOGIN_MODAL_REFRESH ? "Updating…" : mode === "file" ? "Importing…" : "Logging in…"
+  submitBtn.textContent = LOGIN_MODAL_REFRESH ? "Updating…" : mode === "file" ? "Importing…" : mode === "manual" ? "Entering…" : "Logging in…"
   let importedTransactionsFile = false
   try {
     if (mode === "file") {
@@ -4605,13 +4813,14 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
         importedTransactionsFile = true
       }
       await api("/api/data-source", { method: "POST", body: JSON.stringify(body) })
-    } else {
+    } else if (mode === "actual") {
       const baseUrl = document.getElementById("loginBaseUrl").value.trim()
       const budgetId = document.getElementById("loginBudgetId").value.trim()
       const apiKey = document.getElementById("loginApiKey").value.trim()
       if (!baseUrl || !budgetId || !apiKey) throw new Error("Fill in all three fields.")
       await api("/api/session", { method: "POST", body: JSON.stringify({ baseUrl, budgetId, apiKey }) })
     }
+    // Manual mode: nothing to connect to first -- entering it IS the action, no round trip needed.
     hideLoginModal()
     LOGIN_MODAL_ON_CANCEL = null
     if (LOGIN_MODAL_REFRESH) {
@@ -4626,6 +4835,9 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
       await runCheck()
       await refreshDataSourceChip()
       loadExpenseCategoryOptions()
+    } else if (mode === "manual") {
+      applyDataSourceMode("manual")
+      startManualApp()
     } else {
       applyDataSourceMode(mode)
       startApp()
@@ -4635,7 +4847,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
     errorEl.hidden = false
   } finally {
     submitBtn.disabled = false
-    submitBtn.textContent = LOGIN_MODAL_REFRESH ? "Update" : mode === "file" ? "Import" : "Log in"
+    submitBtn.textContent = LOGIN_MODAL_REFRESH ? "Update" : mode === "file" ? "Import" : mode === "manual" ? "Enter manually" : "Log in"
   }
 })
 // Both header chips reopen the same Import modal (issue #34/#35's follow-up, 2026-09-22) -- the
@@ -4644,13 +4856,20 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
 document.getElementById("dataSourceChip").addEventListener("click", () => showLoginModal(true))
 document.getElementById("transactionsChip").addEventListener("click", () => showLoginModal(true))
 document.getElementById("logoutBtn").addEventListener("click", async () => {
-  try {
-    await api(ACTIVE_DATA_SOURCE_MODE === "file" ? "/api/data-source" : "/api/session", { method: "DELETE" })
-  } catch {
-    // Nothing sensible to show here -- reload regardless, which re-checks the session and lands on
-    // the login modal either way (logged out for real, or the DELETE itself failed and a stale
-    // session is still on disk, in which case the next real request surfaces whatever's actually
-    // wrong).
+  if (ACTIVE_DATA_SOURCE_MODE === "manual") {
+    // Nothing server-side to DELETE -- manual mode never told the server anything to begin with
+    // (see POST /api/retirement/manual/check's own doc comment). Clearing the local mirror IS the
+    // whole "exit" action; a reload then lands back on the login modal, same as every other mode.
+    clearManualState()
+  } else {
+    try {
+      await api(ACTIVE_DATA_SOURCE_MODE === "file" ? "/api/data-source" : "/api/session", { method: "DELETE" })
+    } catch {
+      // Nothing sensible to show here -- reload regardless, which re-checks the session and lands
+      // on the login modal either way (logged out for real, or the DELETE itself failed and a
+      // stale session is still on disk, in which case the next real request surfaces whatever's
+      // actually wrong).
+    }
   }
   location.reload()
 })

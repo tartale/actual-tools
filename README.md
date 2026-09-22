@@ -12,6 +12,8 @@ Runway features:
 - Retirement/FIRE planning and projections against your real accounts
 - Retirement/FIRE planning also works with no Actual connection at all —
   import a plain CSV/TSV of account balances instead
+- Or skip data entirely and explore the same engine with made-up numbers —
+  a standalone FIRE calculator, nothing sent to or held by the server
 
 All data stays local — nothing is sent anywhere but your own servers.
 Both the CLI and Runway depend on a running instance of the
@@ -74,6 +76,12 @@ screen instead, and upload a plain CSV/TSV of your account balances (a
 transactions export is optional, for a real computed spend figure instead
 of a manual one). No REST API server needed for that path; Budget stays
 disabled, since it has nothing live to edit.
+
+Just want to try the calculator with made-up numbers, no data of any kind?
+Pick **Enter manually** instead — nothing is sent to or held by the server
+at all; your plan and account list live only in this browser's own local
+storage. Still early: a plain account list (name, balance, type) for now,
+no CSV upload or richer per-account editor yet.
 
 Check on it any time with `docker ps`, stop it with `docker stop
 actual-tools`.
