@@ -10,3 +10,4 @@
 - [SRE deployment responsibility](sre-deployment-responsibility.md) — this Dev session is also SRE now: rebuild the image + restart the container after shipping, not just merge the PR; the .envrc-sourcing gotcha and the dev-vs-container config.json split
 - [./actual service stop gotcha](actual-service-stop-gotcha.md) — FIXED 2026-09-22 (now scoped by --mode); kept for the incident + the new "dev servers are always fair game" rule
 - [Detached mode](detached-mode.md) — issue #38's standalone FIRE calculator: a whole separate server deployment (AB_MODE, its own port + server-side route gate), not a login choice; reworked 2026-09-22
+- [Fresh restart dev servers on landing](fresh-restart-dev-servers-on-landing.md) — after any merge to main, kill+restart both --dev servers rather than trusting a stop step silently worked

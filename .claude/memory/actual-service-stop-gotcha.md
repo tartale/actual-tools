@@ -1,12 +1,24 @@
 ---
 name: actual-service-stop-gotcha
-description: "FIXED 2026-09-22 -- ./actual service stop used to always tear down the production container too, regardless of -p/--dev. Now scoped by --mode; kept for the historical reasoning and the still-true dev-server-is-always-fair-game rule."
+description: "FIXED 2026-09-22 (twice, same day) -- ./actual service stop used to always tear down the production container too, regardless of -p/--dev; later that day, a SEPARATE bug meant --dev was silently ignored entirely (stop/status both always targeted the container port). Kept for the historical reasoning and the still-true dev-server-is-always-fair-game rule."
 metadata: 
   node_type: memory
   type: project
   originSessionId: e2895bd5-4b33-4a55-8b6d-f01dc8ec722d
   modified: 2026-09-22T00:00:00.000Z
 ---
+
+**Second, separate bug found and fixed later the same day (PR #48)**: after the first fix below,
+`serviceStop`/`serviceStatus` still silently DROPPED `--dev` entirely (swallowed by the `*) shift
+;;` catch-all) and always computed `defaultPort(mode, false)` -- the CONTAINER port -- regardless.
+So `./actual service stop --dev` no longer endangered the container (the fix below made sure of
+that), but it also did nothing useful at all: it looked for a process on the wrong port, found
+nothing, and reported success. Caught live right after merging [[detached-mode]]'s unification PR:
+two `stop --dev` calls both reported success, but the old dev processes kept running and kept
+serving stale, pre-merge responses -- see [[fresh-restart-dev-servers-on-landing]] for the incident
+and the resulting standing practice (restart dev servers fresh after every landing, don't trust a
+stop step's own report). Both functions now parse `--dev` correctly and skip docker entirely when
+it's set.
 
 **Fixed 2026-09-22, as a side effect of [[detached-mode]]'s own rework** -- adding a second
 always-on compose service (`app-detached`, alongside the original `app`) forced `serviceStop` to
