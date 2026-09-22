@@ -9,5 +9,6 @@
 - [Live-testing cleanup discipline](live-testing-cleanup-discipline.md) — an unverified `/dev/null`-piped reset left the user's real config.json pinned wrong for a full turn; always confirm a cleanup PATCH's response, never fire-and-forget it
 - [SRE deployment responsibility](sre-deployment-responsibility.md) — this Dev session is also SRE now: rebuild the image + restart the container after shipping, not just merge the PR; the .envrc-sourcing gotcha and the dev-vs-container config.json split
 - [./actual service stop gotcha](actual-service-stop-gotcha.md) — FIXED 2026-09-22 (now scoped by --mode); kept for the incident + the new "dev servers are always fair game" rule
-- [Detached mode](detached-mode.md) — issue #38's standalone FIRE calculator (AB_MODE deployment, rich editor, seeded defaults, CSV import-to-seed); epic's phase list closed out 2026-09-22
+- [Detached mode](detached-mode.md) — issue #38's standalone FIRE calculator (AB_MODE deployment, rich editor, seeded defaults, CSV import-to-seed, transactions upload unified onto file mode's own chip+modal UI); epic's phase list closed out 2026-09-22
 - [Fresh restart dev servers on landing](fresh-restart-dev-servers-on-landing.md) — after any merge to main, kill+restart both --dev servers rather than trusting a stop step silently worked
+- [Expense Projection Type](expense-projection-type.md) — Mean/Median/Hampel Filtered Median reintroduced 2026-09-22 as a real input this time, ported from Actual's own crossover-spreadsheet.ts; wired into both Actual-mode and file/detached-mode spend calculations
