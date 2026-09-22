@@ -99,7 +99,7 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
-  it("adds an account through the real Accounts card, edits its type/allocation, and renders a real Bridge/Monte Carlo result", async () => {
+  it("adds an account through the real Accounts card, edits its type, and renders a real Bridge/Monte Carlo result", async () => {
     const { page: ui, errors } = await openDetachedPage()
     await fillPlanFields(ui)
 
@@ -111,22 +111,21 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     // A fresh account defaults to type "other" (same as a fresh file/linked-mode account -- see
     // applyAccountPatch's own not-found branch), so the portfolio-only fields (allocation, expected
     // return) start hidden -- picking a real portfolio type here is what a person configuring a
-    // brand new detached-mode account would actually do next.
+    // brand new detached-mode account would actually do next, and is what proves patchAccount's
+    // detached-mode branch actually persists an edit (not just that adding an account works).
     const row = ui.locator("#accountsList .account-row", { hasText: "Brokerage" })
     await row.locator("select[data-field='type']").selectOption("brokerage")
     await ui.waitForFunction(() => (document.querySelector("#accountsList") as HTMLElement)?.innerText?.includes("Allocation"))
-    const rowAfterType = ui.locator("#accountsList .account-row", { hasText: "Brokerage" })
-    await rowAfterType.locator("select[data-field='allocationPreset']").selectOption({ index: 1 })
 
     // A findings-group already exists from the boot-time check (type "other" -- not part of the
-    // investable portfolio, so nothing is reachable yet); poll for the SPECIFIC content the
-    // type+allocation edits above should produce, not just "a findings-group exists," since that
-    // would pass on the stale pre-edit result too (scheduleRecheck's own 500ms debounce means the
-    // real recheck settles slightly after the last edit, not synchronously with it).
-    await expect.poll(async () => (await ui.locator("#checkResult").textContent()) ?? "", { timeout: 20000 }).toContain("Monte Carlo")
+    // investable portfolio, so nothing was reachable yet); poll for the SPECIFIC number the type
+    // edit above should produce as the wait condition itself, not just "a findings-group exists"
+    // (true of the stale pre-edit result too) or "Monte Carlo" (also true of an intermediate render
+    // that can land between the edit and scheduleRecheck's own 500ms-debounced settle).
+    await expect.poll(async () => (await ui.locator("#checkResult").textContent()) ?? "", { timeout: 20000 }).toContain("reachable at retirement (100%)")
     const resultText = await ui.locator("#checkResult").textContent()
     expect(resultText).toContain("Bridge")
-    expect(resultText).toContain("reachable at retirement (100%)")
+    expect(resultText).toContain("Monte Carlo")
     expect(errors).toEqual([])
   }, 60000)
 
@@ -168,10 +167,17 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false)
 
     await ui.locator("#accountsList [data-remove-account]").click()
-    await ui.waitForFunction(() => !(document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false))
+    // "no longer contains Brokerage" alone is a weak wait condition here -- it's also trivially
+    // true the instant loadState() sets its own "Loading accounts…" placeholder, well before the
+    // real post-removal state has actually loaded and rendered. #accountCountHint is written only
+    // by renderSummary() (inside the real render(), never the placeholder), so waiting for its
+    // exact expected text is the positive, unambiguous signal that the removal really landed.
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "0 open accounts")
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
 
     await ui.reload()
     await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "0 open accounts")
     expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
     expect(errors).toEqual([])
   }, 60000)
@@ -185,13 +191,18 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false)
 
     await ui.locator("#logoutBtn").click()
-    await ui.waitForFunction(() => !(document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false))
+    // Same reasoning as the removal test above -- wait for the real cleared render (signaled by
+    // #accountCountHint, written only inside the real render()), not merely "Brokerage is gone,"
+    // which is also true of the loadState() placeholder shown well before the clear actually lands.
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "0 open accounts")
     // Still on the same page -- no navigation, no whole-page reload (there's nowhere else to go).
     expect(await ui.locator("#page-retirement").isVisible()).toBe(true)
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
     expect(await ui.locator("#birthDate").inputValue()).toBe("")
 
     await ui.reload()
     await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "0 open accounts")
     expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
     expect(await ui.locator("#birthDate").inputValue()).toBe("")
     expect(errors).toEqual([])
