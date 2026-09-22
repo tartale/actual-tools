@@ -10,6 +10,8 @@ CLI features:
 Runway features:
 - A UI for bulk budget edits, with a live preview
 - Retirement/FIRE planning and projections against your real accounts
+- Retirement/FIRE planning also works with no Actual connection at all —
+  import a plain CSV/TSV of account balances instead
 
 All data stays local — nothing is sent anywhere but your own servers.
 Both the CLI and Runway depend on a running instance of the
@@ -65,6 +67,13 @@ address instead. Once it's up:
    immediately.
 3. You're in. Everything autosaves as you go — there's no separate save
    step.
+
+Don't have an Actual server (or would rather not connect one)? Retirement
+planning works standalone too — pick **Import files** on that same login
+screen instead, and upload a plain CSV/TSV of your account balances (a
+transactions export is optional, for a real computed spend figure instead
+of a manual one). No REST API server needed for that path; Budget stays
+disabled, since it has nothing live to edit.
 
 Check on it any time with `docker ps`, stop it with `docker stop
 actual-tools`.
