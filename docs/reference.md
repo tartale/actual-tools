@@ -179,9 +179,9 @@ match-uncleared` — since it is one-shot, scriptable work rather than
 something a page helps with.
 
 ```
-./actual service start [--dev] [-p N]
-./actual service status [-p N]
-./actual service stop [-p N]
+./actual service start [--dev] [--mode linked|detached] [-p N]
+./actual service status [--mode linked|detached] [-p N]
+./actual service stop [--mode linked|detached] [-p N]
 ./actual build image [-t TAG] [--platform P]
 ```
 
@@ -191,28 +191,48 @@ directly in the foreground, restarting on every edit — that's the working
 loop, and the container is not involved in it. `status` answers by
 connecting to the port, since that's the only thing that settles whether
 anything is actually serving; a container can be running with a wedged
-server inside it. `stop` takes down the container and any `--dev` process
-holding the port, so it doesn't matter which way it was started.
+server inside it. `stop` takes down the container (just this one mode's own
+compose service, never the other) and any `--dev` process holding the
+port, so it doesn't matter which way it was started.
 
-Two things about running the container that are worth knowing before they
-bite:
+**`--mode`** (default `linked`) picks which of two independent deployments
+to act on — **linked** is today's app (Actual sync and file import both
+available); **detached** is a completely separate, always-on deployment of
+issue #38's standalone FIRE calculator (see **Detached mode**, further
+below) with no connection of any kind, enforced server-side, not just
+hidden from the UI. Each mode gets its own fixed port so both can run at
+once: `4276` linked / `4277` detached as a container, `4278` / `4279`
+with `--dev`. Set directly via the `AB_MODE` environment variable when
+running `node src/app.ts` yourself instead of through this dispatcher
+(`compose.yaml` pins one per service; the dispatcher sets it for you for
+`--dev`) — unset or `"linked"` is today's app, `"detached"` skips the
+login screen entirely and goes straight to the calculator.
+
+Three things about running the container that are worth knowing before
+they bite:
 
 - **`AB_DATA_DIR`** — `config.json` lives in a mounted directory
   (`./data`), and a relative path there resolves against the *docker
   daemon's host*, not against wherever compose was run from. Those differ
   whenever the daemon is remote or the repo is reached through a container,
   and the symptom is `Bind mount failed: '…' does not exist`. Set this to
-  the host's own absolute path in that case.
+  the host's own absolute path in that case. Linked mode only — detached
+  mode has no mounted directory at all (nothing it does ever touches disk).
 - **`AB_HOST_ALIAS`** — a container on the bridge network often can't
   reach the host's LAN address even though it resolves; requests just hang
   and surface as a bare `fetch failed`. Set this to the hostname in the
   server URL you log in with, and compose maps it to `host-gateway`, which
   routes back through the bridge. Not needed if Actual is reachable by
-  plain IP.
+  plain IP. Linked mode only, for the same reason as `AB_DATA_DIR` above.
+- **`AB_PORT`** / **`AB_DETACHED_PORT`** — the published port for the
+  linked / detached container respectively, if you want either somewhere
+  other than its own default. Set by `service start -p N --mode ...`
+  automatically; only worth setting directly in `.envrc` if you run
+  `docker compose up -d` yourself instead of through the dispatcher.
 
-Both belong in `.envrc`. The image itself installs nothing: this repo has
-no runtime dependencies and Node runs the TypeScript directly, so the image
-is the base plus `src/`.
+All of the above belong in `.envrc`. The image itself installs nothing:
+this repo has no runtime dependencies and Node runs the TypeScript
+directly, so the image is the base plus `src/`.
 
 The old `./actual app` is gone — `./actual service start --dev` is what it
 was.
@@ -280,23 +300,30 @@ either chip reopens the same modal (now with a working Cancel) to update
 either file — a plain page reload already re-pulls everything from disk, so
 there's no separate refresh control.
 
-A third radio, **Enter manually**, is a standalone FIRE calculator with no
-connection of any kind — explore the same Bridge/Monte Carlo engine with
-made-up "what if" numbers. Nothing is sent to (or held by) the server at
-all: birth date, retirement age(s), plan-to-age, a flat annual-expenses
-figure, and a plain account list (name, balance, type — each account takes
-its type's own default allocation/return/access-age, with no per-account
-override editor yet) live only in this browser's own local storage,
-mirrored there purely as a same-device convenience so a reload doesn't
-lose it; clicking **Run check** is the only network request this mode ever
-makes, and it carries the whole plan in that one request rather than
-anything accumulated server-side. Both Budget and Retirement are
-unavailable in this mode (there's nothing behind either to show); exiting
-(the icon next to the privacy toggle) clears the locally-held data and
-returns to this same login screen. Still early (issue #38's own phase
-1) — no CSV upload to seed the list yet, and no richer per-account editor
-(allocation, access age, contributions, ...) beyond type — both are
-tracked for a later phase.
+**Detached mode** is a completely separate deployment (`AB_MODE=detached`,
+see **`--mode`** above), not a login-screen choice — a standalone FIRE
+calculator with no connection of any kind, explore the same Bridge/Monte
+Carlo engine with
+made-up "what if" numbers. There's no login screen at all in this mode; the
+whole app is one page, reached the moment the server answers. Nothing is
+sent to (or held by) the server at all: birth date, retirement age(s),
+plan-to-age, a flat annual-expenses figure, and a plain account list (name,
+balance, type — each account takes its type's own default allocation/
+return/access-age, with no per-account override editor yet) live only in
+this browser's own local storage, mirrored there purely as a same-device
+convenience so a reload doesn't lose it; clicking **Run check** is the only
+network request this mode ever makes, and it carries the whole plan in
+that one request rather than anything accumulated server-side. Enforced
+server-side, not just hidden from the UI — every Actual/file/config-backed
+route 404s outright on a detached server, which is what makes it safe to
+ever expose somewhere more public later: no real financial data can reach
+this process even if someone tried. Neither Budget nor Retirement exists
+in this mode at all (the top nav is hidden entirely, not just disabled);
+the icon next to the privacy toggle reads **Clear my data** here instead
+of Log out — it resets the locally-held plan/account list in place, with
+nowhere else to navigate to. Still early (issue #38) — no CSV upload to
+seed the list yet, and no richer per-account editor (allocation, access
+age, contributions, ...) beyond type — both are tracked for a later phase.
 
 Binding every interface means the page also works from another device on
 the same network — e.g. running this on a home server and pulling it up
@@ -338,11 +365,12 @@ port for the open tab to find it again. Passing `-p 0` for the old
 ephemeral behavior means a restart moves to an unpredictable new port,
 which breaks this — the tab has no way to discover it and just goes
 quiet until you reload it by hand. `--dev` defaults to a different fixed
-port (`4277`) than the container's own (`4276`) for the same reason two
-projects never share a port by accident -- so a `--dev` run and an
-already-running container can coexist, each reachable at its own address
-at the same time, rather than one silently failing to bind because the
-other already has the port.
+port than the container's own for the same reason two projects never
+share a port by accident -- so a `--dev` run and an already-running
+container can coexist, each reachable at its own address at the same
+time, rather than one silently failing to bind because the other already
+has the port. Four fixed ports in total now (one per linked/detached ×
+container/`--dev` combination) — see **`AB_MODE`** below.
 
 `--watch` is skipped automatically for `-h`/`--help` (it would otherwise
 keep the process alive waiting for a file change even after printing the

@@ -50,3 +50,21 @@ that's the same normal "dev data vs. prod data" split as any other app.
 and container health; `docker inspect actual-tools --format='{{.State.Health.Status}}'` if more
 detail is needed. The healthcheck has a 10s start_period and 30s interval, so "starting" right
 after `service start` is normal -- give it under a minute before treating that as a problem.
+
+**Two deployed services now, as of [[detached-mode]] (2026-09-22)**: `./actual service start` with
+no `--mode` only ever touches the original linked service (`actual-tools`, port 4276) -- unchanged,
+backward compatible. Since both services share the SAME image (`actual-tools:local`), a change that
+isn't linked-mode-specific (most server/shared-logic changes) needs BOTH redeployed after a build,
+not just the default one:
+
+```
+./actual build image
+source .envrc && ./actual service start                  # linked (unchanged behavior)
+source .envrc && ./actual service start --mode detached   # detached (new -- easy to forget)
+source .envrc && ./actual service status                  # linked
+source .envrc && ./actual service status --mode detached   # detached
+```
+
+Skip the detached redeploy only for a change that's provably linked-only (e.g. something inside a
+route the MODE gate already blocks in detached mode) -- otherwise redeploy both by default rather
+than reasoning about which one a given diff could possibly touch.

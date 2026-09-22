@@ -97,7 +97,7 @@ afterEach(async () => {
 // login/logout and assumes an already-logged-in server, same as when actualConfig was a required
 // startup option; the session-specific tests below pass `loggedIn: false` to start logged out
 // instead.
-async function boot(fixture: FetchFixture = {}, options: { loggedIn?: boolean } = {}): Promise<string> {
+async function boot(fixture: FetchFixture = {}, options: { loggedIn?: boolean; mode?: "linked" | "detached" } = {}): Promise<string> {
   if (server) {
     await server.close()
   }
@@ -105,7 +105,7 @@ async function boot(fixture: FetchFixture = {}, options: { loggedIn?: boolean } 
   if (options.loggedIn ?? true) {
     writeActualSession(sessionPath, actualConfig)
   }
-  server = await startAppServer({ sessionPath, dataSourceSessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir: dir })
+  server = await startAppServer({ sessionPath, dataSourceSessionPath, configPath, irsLimitsPath, federalTaxBracketsPath, irsLifeExpectancyPath, federalPovertyGuidelinesPath, uiDir: dir, mode: options.mode })
   return server.url
 }
 
@@ -1076,9 +1076,12 @@ describe("GET /api/retirement/check", () => {
   })
 })
 
-describe("POST /api/retirement/manual/check", () => {
-  // No boot-time account/plan fixture at all -- the whole point of this route (issue #38, phase 1)
-  // is that everything it needs travels in the request body itself, every time.
+describe("POST /api/retirement/detached/check", () => {
+  // No boot-time account/plan fixture at all -- the whole point of this route (issue #38) is that
+  // everything it needs travels in the request body itself, every time. boot() defaults to "linked"
+  // mode, and this route is reachable there too (see its own doc comment in app-server.ts) --
+  // reaching it specifically as a DETACHED server is covered separately, in the MODE gate tests
+  // below.
   const validBody = {
     accounts: [{ id: "a1", name: "Brokerage", balance: 5000000, type: "brokerage" }],
     birthDate: "1975-01-01",
@@ -1089,7 +1092,7 @@ describe("POST /api/retirement/manual/check", () => {
 
   it("runs a real check from a request body alone -- one account, no prior setup of any kind", async () => {
     const url = await boot()
-    const res = await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify(validBody) })
+    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify(validBody) })
     expect(res.status).toBe(200)
     const body = await readJson<CheckResult>(res)
     expect(body.currentAge).toBe(51)
@@ -1100,13 +1103,13 @@ describe("POST /api/retirement/manual/check", () => {
   it("writes nothing to config.json -- a second, different request isn't affected by an earlier one", async () => {
     const url = await boot()
     expect(existsSync(configPath)).toBe(false) // nothing on disk yet -- boot() never touches it
-    await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify(validBody) })
+    await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify(validBody) })
     // Still nothing -- this route must never call writeFireConfig, unlike every stateful route.
     expect(existsSync(configPath)).toBe(false)
     // A completely different plan -- if the first request had persisted anything at all, this
     // would either reflect stale leftovers or the write would throw trying to share state that
     // doesn't belong to a request-scoped, stateless route.
-    const res = await fetch(`${url}api/retirement/manual/check`, {
+    const res = await fetch(`${url}api/retirement/detached/check`, {
       method: "POST",
       body: JSON.stringify({ ...validBody, birthDate: "1990-01-01", accounts: [] }),
     })
@@ -1117,7 +1120,7 @@ describe("POST /api/retirement/manual/check", () => {
 
   it("rejects an account with an unknown type", async () => {
     const url = await boot()
-    const res = await fetch(`${url}api/retirement/manual/check`, {
+    const res = await fetch(`${url}api/retirement/detached/check`, {
       method: "POST",
       body: JSON.stringify({ ...validBody, accounts: [{ id: "a1", name: "Brokerage", balance: 5000000, type: "bogus" }] }),
     })
@@ -1126,21 +1129,79 @@ describe("POST /api/retirement/manual/check", () => {
 
   it("rejects a missing birth date, the same error requirePlan already gives every other mode", async () => {
     const url = await boot()
-    const res = await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify({ ...validBody, birthDate: undefined }) })
+    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify({ ...validBody, birthDate: undefined }) })
     expect(res.status).toBe(400)
     expect((await readJson<{ error: string }>(res)).error).toContain("birth date")
   })
 
   it("rejects a negative annualExpenses", async () => {
     const url = await boot()
-    const res = await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify({ ...validBody, annualExpenses: -1 }) })
+    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify({ ...validBody, annualExpenses: -1 }) })
     expect(res.status).toBe(400)
   })
 
   it("works with zero accounts -- a degenerate but valid portfolio", async () => {
     const url = await boot()
-    const res = await fetch(`${url}api/retirement/manual/check`, { method: "POST", body: JSON.stringify({ ...validBody, accounts: [] }) })
+    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify({ ...validBody, accounts: [] }) })
     expect(res.status).toBe(200)
+  })
+
+  it("works exactly the same way on an actual detached-mode server, not just a linked one defaulting through it", async () => {
+    const url = await boot({}, { mode: "detached" })
+    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify(validBody) })
+    expect(res.status).toBe(200)
+    expect((await readJson<CheckResult>(res)).annualSpend).toBe(4000000)
+  })
+})
+
+describe("AB_MODE / detached-mode server gate", () => {
+  it("GET /api/mode reports linked by default, and detached when booted that way", async () => {
+    const linkedUrl = await boot()
+    expect(await readJson<{ mode: string }>(await fetch(`${linkedUrl}api/mode`))).toEqual({ mode: "linked" })
+
+    const detachedUrl = await boot({}, { mode: "detached" })
+    expect(await readJson<{ mode: string }>(await fetch(`${detachedUrl}api/mode`))).toEqual({ mode: "detached" })
+  })
+
+  // This is the server-side half of issue #38's own "safe to deploy somewhere more public later"
+  // claim for detached mode -- every Actual/file/config-backed route has to actually be
+  // unreachable there, not just hidden from the UI (a route test can't see a hidden button, but it
+  // CAN, and must, prove the server itself refuses the request).
+  it("blocks every Actual/file/config-backed route on a detached server", async () => {
+    const url = await boot({ accounts: [{ id: "a1", name: "Checking", offbudget: false, closed: false }] }, { mode: "detached" })
+    const blocked = [
+      ["GET", "api/session"],
+      ["POST", "api/session"],
+      ["GET", "api/data-source"],
+      ["POST", "api/data-source"],
+      ["DELETE", "api/data-source"],
+      ["GET", "api/retirement/state"],
+      ["GET", "api/retirement/check"],
+      ["PATCH", "api/retirement/plan"],
+      ["PATCH", "api/retirement/accounts/a1"],
+      ["GET", "api/budget/context"],
+    ] as const
+    for (const [method, path] of blocked) {
+      const res = await fetch(`${url}${path}`, { method })
+      expect(res.status, `${method} ${path} should 404 on a detached server`).toBe(404)
+    }
+  })
+
+  it("still allows hot-reload, account-types, and mode through -- the always-available allowlist", async () => {
+    // Static file serving (index.html/app.js/style.css) isn't exercised here at all -- boot()'s own
+    // uiDir is a scratch temp directory, not the real app-ui/ this suite never serves from (route
+    // tests only); it's unconditional either way (checked well before the MODE gate, see
+    // app-server.ts), so there's nothing mode-specific about it to test here.
+    const url = await boot({}, { mode: "detached" })
+    expect((await fetch(`${url}api/dev/build-id`)).status).toBe(200)
+    expect((await fetch(`${url}api/account-types`)).status).toBe(200)
+    expect((await fetch(`${url}api/mode`)).status).toBe(200)
+  })
+
+  it("a linked server (the default) has none of this gating -- every route above behaves normally", async () => {
+    const url = await boot({ accounts: [] })
+    expect((await fetch(`${url}api/session`)).status).toBe(200)
+    expect((await fetch(`${url}api/data-source`)).status).toBe(200)
   })
 })
 

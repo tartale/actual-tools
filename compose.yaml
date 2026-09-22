@@ -53,10 +53,51 @@ services:
     # an Actual reachable by plain IP, or on the same docker network, needs none of this.
     extra_hosts:
       - "${AB_HOST_ALIAS:-actual-host.invalid}:host-gateway"
+    # Fixed -- this service IS the "linked" deployment (Actual sync/file import both available,
+    # today's app); AB_MODE isn't user-settable per environment the way AB_PORT/AB_DATA_DIR are,
+    # since which mode a service runs is the whole reason it's a separate compose service at all
+    # (issue #38 -- see AppServerOptions.mode's own doc comment in app-server.ts).
+    environment:
+      AB_MODE: linked
     restart: unless-stopped
     # `restart: unless-stopped` only covers a process that exits; this surfaces a wedged-but-alive
     # app as "unhealthy" in docker ps. Node's own http is used because the alpine image has no curl,
     # and the build-id route is the cheapest one that proves the server is actually serving.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('node:http').get('http://127.0.0.1:4276/api/dev/build-id', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+
+  # Issue #38's standalone FIRE calculator, run "detached" -- no Actual/file connection of any
+  # kind, ever (enforced server-side, see app-server.ts's own MODE gate). A separate always-on
+  # service, not a flag on the one above, so it's reachable at its own fixed port (4277) alongside
+  # the linked deployment rather than needing it stopped first. `./actual service start --mode
+  # detached` targets this one specifically; a bare `./actual service start` still only touches the
+  # linked service above, unchanged from before this existed.
+  app-detached:
+    container_name: actual-tools-detached
+    image: actual-tools:local
+    build:
+      context: .
+    # Same "inside the container it's always 4276" convention as the linked service -- only the
+    # published port differs. AB_DETACHED_PORT so it can be repointed the same way AB_PORT already
+    # lets the linked service's own published port move.
+    ports:
+      - "${AB_DETACHED_PORT:-4277}:4276"
+    # No volume at all -- this mode is fully ephemeral by design (see POST
+    # /api/retirement/detached/check's own doc comment in app-server.ts): nothing it does ever
+    # reads or writes config.json/session.json/data-source.json, so there is nothing here for a
+    # mounted data directory to hold. This is also WHY the volume can be safely omitted, not just
+    # an optimization -- a real financial data source never reaches this container at all.
+    environment:
+      AB_MODE: detached
+    restart: unless-stopped
     healthcheck:
       test:
         - CMD
