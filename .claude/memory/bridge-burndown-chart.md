@@ -342,6 +342,12 @@ guaranteed income.**
    not current balance" fix never being propagated to this one route-level test -- updated to the
    correct projected figure.
 
+**Note (2026-09-22): one of the three fields removed below, `crossoverProjectionType`, was
+reintroduced (renamed `expenseProjectionType`, no longer `crossover`-prefixed) as a genuinely
+load-bearing input -- see [[expense-projection-type]]. This removal's own reasoning below still
+stands (it really was write-only dead weight at the time); what changed is the user asked for it
+back AS A REAL INPUT this time, not restored to its old form.**
+
 **Sixth follow-up, same session: the crossover-card widget removed entirely, and its three
 write-only fields with it.** The user judged Actual's own crossover projection unreliable ("it
 basically 'lies'") since it ignores locked/inaccessible balances entirely, unlike this app's own
