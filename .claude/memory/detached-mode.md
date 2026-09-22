@@ -1,11 +1,63 @@
 ---
 name: detached-mode
-description: "Issue #38's standalone FIRE calculator -- a whole separate server deployment (AB_MODE=detached, its own port), not a runtime login choice; fully client-held state, server-side-enforced isolation; unified onto the real Retirement page's own rich editor 2026-09-22; seeded with a working example and CSV-import-to-seed 2026-09-22, closing out the epic's phase list"
+description: "Issue #38's standalone FIRE calculator -- a whole separate server deployment (AB_MODE=detached, its own port), not a runtime login choice; fully client-held state, server-side-enforced isolation; unified onto the real Retirement page's own rich editor 2026-09-22; seeded with a working example and CSV-import-to-seed 2026-09-22; accounts/transactions import further unified onto file mode's own chip+modal UI same day, closing out the epic's phase list"
 metadata:
   node_type: memory
   type: project
   modified: 2026-09-22T00:00:00.000Z
 ---
+
+**Import UI unified onto file mode's own chip+modal, same day as CSV-import-to-seed above** -- the
+user asked for three more things right after that round shipped: (1) detached mode should be able
+to upload a transactions file too, with the same Manual/Transactions radio file mode has; (2) the
+accounts/transactions upload CONTROLS should match file mode's exactly, chips included; (3) the
+chips should say when they're showing the seeded defaults rather than something actually imported;
+plus (4) remove "Companion for Actual Budget" and the Budget/Retirement nav labels from the header
+in this mode. This SUPERSEDED the standalone "Import accounts…"/"Download Template" Accounts-card
+buttons from the CSV-import-to-seed round above (same day, same session) -- those were deleted
+entirely in favor of reusing `#loginBackdrop` (the exact modal file mode's own header chips
+reopen), since the user explicitly wanted ONE shared control, not two different import UIs.
+
+- **`showLoginModal`/the submit handler both gained an `ACTIVE_DATA_SOURCE_MODE === "detached"`
+  branch**, always treated like file mode's own "refresh" flow (no `#dataSourceModeField` Actual-
+  vs-file choice, always cancelable) -- there's no first-connect state in detached mode to begin
+  with, every open is "replace what's there." On submit, both files are validated through the
+  stateless detached routes (`/detached/parse-accounts`, `/detached/expense-categories` -- the
+  latter doubling as transactions validation) BEFORE anything is written to `DETACHED_DRAFT`, same
+  "prove it works before persisting, all or nothing" discipline file mode's own combined import
+  already follows.
+- **New server route `POST /api/retirement/detached/expense-categories`** -- detached mode's own
+  stateless counterpart to `GET /api/budget/context`'s file-mode branch. Reuses
+  `categoryGroupsFromTransactions` unchanged, fed from the request body's own `transactions` field
+  via a new `detachedTransactionsFromBody` helper (mirrors `detachedAccountsFromBody`'s own
+  pattern) instead of a server-held session. That same helper also feeds the EXISTING
+  `fileModeSpend()` function (previously file-mode-only) for `/detached/check`'s own annualSpend
+  computation -- `fileModeSpend` only ever reads the `.transactions` field off whatever
+  session-shaped object it's given, so wrapping just that one field in a synthetic
+  `{fileName:"", content:"", lastLoadedAt:"", transactions}` was enough to reuse it completely
+  unchanged, zero duplicated Manual/Transactions precedence logic.
+- **`renderSimSettings()`'s file-mode-only Manual/Transactions radio gate became `file ||
+  detached`** (dropped the earlier detached-only special case entirely) -- same controls, same
+  precedence, both modes now genuinely identical here. `#fileModeAnnualExpenseField` moved back
+  INSIDE `#fileModeSpendSourceField` in index.html (undoing the earlier sibling-split that existed
+  only to let detached mode show the manual figure without the radio group -- no longer needed
+  once detached mode shows that whole group too).
+- **`DETACHED_DRAFT` gained `accountsSource`/`transactions`** (both `null` in the seeded default --
+  see the round above) -- `refreshDataSourceChip()` reads them directly (no server round trip
+  needed, unlike file mode's own `GET /api/data-source`) to render "Accounts: example data" /
+  "Transactions: none imported" until something's actually replaced them, then a real
+  filename+timestamp exactly like file mode's own chips.
+- **Header cleanup**: `applyDataSourceMode("detached")` now also hides `.wordmark .subline`
+  ("Companion for Actual Budget") and `.sections` (the whole Budget/Retirement nav) -- reinstated
+  the `nav.sections[hidden]{display:none}` CSS override phase 1 of this mode originally had and
+  the unification round had since removed (same "no global [hidden] rule" gotcha as always).
+  Nothing left for a nav to switch between once Budget never works and Retirement is the only page.
+- **Verified live** (Playwright, freshly restarted `--dev` detached server): fresh boot shows both
+  chips reading the "using defaults" text with the Manual/Transactions radio visible; clicking a
+  chip opens the shared modal with no Actual-vs-file choice; submitting an accounts+transactions
+  pair together replaces the seeded example, auto-switches to "Transactions file," and the Expense
+  categories picker shows real categories derived from the uploaded file -- the full file-mode-
+  parity chain works end to end with zero new server-held state.
 
 **Epic (issue #38) phase list closed out 2026-09-22.** Original phases: (1) stateless client/server
 design -- shipped #45, reworked into AB_MODE in #46; (2) account-list editor UI -- effectively

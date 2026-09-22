@@ -167,6 +167,12 @@ body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); accent-color: 
    added via margin/border rather than content so it disappears cleanly if this ever wraps off. */
 .wordmark .subline { font-size: 11px; font-weight: 400; color: var(--ink-faint); padding-left: 10px; border-left: 1px solid var(--sidebar-hover); }
 nav.sections { display: flex; flex-direction: row; gap: 2px; }
+/* Hidden entirely in detached mode (issue #38, 2026-09-22) -- Budget never works there and
+   Retirement is the only page there is, so there's nothing left for a nav to switch between (see
+   applyDataSourceMode in app.js). This app has no global [hidden]{display:none} rule (see
+   .acct-fields[hidden]'s own doc comment, the established convention here), so display:flex above
+   needs this explicit override or the hidden attribute would silently do nothing. */
+nav.sections[hidden] { display: none; }
 .section-item { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); cursor: pointer; }
 .section-item:hover:not(.active) { background: var(--sidebar-hover); }
 .section-item.active { background: var(--accent-selected-bg); color: var(--accent-selected); }
