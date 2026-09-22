@@ -511,3 +511,81 @@ describe.skipIf(!browser)("File-import data source in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 })
+
+// Regression coverage for the 2026-09-21 debounce fix (see debounce in app.js) -- tabbing through
+// several fields in the same dynamic row (expense adjustments, tax bands) used to trigger an
+// immediate PATCH + full row rebuild (innerHTML) after EVERY field's own blur, which could steal
+// focus mid-tab. Only unit-testable end to end in a real browser: a route test can't observe
+// whether the DOM node itself got torn down and rebuilt, or count real network requests over time.
+describe.skipIf(!browser)("Row-commit debounce in a browser", () => {
+  it("doesn't rebuild the row (or commit) until a beat after the last edit, and commits exactly once", async () => {
+    const { page: ui, errors } = await openBudgetPage()
+    await ui.locator('.section-item[data-section="retirement"]').click()
+    await ui.waitForSelector("#addExpenseAdjustmentBtn")
+    await ui.locator("#addExpenseAdjustmentBtn").click()
+    await ui.waitForSelector(".expense-adjustment-row")
+
+    // Attached only after the row exists -- adding it fires its own immediate (non-debounced)
+    // PATCH, which isn't part of what this test is checking.
+    const patchRequests: string[] = []
+    ui.on("request", (req) => {
+      if (req.method() === "PATCH" && req.url().includes("/api/retirement/plan")) patchRequests.push(req.url())
+    })
+
+    const rowHandle = await ui.locator(".expense-adjustment-row").elementHandle()
+    const nameInput = ui.locator(".ea-name")
+    await nameInput.fill("Kid's college")
+    await nameInput.press("Tab") // blurs -- fires the row's own "change" listener
+    await ui.waitForTimeout(150) // well under the 500ms debounce
+    expect(await ui.evaluate((el) => document.body.contains(el), rowHandle)).toBe(true) // not rebuilt yet
+    expect(patchRequests.length).toBe(0) // not committed yet either
+
+    await ui.waitForTimeout(600) // past the debounce
+    expect(patchRequests.length).toBe(1) // exactly one commit, not one per field
+    expect(await ui.locator(".ea-name").inputValue()).toBe("Kid's college") // the edit itself still landed
+    expect(errors).toEqual([])
+  }, 60000)
+})
+
+// Regression coverage for issue #34/#35's transactions-file follow-up (2026-09-21) -- the real
+// upload -> category-derivation -> picker round trip, and the inline (not just page-wide) error
+// path for a file that fails to parse. Route/unit tests already cover parseTransactionRows and
+// categoryGroupsFromTransactions directly; this is what a route test can't reach: the actual
+// <input type="file"> flow and what ends up rendered in the DOM.
+describe.skipIf(!browser)("Transactions file import in a browser", () => {
+  async function importAccountsAndLandOnRetirement(ui: Page): Promise<void> {
+    await ui.locator("#dataSourceModeFile").check()
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nBrokerage,500000.00\n") })
+    await ui.locator("#loginSubmitBtn").click()
+    await ui.waitForSelector("#accountsList")
+    await ui.waitForSelector("#transactionsFilePicker")
+  }
+
+  it("imports a transactions file, derives real categories, and shows them in the Expense Categories picker", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    await importAccountsAndLandOnRetirement(ui)
+
+    const recentDate = new Date().toISOString().slice(0, 10)
+    await ui.locator("#transactionsFilePicker").setInputFiles({ name: "transactions.csv", mimeType: "text/csv", buffer: Buffer.from(`Date,Category_Group,Category,Amount\n${recentDate},Bills,Rent,-1500.00\n`) })
+    await ui.waitForFunction(() => document.querySelector("#transactionsImportStatus")?.textContent?.includes("Imported from transactions.csv") ?? false)
+
+    await ui.waitForFunction(() => document.querySelector("#expenseCategoryPicker")?.textContent?.includes("Rent") ?? false)
+    expect(await ui.locator("#expenseCategoryPicker").textContent()).toContain("Bills")
+    // Removing it reverts to the "nothing to pick from" state -- not left showing stale categories.
+    await ui.locator("#removeTransactionsBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#expenseCategoryPicker")?.textContent?.includes("Import a transactions file") ?? false)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("shows an inline error next to the picker when the file fails to parse, not just the page-wide banner", async () => {
+    const { page: ui, errors } = await openLoginModalPage()
+    await importAccountsAndLandOnRetirement(ui)
+
+    await ui.locator("#transactionsFilePicker").setInputFiles({ name: "bad.csv", mimeType: "text/csv", buffer: Buffer.from("Date,Category\n2026-01-01,Rent\n") })
+    await ui.waitForSelector("#transactionsImportError:not([hidden])")
+    expect(await ui.locator("#transactionsImportError").textContent()).toContain("Missing required column")
+    // The manual-expense fallback stays in effect -- a failed import doesn't leave the plan broken.
+    expect(await ui.locator("#transactionsImportStatus").textContent()).toContain("Not imported")
+    expect(errors).toEqual([])
+  }, 60000)
+})
