@@ -810,6 +810,13 @@ function renderAccounts() {
   const manuallyManaged = ACTIVE_DATA_SOURCE_MODE === "file" || ACTIVE_DATA_SOURCE_MODE === "detached"
   document.getElementById("addAccountField").hidden = !manuallyManaged
   document.getElementById("exportAccountsBtn").hidden = !manuallyManaged
+  // Detached mode only -- file mode already has its own, different CSV/TSV import (the login
+  // screen/header chips, a REMEMBERED file); this is the one-shot, nothing-remembered seed
+  // convenience issue #38 phase 3 asked for, so it's gated to detached mode specifically, not
+  // folded into manuallyManaged above.
+  const isDetached = ACTIVE_DATA_SOURCE_MODE === "detached"
+  document.getElementById("importAccountsBtn").hidden = !isDetached
+  document.getElementById("downloadAccountsTemplateBtn").hidden = !isDetached
   const list = document.getElementById("accountsList")
   list.innerHTML = ""
   const typeKeys = Object.keys(STATE.accountTypes)
@@ -3044,6 +3051,38 @@ document.getElementById("addAccountBtn").addEventListener("click", async () => {
     errorEl.hidden = false
   }
 })
+
+// Issue #38 phase 3 -- seeds the detached-mode account list from a CSV/TSV file in one shot (see
+// #importAccountsBtn's own doc comment in index.html). Parsing itself is server-side
+// (POST /api/retirement/detached/parse-accounts, reusing file mode's own parseAccountRows) so the
+// schema/error messages can never drift from what a real file-mode import accepts -- this handler
+// just turns the parsed name,balance rows into fresh draft entries the same way Add account does,
+// REPLACING whatever accounts were there before (same "starting fresh" semantics as file mode's
+// own accounts-file import).
+document.getElementById("importAccountsBtn").addEventListener("click", () => document.getElementById("importAccountsPicker").click())
+document.getElementById("importAccountsPicker").addEventListener("change", async (e) => {
+  const input = e.target
+  const errorEl = document.getElementById("importAccountsError")
+  errorEl.hidden = true
+  const file = input.files[0]
+  if (!file) return
+  try {
+    const content = await file.text()
+    const { accounts } = await api("/api/retirement/detached/parse-accounts", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
+    DETACHED_DRAFT.accounts = accounts.map((account) => ({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name: account.name, balance: account.balance, type: "other" }))
+    saveDetachedDraft()
+    await loadState()
+    await runCheck()
+  } catch (error) {
+    errorEl.textContent = error.message
+    errorEl.hidden = false
+  } finally {
+    // Clears the picked filename so re-selecting the SAME file (e.g. after fixing it and
+    // re-uploading under the same name) still fires this same change handler.
+    input.value = ""
+  }
+})
+document.getElementById("downloadAccountsTemplateBtn").addEventListener("click", () => downloadTextFile("accounts-template.csv", "name,balance\nChecking,1000.00\nBrokerage,50000.00\n"))
 
 // Detached mode only (issue #38) -- the only mode where an account is entirely client-invented, so
 // unlike a real Actual/file account (closed externally, never through this UI) there's a genuine
