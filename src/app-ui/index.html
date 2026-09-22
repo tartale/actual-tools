@@ -21,14 +21,20 @@
         <div class="section-item active" data-section="budget">Budget</div>
         <div class="section-item" data-section="retirement">Retirement</div>
       </nav>
-      <!-- File-import mode's own status chips -- hidden entirely in Actual-sync mode (see
+      <!-- File-import and detached mode's own status chips (2026-09-22: detached mode's own
+           accounts/transactions upload controls were unified onto this exact same UI, per the
+           user's own "these should match" request) -- hidden entirely in Actual-sync mode (see
            refreshDataSourceChip in app.js). Sit at the topbar's right edge, grouped with the two
            icon buttons via #privacyToggle's own margin-left:auto. Two separate chips (accounts,
            transactions) rather than one combined one -- accounts + transactions are two logically
            separate imports with their own timestamps (see FileDataSourceSession's own doc comment),
            and a single chip showing both together reads as one ambiguous status. Real <button>s, not
            just styled divs -- clicking either reopens the same Import modal Refresh used to (see
-           showLoginModal in app.js), now the only way back into it besides the very first connect. -->
+           showLoginModal in app.js), now the only way back into it besides the very first connect
+           (or, in detached mode, the only way IN at all -- see showLoginModal's own detached
+           branch). Detached mode's own chips read "example data"/"none imported" instead of a real
+           filename until something's actually been imported (see refreshDataSourceChip), so it's
+           never ambiguous whether the current numbers are real or just the seeded starting point. -->
       <button type="button" class="chip info chip-btn" id="dataSourceChip" hidden></button>
       <button type="button" class="chip info chip-btn" id="transactionsChip" hidden></button>
       <!-- Global, not tied to either page -- both blur dollar figures via moneySpan. -->
@@ -60,7 +66,11 @@
            so it isn't a modal you cancel out of, only one you complete. Reused (issue #34/#35's
            follow-up, 2026-09-22) for the Refresh button's own "update my files" flow once ALREADY
            connected -- there IS something to fall back to there (the files already in place), so
-           #loginModalClose is shown only in that case (see openLoginModal in app.js). -->
+           #loginModalClose is shown only in that case (see openLoginModal in app.js). Reused again
+           (2026-09-22) as detached mode's OWN accounts/transactions import UI -- reachable only via
+           the header chips there (never at boot -- see checkSession's own mode check, which lands
+           straight on #page-retirement with no modal), always with #dataSourceModeField hidden
+           (nothing to choose -- see showLoginModal's own detached branch in app.js). -->
       <div class="modal-backdrop" id="loginBackdrop" hidden>
         <div class="modal modal-login" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
           <button type="button" class="modal-close" id="loginModalClose" title="Cancel" aria-label="Cancel" hidden>×</button>
@@ -70,11 +80,9 @@
                currentAccountDataSource), never both at once. Toggling shows/hides the matching
                field group below (see the dataSourceMode radios' change handler in app.js); the
                submit button's own label follows suit so it never reads "Log in" while the file
-               fields are the ones actually visible. This modal only exists at all in "linked" mode
-               (see AppServerOptions.mode) -- a "detached" server (issue #38's standalone FIRE
-               calculator) skips it entirely and lands straight on #page-retirement (the same page
-               linked/file mode use), since there's no connection of any kind to choose between; see
-               checkSession's own mode check. -->
+               fields are the ones actually visible. Hidden entirely in detached mode (see this
+               modal's own top-level doc comment above) -- there's no Actual-vs-file choice to make
+               there, only file-shaped fields. -->
           <div class="field data-source-mode" id="dataSourceModeField">
             <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeActual" value="actual" checked> Sync with Actual</label>
             <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeFile" value="file"> Import files</label>
@@ -258,30 +266,25 @@
           </div>
           <div class="card-fold">
           <div class="card-body">
-            <!-- File mode only -- there's no live Actual category history to compute spend from at
-                 all (see checkDashboard's own doc comment), so a plain manual figure or an imported
+            <!-- File and detached mode only (2026-09-22: detached mode gained its own transactions
+                 upload matching file mode's, per the user's own "these should match" request) --
+                 there's no live Actual category history to compute spend from at all (see
+                 checkDashboard's own doc comment), so a plain manual figure or an imported
                  transactions file are the two options -- an explicit choice, only one shown at a
                  time (see fileModeSpendSource in fire-accounts.ts). First in the card: it decides
                  which of everything else below even applies (see #expenseHistoryFields' own doc
-                 comment). Transactions file itself is imported from the header chip's own modal
-                 now, not here -- this radio just picks which source is USED. Detached mode never
-                 shows this radio group at all (it can never have a transactions file to switch to),
-                 but shares the manual figure field below with file mode -- see that field's own doc
-                 comment for why it's a sibling, not nested inside this one. -->
+                 comment). Transactions file itself is imported from the header chip's own modal now,
+                 not here -- this radio just picks which source is USED. -->
             <div class="field full" id="fileModeSpendSourceField" hidden>
-              <label>Expense source<button type="button" class="help-icon" data-help="File mode has no live Actual connection to compute spend history from. Pick a fixed annual figure, or use an imported transactions file for a real computed one (import it from the Transactions chip in the header).">?</button></label>
+              <label>Expense source<button type="button" class="help-icon" data-help="Pick a fixed annual figure, or use an imported transactions file for a real computed one (import it from the Transactions chip in the header).">?</button></label>
               <div class="radio-row">
                 <label class="radio-label"><input type="radio" name="fileModeSpendSource" id="fileModeSpendSourceManual" value="manual"> Initialize manually</label>
                 <label class="radio-label"><input type="radio" name="fileModeSpendSource" id="fileModeSpendSourceTransactions" value="transactions"> Transactions file<button type="button" class="help-icon" data-help="A CSV or TSV file with columns Date, Category_Group, Category, and Amount (other columns are ignored) -- one row per transaction.">?</button></label>
               </div>
-            </div>
-            <!-- File mode (source = manual) and detached mode both share this same figure -- kept
-                 as its own sibling field, not nested inside #fileModeSpendSourceField above, so
-                 detached mode (which never shows that radio group) can still reveal just this one
-                 input (see renderSimSettings in app.js). -->
-            <div class="field spend-source-buffer" id="fileModeAnnualExpenseField">
-              <label for="fileModeAnnualExpense">Initial Annual Expenses<button type="button" class="help-icon" data-help="A fixed starting figure, used as-is instead of computed from a transactions file. Planned expense changes below still apply on top of it.">?</button></label>
-              <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="fileModeAnnualExpense" placeholder="50,000.00"></div>
+              <div class="field spend-source-buffer" id="fileModeAnnualExpenseField">
+                <label for="fileModeAnnualExpense">Initial Annual Expenses<button type="button" class="help-icon" data-help="A fixed starting figure, used as-is instead of computed from a transactions file. Planned expense changes below still apply on top of it.">?</button></label>
+                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="fileModeAnnualExpense" placeholder="50,000.00"></div>
+              </div>
             </div>
             <!-- Overall spend scale/Spend history/Expense categories all only mean something when
                  there's real spend HISTORY to apply them to -- Actual mode always has that; file
@@ -519,26 +522,13 @@
           <div class="category-picker-toolbar">
             <button type="button" class="btn secondary" id="accountsExpandAll">Expand all</button>
             <button type="button" class="btn secondary" id="accountsCollapseAll">Collapse all</button>
-            <!-- Detached mode only (issue #38 phase 3) -- seeds the account list from a CSV/TSV
-                 file in one shot, reusing the same name,balance schema/parser file mode's own
-                 import uses (parseAccountRows, see POST /api/retirement/detached/parse-accounts in
-                 app-server.ts). Unlike file mode's own import, nothing about the file itself is
-                 remembered afterward -- a one-time seed into the same client-held draft (see
-                 DETACHED_DRAFT in app.js), not a real data source. REPLACES the current account
-                 list (including the starter example -- see defaultDetachedDraft's own doc comment),
-                 same "starting fresh" semantics as file mode's own accounts-file import; clicking
-                 opens the file picker directly, no separate confirm step, since there's only the
-                 one file and no other fields to combine it with. -->
-            <button type="button" class="btn secondary" id="importAccountsBtn" hidden>Import accounts…</button>
-            <input type="file" id="importAccountsPicker" accept=".csv,.tsv,text/csv,text/tab-separated-values" hidden>
-            <button type="button" class="btn secondary" id="downloadAccountsTemplateBtn" hidden>Download Template</button>
             <!-- File and detached mode only -- exports the current accounts back to the same
-                 name,balance shape file mode's own login screen imports, or Import accounts above
-                 reads for detached mode, so a plan can be edited externally and reimported later
-                 (see file-account-data-source.ts's own doc comment on the round trip). -->
+                 name,balance shape file mode's own header chips (or detached mode's own, matching
+                 -- see #dataSourceChip's own doc comment) import, so a plan can be edited externally
+                 and reimported later (see file-account-data-source.ts's own doc comment on the
+                 round trip). -->
             <button type="button" class="btn secondary" id="exportAccountsBtn" hidden>Export accounts</button>
           </div>
-          <div class="derived warn-text" id="importAccountsError" hidden></div>
           <div class="accounts" id="accountsList"><div class="empty-note">Loading accounts…</div></div>
           <!-- File mode adds a new account directly, without re-uploading the whole file (see POST
                /api/data-source/accounts in app-server.ts); detached mode adds one straight into its

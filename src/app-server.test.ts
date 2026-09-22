@@ -1152,6 +1152,52 @@ describe("POST /api/retirement/detached/check", () => {
     expect(res.status).toBe(200)
     expect((await readJson<CheckResult>(res)).annualSpend).toBe(4000000)
   })
+
+  // Same Manual/Transactions precedence file mode's own fileModeSpend resolves -- see its own doc
+  // comment -- reused unchanged for detached mode via detachedTransactionsFromBody, fed from this
+  // request's own "transactions" field instead of a real, server-held FileDataSourceSession.
+  it("uses a transactions file's own real spend once given, over both fileModeAnnualExpense and the default", async () => {
+    const url = await boot()
+    const oneMonthAgo = new Date()
+    oneMonthAgo.setUTCMonth(oneMonthAgo.getUTCMonth() - 1)
+    const dateStr = oneMonthAgo.toISOString().slice(0, 10)
+    const res = await fetch(`${url}api/retirement/detached/check`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...validBody,
+        dashboard: { ...validBody.dashboard, crossoverSpendHistoryMonths: 1 },
+        transactions: { fileName: "transactions.csv", content: `Date,Category_Group,Category,Amount\n${dateStr},Bills,Rent,-2000.00\n` },
+      }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    // $2,000 spent over a 1-month trailing window -> $24,000/yr, not the $40,000 manual figure.
+    expect(body.annualSpend).toBe(24000_00)
+    expect(body.spendBasis).toContain("imported transaction file")
+  })
+
+  it("falls back to the manual figure when fileModeSpendSource is explicitly \"manual\", even with a transactions file given", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/check`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...validBody,
+        dashboard: { ...validBody.dashboard, fileModeSpendSource: "manual" },
+        transactions: { fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-2000.00\n" },
+      }),
+    })
+    expect(res.status).toBe(200)
+    expect((await readJson<CheckResult>(res)).annualSpend).toBe(4000000)
+  })
+
+  it("rejects a transactions field missing its content", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/check`, {
+      method: "POST",
+      body: JSON.stringify({ ...validBody, transactions: { fileName: "transactions.csv" } }),
+    })
+    expect(res.status).toBe(400)
+  })
 })
 
 describe("POST /api/retirement/detached/state", () => {
@@ -1296,6 +1342,57 @@ describe("POST /api/retirement/detached/parse-accounts", () => {
       method: "POST",
       body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\n" }),
     })
+    expect(res.status).toBe(200)
+  })
+})
+
+describe("POST /api/retirement/detached/expense-categories", () => {
+  // Detached mode's own stateless counterpart to GET /api/budget/context's file-mode branch --
+  // same categoryGroupsFromTransactions reuse, fed from this request's own transactions field
+  // instead of a server-held session.
+  it("returns real category groups derived from a transactions file, income categories excluded", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/expense-categories`, {
+      method: "POST",
+      body: JSON.stringify({
+        transactions: { fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-1500.00\n2026-09-02,Income,Paycheck,3000.00\n" },
+      }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<{ categoryGroups: { name: string; categories: { name: string }[] }[] }>(res)
+    expect(body.categoryGroups.map((g) => g.name)).toEqual(["Bills"])
+    expect(body.categoryGroups[0]?.categories.map((c) => c.name)).toEqual(["Rent"])
+  })
+
+  it("returns an empty list (not an error) when no transactions are given -- \"nothing to derive from yet\"", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/expense-categories`, { method: "POST", body: JSON.stringify({}) })
+    expect(res.status).toBe(200)
+    expect(await readJson<{ categoryGroups: unknown[] }>(res)).toEqual({ categoryGroups: [] })
+  })
+
+  it("rejects a malformed transactions file with a real error message", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/expense-categories`, {
+      method: "POST",
+      body: JSON.stringify({ transactions: { fileName: "transactions.csv", content: "not,the,right,columns\n" } }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it("writes nothing to disk", async () => {
+    const url = await boot()
+    await fetch(`${url}api/retirement/detached/expense-categories`, {
+      method: "POST",
+      body: JSON.stringify({ transactions: { fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-1500.00\n" } }),
+    })
+    expect(existsSync(configPath)).toBe(false)
+    expect(existsSync(dataSourceSessionPath)).toBe(false)
+  })
+
+  it("works on an actual detached-mode server too", async () => {
+    const url = await boot({}, { mode: "detached" })
+    const res = await fetch(`${url}api/retirement/detached/expense-categories`, { method: "POST", body: JSON.stringify({}) })
     expect(res.status).toBe(200)
   })
 })

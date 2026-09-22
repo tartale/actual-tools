@@ -225,7 +225,12 @@ const balanceCache = new Map<string, number>()
 // time a new detached-mode route ships (three so far) and is easy to get wrong silently (a missing
 // `&&` leaves the WHOLE gate open). Static files/dev-build-id/mode/account-types are handled by
 // their own earlier routes before the gate is ever reached, so they don't need to be listed here.
-const DETACHED_MODE_ALLOWED_PATHS = new Set(["/api/retirement/detached/check", "/api/retirement/detached/state", "/api/retirement/detached/parse-accounts"])
+const DETACHED_MODE_ALLOWED_PATHS = new Set([
+  "/api/retirement/detached/check",
+  "/api/retirement/detached/state",
+  "/api/retirement/detached/parse-accounts",
+  "/api/retirement/detached/expense-categories",
+])
 
 async function getBalances(dataSource: AccountDataSource, accounts: readonly { id: string }[], mode: "fresh" | "cached" | "uncached"): Promise<Map<string, number>> {
   if (mode === "uncached") {
@@ -1364,6 +1369,24 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         return { detachedAccounts, overrides }
       }
 
+      // Function to turn a detached-mode request body's own optional "transactions" field into the
+      // FileDataSourceSession-shaped object fileModeSpend/categoryGroupsFromTransactions already
+      // expect -- both only ever read the .transactions field off that shape, so this is the only
+      // glue needed to reuse them completely unchanged for detached mode's own stateless routes
+      // below; there's no real session to build, just this one field wrapped to match.
+      function detachedTransactionsFromBody(raw: unknown): FileDataSourceSession["transactions"] {
+        if (raw == null) {
+          return null
+        }
+        const body = raw as Record<string, unknown>
+        const fileName = typeof body.fileName === "string" ? body.fileName.trim() : ""
+        const content = typeof body.content === "string" ? body.content : ""
+        if (!fileName || !content) {
+          throw new Error("transactions.fileName and transactions.content are both required when transactions is provided.")
+        }
+        return { fileName, content, lastLoadedAt: new Date().toISOString() }
+      }
+
       // Issue #38: detached mode's own stateless counterpart to GET /api/retirement/check above --
       // fully ephemeral by design (see the issue's own "Design" section), so this reads NOTHING
       // from disk and writes NOTHING to disk. The entire plan and account list travel in the
@@ -1386,16 +1409,24 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, syntheticFireConfig, syntheticFireConfig.dashboard.birthDate, null)
         const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
         const federalPovertyGuidelines = loadFederalPovertyGuidelines(federalPovertyGuidelinesPath)
-        // Same "manual figure only" story file mode's own fileModeSpend helper falls back to when
-        // there's no transactions file -- detached mode never has one, so there's no precedence to
-        // resolve, just the flat figure the (now shared, see index.html/app.js) Expense Projection
-        // card's own Initial Annual Expenses field already writes to fileModeAnnualExpense.
+        // Same Manual/Transactions precedence file mode's own fileModeSpend helper resolves --
+        // reused completely unchanged (it only ever reads the .transactions field off whatever
+        // session-shaped object it's given), fed a synthetic one built from this request's own
+        // optional "transactions" field instead of a real, server-held FileDataSourceSession.
+        const fileModeSpendResult = fileModeSpend(
+          { fileName: "", content: "", lastLoadedAt: "", transactions: detachedTransactionsFromBody(body.transactions) },
+          plan.expenseAdjustmentFactor,
+          plan.spendHistoryMonths,
+          syntheticFireConfig.dashboard.fileModeAnnualExpense,
+          plan.crossoverExpenseCategoryIds,
+          syntheticFireConfig.dashboard.fileModeSpendSource,
+        )
         const result = await checkDashboard(null, dataSource, accounts, {
           ...plan,
           fallbackInflationMean: 0.03,
           federalTaxBrackets,
           federalPovertyGuidelines,
-          fileModeSpend: { annualSpend: syntheticFireConfig.dashboard.fileModeAnnualExpense ?? DEFAULT_FILE_MODE_ANNUAL_EXPENSE, basis: null },
+          fileModeSpend: fileModeSpendResult,
         })
         sendJson(res, 200, result)
         return
@@ -1438,6 +1469,32 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const delimiter = fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
         const accounts = parseAccountRows(content, delimiter)
         sendJson(res, 200, { accounts })
+        return
+      }
+
+      // Detached mode's own stateless counterpart to GET /api/budget/context's file-mode branch --
+      // the Expense categories picker needs real category groups derived from a transactions file
+      // the same way file mode's own does (categoryGroupsFromTransactions), but there's no
+      // server-held session here to read one from, so the file's content travels in the request
+      // body instead, same pattern as every other detached route. Returns [] (not an error) when no
+      // transactions were given, matching file mode's own "nothing to derive from yet" behavior.
+      if (req.method === "POST" && path === "/api/retirement/detached/expense-categories") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const transactions = detachedTransactionsFromBody(body.transactions)
+        if (transactions == null) {
+          sendJson(res, 200, { categoryGroups: [] })
+          return
+        }
+        const syntheticFireConfig = parseFireConfig({ version: 1, accounts: [], dashboard: body.dashboard ?? {} }, "detached mode request")
+        const delimiter = transactions.fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
+        const rows = parseTransactionRows(transactions.content, delimiter)
+        const groups = categoryGroupsFromTransactions(rows, spendHistoryMonthsWithOverride(syntheticFireConfig.dashboard))
+        // Same income-category exclusion GET /api/budget/context already applies -- never a valid
+        // set-values/anomalies target, so the picker shouldn't offer one here either.
+        const categoryGroups = groups
+          .filter((group) => !group.is_income)
+          .map((group) => ({ ...group, categories: group.categories.filter((category) => !category.is_income) }))
+        sendJson(res, 200, { categoryGroups })
         return
       }
 

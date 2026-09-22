@@ -372,29 +372,26 @@ function renderSimSettings() {
   setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
   setIfIdle("crossoverExpenseAdjustment", d.crossoverExpenseAdjustmentFactor == null ? "" : Math.round(d.crossoverExpenseAdjustmentFactor * 100))
   setIfIdle("crossoverSpendHistoryMonths", d.crossoverSpendHistoryMonths ?? "")
-  // File mode only -- an explicit Manual/Transactions choice (see fileModeSpendSource's own doc
-  // comment in fire-accounts.ts). null (never touched) keeps the original default: transactions if
-  // one's been imported (CURRENT_TRANSACTIONS_FILE_NAME, kept in sync by refreshDataSourceChip),
-  // else manual. Overall spend scale/Spend history/Expense categories (#expenseHistoryFields,
+  // File and detached mode only -- an explicit Manual/Transactions choice (see fileModeSpendSource's
+  // own doc comment in fire-accounts.ts), same controls/precedence either way (2026-09-22: detached
+  // mode gained its own transactions upload matching file mode's, per the user's own "these should
+  // match" request). null (never touched) keeps the original default: transactions if one's been
+  // imported (CURRENT_TRANSACTIONS_FILE_NAME, kept in sync by refreshDataSourceChip), else manual.
+  // Overall spend scale/Spend history/Expense categories (#expenseHistoryFields,
   // #expenseCategoriesField) only mean anything when there's real spend history behind them --
-  // Actual mode always has that; file mode only does once "Transactions file" is selected, so
-  // those hide together with the manual figure whenever "Manual" is picked instead (2026-09-22
+  // Actual mode always has that; file/detached mode only do once "Transactions file" is selected,
+  // so those hide together with the manual figure whenever "Manual" is picked instead (2026-09-22
   // refinement -- everything on this card except Planned expense changes is about deriving THIS
   // year's figure from history, meaningless once that's just a fixed manual number instead).
-  document.getElementById("fileModeSpendSourceField").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
-  if (ACTIVE_DATA_SOURCE_MODE === "file") {
+  const manuallyDriven = ACTIVE_DATA_SOURCE_MODE === "file" || ACTIVE_DATA_SOURCE_MODE === "detached"
+  document.getElementById("fileModeSpendSourceField").hidden = !manuallyDriven
+  if (manuallyDriven) {
     const source = d.fileModeSpendSource ?? (CURRENT_TRANSACTIONS_FILE_NAME ? "transactions" : "manual")
     document.getElementById("fileModeSpendSourceManual").checked = source === "manual"
     document.getElementById("fileModeSpendSourceTransactions").checked = source === "transactions"
     document.getElementById("fileModeAnnualExpenseField").hidden = source !== "manual"
     document.getElementById("expenseHistoryFields").hidden = source === "manual"
     document.getElementById("expenseCategoriesField").hidden = source === "manual"
-  } else if (ACTIVE_DATA_SOURCE_MODE === "detached") {
-    // Same as file mode's own "manual" source -- detached mode never has spend history/a
-    // transactions file to derive these from, only the fixed figure below.
-    document.getElementById("fileModeAnnualExpenseField").hidden = false
-    document.getElementById("expenseHistoryFields").hidden = true
-    document.getElementById("expenseCategoriesField").hidden = true
   } else {
     document.getElementById("expenseHistoryFields").hidden = false
     document.getElementById("expenseCategoriesField").hidden = false
@@ -765,11 +762,13 @@ function hiddenCategoryMark() {
 }
 
 async function loadExpenseCategoryOptions() {
-  // Expense categories normally come from Actual's own budget data -- a file-imported accounts-only
-  // plan never has that (just name,balance rows, see file-account-data-source.ts), but an OPTIONAL
-  // transactions file (issue #34/#35's follow-up, 2026-09-21) gives /api/budget/context real
-  // categories to derive locally instead (see categoryGroupsFromTransactions), so this now only
-  // skips the fetch when there's genuinely nothing to derive them from yet.
+  // Expense categories normally come from Actual's own budget data -- a file/detached-mode
+  // accounts-only plan never has that (just name,balance rows, see file-account-data-source.ts),
+  // but an OPTIONAL transactions file (issue #34/#35's follow-up, 2026-09-21; detached mode gained
+  // this same upload 2026-09-22) derives real categories locally instead
+  // (categoryGroupsFromTransactions, via /api/budget/context for file mode or the stateless
+  // /api/retirement/detached/expense-categories for detached), so this only skips the fetch when
+  // there's genuinely nothing to derive them from yet.
   if (ACTIVE_DATA_SOURCE_MODE === "file") {
     const status = await api("/api/data-source").catch(() => null)
     if (!status || status.transactionsFileName == null) {
@@ -777,17 +776,16 @@ async function loadExpenseCategoryOptions() {
       EXPENSE_CATEGORY_GROUPS = null
       return
     }
-  }
-  // Detached mode never has a transactions file (or the live Actual budget data /api/budget/context
-  // itself needs) at all -- both routes this function otherwise calls are gated off entirely for a
-  // detached server (see the MODE gate in app-server.ts), so this returns before ever calling them.
-  if (ACTIVE_DATA_SOURCE_MODE === "detached") {
-    document.getElementById("expenseCategoryPicker").innerHTML = `<div class="empty-note">Detached mode has no transactions to derive expense categories from.</div>`
+  } else if (ACTIVE_DATA_SOURCE_MODE === "detached" && DETACHED_DRAFT.transactions == null) {
+    document.getElementById("expenseCategoryPicker").innerHTML = `<div class="empty-note">Import a transactions file above to pick expense categories.</div>`
     EXPENSE_CATEGORY_GROUPS = null
     return
   }
   try {
-    const { categoryGroups } = await api("/api/budget/context")
+    const { categoryGroups } =
+      ACTIVE_DATA_SOURCE_MODE === "detached"
+        ? await api("/api/retirement/detached/expense-categories", { method: "POST", body: JSON.stringify({ transactions: DETACHED_DRAFT.transactions, dashboard: DETACHED_DRAFT.dashboard }) })
+        : await api("/api/budget/context")
     EXPENSE_CATEGORY_GROUPS = categoryGroups.filter((group) => !group.hidden || group.categories.some((category) => category.hidden))
     renderExpenseCategoryPicker()
   } catch (error) {
@@ -810,13 +808,6 @@ function renderAccounts() {
   const manuallyManaged = ACTIVE_DATA_SOURCE_MODE === "file" || ACTIVE_DATA_SOURCE_MODE === "detached"
   document.getElementById("addAccountField").hidden = !manuallyManaged
   document.getElementById("exportAccountsBtn").hidden = !manuallyManaged
-  // Detached mode only -- file mode already has its own, different CSV/TSV import (the login
-  // screen/header chips, a REMEMBERED file); this is the one-shot, nothing-remembered seed
-  // convenience issue #38 phase 3 asked for, so it's gated to detached mode specifically, not
-  // folded into manuallyManaged above.
-  const isDetached = ACTIVE_DATA_SOURCE_MODE === "detached"
-  document.getElementById("importAccountsBtn").hidden = !isDetached
-  document.getElementById("downloadAccountsTemplateBtn").hidden = !isDetached
   const list = document.getElementById("accountsList")
   list.innerHTML = ""
   const typeKeys = Object.keys(STATE.accountTypes)
@@ -2808,7 +2799,7 @@ async function runCheck() {
   renderLoadingSkeleton()
   try {
     const result = ACTIVE_DATA_SOURCE_MODE === "detached"
-      ? await api("/api/retirement/detached/check", { method: "POST", body: JSON.stringify({ dashboard: DETACHED_DRAFT.dashboard, accounts: DETACHED_DRAFT.accounts }) })
+      ? await api("/api/retirement/detached/check", { method: "POST", body: JSON.stringify({ dashboard: DETACHED_DRAFT.dashboard, accounts: DETACHED_DRAFT.accounts, transactions: DETACHED_DRAFT.transactions }) })
       : await api("/api/retirement/check")
     if (requestId !== checkRequestId) return
     renderSummaryStats(result)
@@ -3051,38 +3042,6 @@ document.getElementById("addAccountBtn").addEventListener("click", async () => {
     errorEl.hidden = false
   }
 })
-
-// Issue #38 phase 3 -- seeds the detached-mode account list from a CSV/TSV file in one shot (see
-// #importAccountsBtn's own doc comment in index.html). Parsing itself is server-side
-// (POST /api/retirement/detached/parse-accounts, reusing file mode's own parseAccountRows) so the
-// schema/error messages can never drift from what a real file-mode import accepts -- this handler
-// just turns the parsed name,balance rows into fresh draft entries the same way Add account does,
-// REPLACING whatever accounts were there before (same "starting fresh" semantics as file mode's
-// own accounts-file import).
-document.getElementById("importAccountsBtn").addEventListener("click", () => document.getElementById("importAccountsPicker").click())
-document.getElementById("importAccountsPicker").addEventListener("change", async (e) => {
-  const input = e.target
-  const errorEl = document.getElementById("importAccountsError")
-  errorEl.hidden = true
-  const file = input.files[0]
-  if (!file) return
-  try {
-    const content = await file.text()
-    const { accounts } = await api("/api/retirement/detached/parse-accounts", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
-    DETACHED_DRAFT.accounts = accounts.map((account) => ({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name: account.name, balance: account.balance, type: "other" }))
-    saveDetachedDraft()
-    await loadState()
-    await runCheck()
-  } catch (error) {
-    errorEl.textContent = error.message
-    errorEl.hidden = false
-  } finally {
-    // Clears the picked filename so re-selecting the SAME file (e.g. after fixing it and
-    // re-uploading under the same name) still fires this same change handler.
-    input.value = ""
-  }
-})
-document.getElementById("downloadAccountsTemplateBtn").addEventListener("click", () => downloadTextFile("accounts-template.csv", "name,balance\nChecking,1000.00\nBrokerage,50000.00\n"))
 
 // Detached mode only (issue #38) -- the only mode where an account is entirely client-invented, so
 // unlike a real Actual/file account (closed externally, never through this UI) there's a genuine
@@ -4528,6 +4487,14 @@ function applyDataSourceMode(mode) {
   const label = mode === "file" ? "Disconnect file" : mode === "detached" ? "Clear my data" : "Log out of Actual"
   logoutBtn.title = label
   logoutBtn.setAttribute("aria-label", label)
+  // Detached mode only (2026-09-22, per the user's own request) -- "Companion for Actual Budget"
+  // and the Budget/Retirement section labels all imply a connection and a choice between sections
+  // that don't exist here: Budget never works in this mode, and Retirement is the only page there
+  // is. Hidden rather than reworded, since there's genuinely nothing left for the nav to switch
+  // between once Budget is unreachable -- same nav.sections[hidden] override phase 1 of this mode
+  // originally used, reinstated here (see its own rule in style.css).
+  document.querySelector(".wordmark .subline").hidden = mode === "detached"
+  document.querySelector(".sections").hidden = mode === "detached"
 }
 
 // Function to poll the current file-import session and update the topbar's own two info chips --
@@ -4545,6 +4512,35 @@ function applyDataSourceMode(mode) {
 async function refreshDataSourceChip() {
   const accountsChip = document.getElementById("dataSourceChip")
   const transactionsChip = document.getElementById("transactionsChip")
+  const formatWhen = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "never")
+  // Detached mode's own version of this -- everything it needs is already client-held in
+  // DETACHED_DRAFT (no server round trip needed, unlike file mode's own GET /api/data-source
+  // below), so both chips are always shown, with an explicit "using the example/nothing imported"
+  // state when nothing's been replaced yet (2026-09-22, per the user's own "the chips should
+  // indicate that" request) -- distinct wording from a real import so it never reads as if a file
+  // actually exists.
+  if (ACTIVE_DATA_SOURCE_MODE === "detached") {
+    accountsChip.hidden = false
+    if (DETACHED_DRAFT.accountsSource) {
+      accountsChip.title = `Accounts imported from ${DETACHED_DRAFT.accountsSource.fileName} -- click to update`
+      accountsChip.textContent = `Accounts: ${DETACHED_DRAFT.accountsSource.fileName} · ${formatWhen(DETACHED_DRAFT.accountsSource.lastLoadedAt)}`
+    } else {
+      accountsChip.title = "Using the example account -- click to import your own"
+      accountsChip.textContent = "Accounts: example data"
+    }
+    transactionsChip.hidden = false
+    if (DETACHED_DRAFT.transactions) {
+      transactionsChip.title = `Transactions imported from ${DETACHED_DRAFT.transactions.fileName} -- click to update`
+      transactionsChip.textContent = `Transactions: ${DETACHED_DRAFT.transactions.fileName} · ${formatWhen(DETACHED_DRAFT.transactions.lastLoadedAt)}`
+    } else {
+      transactionsChip.title = "No transactions imported -- click to import one"
+      transactionsChip.textContent = "Transactions: none imported"
+    }
+    const previousTransactionsFileName = CURRENT_TRANSACTIONS_FILE_NAME
+    CURRENT_TRANSACTIONS_FILE_NAME = DETACHED_DRAFT.transactions?.fileName ?? null
+    if (previousTransactionsFileName !== CURRENT_TRANSACTIONS_FILE_NAME) renderSimSettings()
+    return
+  }
   if (ACTIVE_DATA_SOURCE_MODE !== "file") {
     accountsChip.hidden = true
     transactionsChip.hidden = true
@@ -4557,7 +4553,6 @@ async function refreshDataSourceChip() {
       transactionsChip.hidden = true
       return
     }
-    const formatWhen = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "never")
     accountsChip.hidden = false
     accountsChip.title = `Accounts imported from ${status.fileName} -- click to update`
     accountsChip.textContent = `Accounts: ${status.fileName} · ${formatWhen(status.lastLoadedAt)}`
@@ -4621,16 +4616,22 @@ let LOGIN_MODAL_ON_CANCEL = null
 // refresh: true reopens it for the "update my files" flow instead of the original first-connect one
 // (clicking either header chip, see refreshDataSourceChip) -- see LOGIN_MODAL_REFRESH's own doc
 // comment, and #loginModalClose's in index.html for why THIS case (unlike first-connect) gets a
-// real cancel path (both the × and a text Cancel button, #loginCancelBtn).
+// real cancel path (both the × and a text Cancel button, #loginCancelBtn). Detached mode reuses
+// this exact same modal for its own accounts/transactions import (issue #38) -- same controls file
+// mode's own import uses, per the user's own "these should match" request -- always treated like
+// the refresh case (no Actual-vs-file choice to make, always cancelable): there's no first-connect
+// state in detached mode to begin with, every open is "replace what's there."
 function showLoginModal(refresh = false) {
+  const isDetached = ACTIVE_DATA_SOURCE_MODE === "detached"
   LOGIN_MODAL_REFRESH = refresh
-  document.getElementById("loginTitle").textContent = refresh ? "Update your data" : "Connect your data"
-  document.getElementById("loginModalClose").hidden = !refresh
-  document.getElementById("loginCancelBtn").hidden = !refresh
-  document.getElementById("dataSourceModeField").hidden = refresh
+  document.getElementById("loginTitle").textContent = isDetached ? "Import accounts / transactions" : refresh ? "Update your data" : "Connect your data"
+  document.getElementById("loginModalClose").hidden = !refresh && !isDetached
+  document.getElementById("loginCancelBtn").hidden = !refresh && !isDetached
+  document.getElementById("dataSourceModeField").hidden = refresh || isDetached
   document.getElementById("loginError").hidden = true
-  if (refresh) {
-    // Already in file mode to have gotten here -- nothing to choose.
+  if (refresh || isDetached) {
+    // Already in file mode (or detached, which has no OTHER mode to choose) to have gotten here --
+    // nothing to choose.
     document.getElementById("dataSourceModeFile").checked = true
     applyLoginFormMode("file")
   }
@@ -4688,6 +4689,12 @@ function defaultDetachedDraft() {
   return {
     dashboard: { birthDate: "1986-01-01", retirementAges: [65], fileModeAnnualExpense: 50000_00 },
     accounts: [{ id: "detached-example-1", name: "Example brokerage", balance: 100000_00, type: "brokerage" }],
+    // null on both means "still using the seeded example/nothing imported yet" -- see
+    // refreshDataSourceChip's own detached branch, which reads these two fields directly to decide
+    // what the header chips say. Set once a real accounts/transactions file is imported through the
+    // same modal file mode's own chips reopen (see the login form's own submit handler).
+    accountsSource: null,
+    transactions: null,
   }
 }
 
@@ -4798,12 +4805,37 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   const errorEl = document.getElementById("loginError")
   errorEl.hidden = true
   const submitBtn = document.getElementById("loginSubmitBtn")
+  const isDetached = ACTIVE_DATA_SOURCE_MODE === "detached"
   const mode = document.getElementById("dataSourceModeFile").checked ? "file" : "actual"
   submitBtn.disabled = true
-  submitBtn.textContent = LOGIN_MODAL_REFRESH ? "Updating…" : mode === "file" ? "Importing…" : "Logging in…"
+  submitBtn.textContent = isDetached ? "Importing…" : LOGIN_MODAL_REFRESH ? "Updating…" : mode === "file" ? "Importing…" : "Logging in…"
   let importedTransactionsFile = false
   try {
-    if (mode === "file") {
+    if (isDetached) {
+      // Same controls file mode's own import uses (per the user's own "these should match"
+      // request) -- but detached mode has nothing server-held to write to, so both files are
+      // validated through the stateless detached routes (parse-accounts/expense-categories) and
+      // merged straight into DETACHED_DRAFT instead of POSTed to /api/data-source.
+      const file = document.getElementById("importFilePicker").files[0]
+      if (!file) throw new Error("Choose an accounts file to import.")
+      const content = await file.text()
+      const { accounts } = await api("/api/retirement/detached/parse-accounts", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
+      // The transactions file is always optional, same as file mode's own import.
+      const transactionsFile = document.getElementById("importTransactionsFilePicker").files[0]
+      let transactionsEntry = null
+      if (transactionsFile) {
+        const transactionsContent = await transactionsFile.text()
+        // Prove it parses before persisting anything -- same "validate everything, then write,
+        // all or nothing" discipline file mode's own combined import already follows.
+        await api("/api/retirement/detached/expense-categories", { method: "POST", body: JSON.stringify({ transactions: { fileName: transactionsFile.name, content: transactionsContent } }) })
+        transactionsEntry = { fileName: transactionsFile.name, content: transactionsContent, lastLoadedAt: new Date().toISOString() }
+        importedTransactionsFile = true
+      }
+      DETACHED_DRAFT.accounts = accounts.map((account) => ({ id: `detached-${Date.now()}-${detachedAccountCounter++}`, name: account.name, balance: account.balance, type: "other" }))
+      DETACHED_DRAFT.accountsSource = { fileName: file.name, lastLoadedAt: new Date().toISOString() }
+      if (transactionsEntry) DETACHED_DRAFT.transactions = transactionsEntry
+      saveDetachedDraft()
+    } else if (mode === "file") {
       const file = document.getElementById("importFilePicker").files[0]
       if (!file) throw new Error("Choose an accounts file to import.")
       const body = { fileName: file.name, content: await file.text() }
@@ -4824,7 +4856,14 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
     }
     hideLoginModal()
     LOGIN_MODAL_ON_CANCEL = null
-    if (LOGIN_MODAL_REFRESH) {
+    if (isDetached) {
+      await loadState()
+      // Same "match what the user just did" reasoning as the file-mode refresh branch below.
+      if (importedTransactionsFile) await patchPlan({ fileModeSpendSource: "transactions" }, "savedSpendConfig")
+      await runCheck()
+      await refreshDataSourceChip()
+      loadExpenseCategoryOptions()
+    } else if (LOGIN_MODAL_REFRESH) {
       // Already connected -- just re-pull everything from the files that may have just changed,
       // not a fresh applyDataSourceMode()/startApp() as if this were a brand new connection.
       await loadState()
@@ -4845,7 +4884,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
     errorEl.hidden = false
   } finally {
     submitBtn.disabled = false
-    submitBtn.textContent = LOGIN_MODAL_REFRESH ? "Update" : mode === "file" ? "Import" : "Log in"
+    submitBtn.textContent = isDetached ? "Import" : LOGIN_MODAL_REFRESH ? "Update" : mode === "file" ? "Import" : "Log in"
   }
 })
 // Both header chips reopen the same Import modal (issue #34/#35's follow-up, 2026-09-22) -- the

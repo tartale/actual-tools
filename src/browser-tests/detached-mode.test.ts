@@ -15,14 +15,18 @@ import type { RunningServer } from "../app-server.ts"
 // Plan/Expense Projection/Accounts/Simulation Settings cards and STATE/render pipeline
 // (2026-09-22) -- there's no bespoke #page-detached or minimal account editor left at all, so
 // these tests drive the exact same elements the linked/file-mode browser tests do
-// (src/browser-tests/app-ui.test.ts). POST /api/retirement/detached/{check,state} and the MODE
-// gate itself are covered at the route level (app-server.test.ts); what neither reaches is the
-// client's own half: that a detached server skips the login modal entirely and lands straight on
-// #page-retirement, that the real rich account editor actually persists a detached-mode edit
-// (there's no server-side override store to fall back on if the client-side merge is wrong), that
-// a CSV import (issue #38 phase 3) actually replaces the client-held draft rather than just the
-// server-side parse succeeding, and (the whole point of "data lives only in the browser") that the
-// plan and account list actually survive a reload via localStorage with no server ever told about it.
+// (src/browser-tests/app-ui.test.ts). Its own accounts/transactions import was unified onto file
+// mode's exact same header-chip + modal UI the same day, per the user's own "these should match"
+// request -- there is no detached-only import control left to test separately from that shared one.
+// POST /api/retirement/detached/{check,state,parse-accounts,expense-categories} and the MODE gate
+// itself are covered at the route level (app-server.test.ts); what neither reaches is the client's
+// own half: that a detached server skips the login modal entirely at boot and lands straight on
+// #page-retirement with its own nav/subline hidden, that the shared import modal actually merges
+// into the client-held draft instead of POSTing to file mode's own persistent /api/data-source,
+// that the real rich account editor persists a detached-mode edit (there's no server-side override
+// store to fall back on if the client-side merge is wrong), and (the whole point of "data lives
+// only in the browser") that the plan/account/transactions state actually survives a reload via
+// localStorage with no server ever told about it.
 //
 // No mocked Actual fetch needed at all -- detached mode never talks to Actual (that's the point),
 // and its own routes are reachable with no login step of any kind.
@@ -90,11 +94,30 @@ async function fillPlanFields(ui: Page): Promise<void> {
   await ui.locator("#fileModeAnnualExpense").press("Tab")
 }
 
+// Opens the same shared import modal file mode's own header chips use (see #dataSourceChip's own
+// doc comment in index.html) and submits an accounts file, an optional transactions file, or both
+// -- exactly the flow a detached-mode person actually clicks through, rather than driving the
+// underlying routes directly.
+async function importViaModal(ui: Page, { accountsCsv, transactionsCsv }: { accountsCsv?: string; transactionsCsv?: string }): Promise<void> {
+  await ui.locator("#dataSourceChip").click()
+  await ui.waitForSelector("#loginBackdrop.open")
+  if (accountsCsv !== undefined) {
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from(accountsCsv) })
+  }
+  if (transactionsCsv !== undefined) {
+    await ui.locator("#importTransactionsFilePicker").setInputFiles({ name: "transactions.csv", mimeType: "text/csv", buffer: Buffer.from(transactionsCsv) })
+  }
+  await ui.locator("#loginSubmitBtn").click()
+}
+
 describe.skipIf(!browser)("Detached mode in a browser", () => {
-  it("lands directly on #page-retirement with no login modal, nav visible but Budget disabled", async () => {
+  it("lands directly on #page-retirement with no login modal, nav and the Actual-Budget subline hidden, Budget internally disabled", async () => {
     const { page: ui, errors } = await openDetachedPage()
     expect(await ui.locator("#loginBackdrop").isVisible()).toBe(false)
-    expect(await ui.locator(".sections").isHidden()).toBe(false)
+    // Removed entirely for detached mode (2026-09-22, per the user's own request) -- there's only
+    // ever one page here (Budget never works), and no Actual connection to be a "companion" to.
+    expect(await ui.locator(".sections").isHidden()).toBe(true)
+    expect(await ui.locator(".wordmark .subline").isHidden()).toBe(true)
     expect(await ui.locator('.section-item[data-section="budget"]').evaluate((el) => el.classList.contains("disabled"))).toBe(true)
     expect(await ui.locator("#logoutBtn").getAttribute("title")).toBe("Clear my data")
     expect(errors).toEqual([])
@@ -149,6 +172,11 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(await ui.locator("#accountCountHint").textContent()).toBe("1 open accounts")
     expect(await ui.locator("#accountsList").textContent()).toContain("Example brokerage")
     expect(await ui.locator("#checkResult").textContent()).toContain("Bridge")
+    // The chips read "using the example/nothing imported" until something real is imported (2026-
+    // 09-22, per the user's own "the chips should indicate that" request) -- never a real filename
+    // for data that was never actually uploaded.
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("example data")
+    expect(await ui.locator("#transactionsChip").textContent()).toContain("none imported")
     expect(errors).toEqual([])
   }, 60000)
 
@@ -182,40 +210,64 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
-  it("imports accounts from a CSV file (issue #38 phase 3), replacing the current list, and it survives a reload", async () => {
+  it("the header chip reopens the same shared import modal file mode uses, with no Actual-vs-file choice to make", async () => {
+    const { page: ui, errors } = await openDetachedPage()
+    await ui.locator("#dataSourceChip").click()
+    await ui.waitForSelector("#loginBackdrop.open")
+    expect(await ui.locator("#loginTitle").textContent()).toBe("Import accounts / transactions")
+    expect(await ui.locator("#dataSourceModeField").isHidden()).toBe(true)
+    expect(await ui.locator("#loginModalClose").isVisible()).toBe(true) // cancelable -- there's always something to fall back to
+    expect(await ui.locator("#fileFields").isHidden()).toBe(false)
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("importing accounts and a transactions file together replaces the example, switches to Transactions file, and it survives a reload", async () => {
     const { page: ui, errors } = await openDetachedPage()
     await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
 
-    await ui.locator("#importAccountsPicker").setInputFiles({
-      name: "accounts.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from("name,balance\nImported Brokerage,75000.00\nImported Savings,15000.00\n"),
+    const recentDate = new Date().toISOString().slice(0, 10)
+    await importViaModal(ui, {
+      accountsCsv: "name,balance\nImported Brokerage,75000.00\nImported Savings,15000.00\n",
+      transactionsCsv: `Date,Category_Group,Category,Amount\n${recentDate},Bills,Rent,-1500.00\n`,
     })
     // REPLACES the seeded example, not appended to it -- same "starting fresh" semantics as file
-    // mode's own accounts-file import, see #importAccountsBtn's own doc comment in index.html.
+    // mode's own accounts-file import.
     await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "2 open accounts")
     expect(await ui.locator("#accountsList").textContent()).not.toContain("Example brokerage")
     expect(await ui.locator("#accountsList").textContent()).toContain("Imported Brokerage")
     expect(await ui.locator("#accountsList").textContent()).toContain("Imported Savings")
+    // Same "match what was just done" behavior as file mode's own combined import -- a bundled
+    // transactions file becomes the active expense source immediately, not left on Manual.
+    await expect.poll(() => ui.locator("#fileModeSpendSourceTransactions").isChecked(), { timeout: 15000 }).toBe(true)
+    // The chips now name the real files, not "example data"/"none imported" any more.
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("accounts.csv")
+    expect(await ui.locator("#transactionsChip").textContent()).toContain("transactions.csv")
+    // Real category groups derived from the transactions file, same as file mode's own picker.
+    await expect.poll(() => ui.locator("#expenseCategoryPicker").textContent(), { timeout: 15000 }).toContain("Rent")
     await ui.waitForSelector("#checkResult .findings-group", { timeout: 20000 })
 
     await ui.reload()
     await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
     await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "2 open accounts")
     expect(await ui.locator("#accountsList").textContent()).toContain("Imported Brokerage")
+    expect(await ui.locator("#fileModeSpendSourceTransactions").isChecked()).toBe(true)
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("accounts.csv")
     expect(errors).toEqual([])
   }, 60000)
 
-  it("shows an inline error for a malformed accounts file, without touching the current list", async () => {
+  it("shows an inline error in the modal for a malformed accounts file, without touching anything", async () => {
     const { page: ui, errors } = await openDetachedPage()
     await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
 
-    await ui.locator("#importAccountsPicker").setInputFiles({ name: "bad.csv", mimeType: "text/csv", buffer: Buffer.from("not,the,right,header\n") })
-    await ui.waitForSelector("#importAccountsError:not([hidden])")
-    expect(await ui.locator("#importAccountsError").textContent()).toContain("name,balance")
-    // The seeded example is still exactly what it was -- a failed import doesn't half-apply.
+    await importViaModal(ui, { accountsCsv: "not,the,right,header\n" })
+    await ui.waitForSelector("#loginError:not([hidden])")
+    expect(await ui.locator("#loginError").textContent()).toContain("name,balance")
+    // The modal itself stays open (a failed submit doesn't silently close it), and the seeded
+    // example is still exactly what it was -- a failed import doesn't half-apply.
+    expect(await ui.locator("#loginBackdrop").isHidden()).toBe(false)
     expect(await ui.locator("#accountCountHint").textContent()).toBe("1 open accounts")
     expect(await ui.locator("#accountsList").textContent()).toContain("Example brokerage")
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("example data")
     expect(errors).toEqual([])
   }, 60000)
 
@@ -268,6 +320,8 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(await ui.locator("#accountsList").textContent()).not.toContain("New Account")
     expect(await ui.locator("#accountsList").textContent()).toContain("Example brokerage")
     expect(await ui.locator("#birthDate").inputValue()).toBe("1986-01-01")
+    expect(await ui.locator("#dataSourceChip").textContent()).toContain("example data")
+    expect(await ui.locator("#transactionsChip").textContent()).toContain("none imported")
 
     await ui.reload()
     await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
