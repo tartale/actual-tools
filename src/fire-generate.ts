@@ -1,7 +1,7 @@
-import { averageSpent, fetchCategoryGroups, fetchDashboardWidgets, fetchHistoricalSpent, formatError } from "./actual-helpers.ts"
+import { fetchCategoryGroups, fetchDashboardWidgets, fetchHistoricalSpent, formatError } from "./actual-helpers.ts"
 import type { ActualConfig, CategoryMonth } from "./actual-helpers.ts"
 import type { AccountDataSource } from "./account-data-source.ts"
-import type { ClassifiedAccount, ExpenseAdjustment } from "./fire-accounts.ts"
+import type { ClassifiedAccount, ExpenseAdjustment, ExpenseProjectionType } from "./fire-accounts.ts"
 import { categoryIdFromName, transactionCutoff } from "./file-account-data-source.ts"
 import type { FileTransactionRow } from "./file-account-data-source.ts"
 import { effectiveAccessAge, portfolioAccountIds } from "./fire-dashboard.ts"
@@ -35,18 +35,80 @@ function currentMonth(): string {
   return new Date().toISOString().slice(0, 7)
 }
 
-// Function to sum the trailing-N-month average spend across every given category -- N is
-// historyMonths, a Plan-section-tunable setting (see fire-dashboard.ts's
-// spendHistoryMonthsWithOverride), not a fixed constant.
-async function trailingAnnualSpend(config: ActualConfig, categoryIds: readonly string[], historyMonths: number): Promise<number> {
+// The "Expense Projection Type" statistic (mean/median/hampel) that collapses a trailing window of
+// monthly spend totals into the one flat figure Bridge/Monte Carlo/MAGI project forward -- see
+// ExpenseProjectionType's own doc comment in fire-accounts.ts. Ported from Actual's own
+// crossover-spreadsheet.ts (MIT-licensed, same vendoring precedent as fire-monte-carlo.ts's
+// simulation engine) so "Hampel Filtered Median" means exactly what it did there, not a
+// reinvented approximation -- constants (1.4826, the MAD->stddev scale factor for a normal
+// distribution; 3, the outlier threshold) are Actual's own, unchanged.
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0 ? ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2 : (sorted[mid] as number)
+}
+
+function mean(values: readonly number[]): number {
+  if (values.length === 0) return 0
+  return values.reduce((sum, value) => sum + value, 0) / values.length
+}
+
+// The Hampel identifier: a value counts as an outlier once it's more than `threshold` scaled
+// median-absolute-deviations (MAD) from the median, and is filtered out before the final median.
+function hampelFilteredMedian(values: readonly number[]): number {
+  if (values.length <= 1) return values[0] ?? 0
+  const med = median(values)
+  const mad = median(values.map((value) => Math.abs(value - med)))
+  const threshold = 1.4826 * mad * 3
+  const filtered = values.filter((value) => value >= med - threshold && value <= med + threshold)
+  return median(filtered)
+}
+
+export function projectMonthlyExpense(monthlyValues: readonly number[], projectionType: ExpenseProjectionType): number {
+  switch (projectionType) {
+    case "median":
+      return median(monthlyValues)
+    case "hampel":
+      return hampelFilteredMedian(monthlyValues)
+    case "mean":
+      return mean(monthlyValues)
+  }
+}
+
+const EXPENSE_PROJECTION_TYPE_LABELS: Record<ExpenseProjectionType, string> = {
+  mean: "mean",
+  median: "median",
+  hampel: "Hampel filtered median",
+}
+
+// Function to build one combined monthly-total series across every given category -- summed PER
+// MONTH across categories, not per-category-then-summed, the same shape Actual's own crossover
+// widget builds its own series from. Only that shape lets a non-linear statistic (median, hampel)
+// mean the same thing regardless of how many categories are selected -- for "mean" specifically
+// this is mathematically identical to summing each category's own separate average (linearity of
+// expectation over the same-length window for every category), so an untouched plan's numbers
+// never move.
+async function monthlySpendSeries(config: ActualConfig, categoryIds: readonly string[], historyMonths: number): Promise<number[]> {
   const month = currentMonth()
   const monthCache = new Map<string, CategoryMonth[]>()
-  let monthlyTotal = 0
+  const combined = new Array<number>(historyMonths).fill(0)
   for (const categoryId of categoryIds) {
     const history = await fetchHistoricalSpent(config, categoryId, month, historyMonths, monthCache)
-    monthlyTotal += averageSpent(history)
+    history.forEach((spent, index) => {
+      combined[index] = (combined[index] as number) + -spent
+    })
   }
-  return monthlyTotal * 12
+  return combined
+}
+
+// Function to sum the trailing-N-month spend across every given category into one flat monthly
+// figure (per the person's own ExpenseProjectionType choice), then annualize it -- N is
+// historyMonths, a Plan-section-tunable setting (see fire-dashboard.ts's
+// spendHistoryMonthsWithOverride), not a fixed constant.
+async function trailingAnnualSpend(config: ActualConfig, categoryIds: readonly string[], historyMonths: number, projectionType: ExpenseProjectionType): Promise<number> {
+  const series = await monthlySpendSeries(config, categoryIds, historyMonths)
+  return projectMonthlyExpense(series, projectionType) * 12
 }
 
 // Function to compute annual spend from the Plan section's own expense-category selection --
@@ -64,15 +126,17 @@ async function spendFromLocalSelection(
   selection: readonly string[] | null,
   adjustmentFactor: number,
   historyMonths: number,
+  projectionType: ExpenseProjectionType,
 ): Promise<{ annualSpend: number; basis: string | null }> {
   const categoryIds = selection?.filter((id) => allExpenseCategoryIds.includes(id)) ?? []
   if (categoryIds.length === 0) {
-    const annualSpend = Math.round(await trailingAnnualSpend(config, allExpenseCategoryIds, historyMonths))
+    const annualSpend = Math.round(await trailingAnnualSpend(config, allExpenseCategoryIds, historyMonths, projectionType))
     return { annualSpend, basis: null }
   }
-  const annualSpend = Math.round((await trailingAnnualSpend(config, categoryIds, historyMonths)) * adjustmentFactor)
+  const annualSpend = Math.round((await trailingAnnualSpend(config, categoryIds, historyMonths, projectionType)) * adjustmentFactor)
   const basis =
     `${categoryIds.length} categories over ${historyMonths} months to ${currentMonth()} (Plan section selection)` +
+    (projectionType === "mean" ? "" : ` (${EXPENSE_PROJECTION_TYPE_LABELS[projectionType]})`) +
     (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
   return { annualSpend, basis }
 }
@@ -110,7 +174,13 @@ async function spendFromLocalSelection(
 // Returns annualSpend: 0 (never null/negative) when nothing in the trailing window qualifies -- the
 // caller (checkDashboard) falls back to the flat manual fileModeAnnualExpense whenever this comes
 // back 0, same as it would for a freshly-imported transactions file with no spend recorded yet.
-export function annualSpendFromTransactions(rows: readonly FileTransactionRow[], historyMonths: number, adjustmentFactor: number, selection: readonly string[] | null): { annualSpend: number; basis: string | null } {
+export function annualSpendFromTransactions(
+  rows: readonly FileTransactionRow[],
+  historyMonths: number,
+  adjustmentFactor: number,
+  selection: readonly string[] | null,
+  projectionType: ExpenseProjectionType = "mean",
+): { annualSpend: number; basis: string | null } {
   const asOfMonth = currentMonth()
   // Shared with categoryGroupsFromTransactions (file-account-data-source.ts) -- see its own doc
   // comment on why the picker needs the identical window this spend figure is computed from.
@@ -128,6 +198,16 @@ export function annualSpendFromTransactions(rows: readonly FileTransactionRow[],
   const filteredSelection = selection?.filter((id) => allCategoryIds.has(id)) ?? []
   const selectedIds = filteredSelection.length > 0 ? new Set(filteredSelection) : null
   let totalSpent = 0
+  // Only built/used for "median"/"hampel" (see below) -- bucketed by real calendar month (however
+  // many distinct months actually fall in the window, including a partial current one), the same
+  // shape Actual's own crossover-spreadsheet.ts builds its own per-month series from, so those two
+  // projection types mean the same thing here they did there. "mean" deliberately keeps the
+  // original plain totalSpent/historyMonths formula below instead of mean-of-these-buckets --
+  // they're mathematically different whenever the window doesn't divide into whole calendar months
+  // (a partial current month), and the original formula is what every existing plan's numbers
+  // already assume, so it must stay bit-for-bit unchanged when projectionType is "mean" (the
+  // default/null case).
+  const monthlyTotals = new Map<string, number>()
   for (const row of rows) {
     // "Income" itself excluded by name (case-insensitive, same as categoryGroupsFromTransactions'
     // own is_income heuristic) -- a real export can have NEGATIVE rows under Income (a refund
@@ -140,18 +220,23 @@ export function annualSpendFromTransactions(rows: readonly FileTransactionRow[],
     if (selectedIds != null && !selectedIds.has(categoryId)) continue
     const date = new Date(row.date)
     if (Number.isNaN(date.getTime()) || date < cutoff) continue
-    totalSpent += -row.amount
+    const netted = -row.amount
+    totalSpent += netted
+    const monthKey = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`
+    monthlyTotals.set(monthKey, (monthlyTotals.get(monthKey) ?? 0) + netted)
   }
+  const monthlyFigure = projectionType === "mean" ? totalSpent / historyMonths : projectMonthlyExpense([...monthlyTotals.values()], projectionType)
   // <= 0, not just === 0 -- refunds/returns netted against a short window's outflows (see this
   // function's own doc comment) could in principle net out to a negative total, which would
   // otherwise annualize to a nonsensical negative "spend."
-  if (totalSpent <= 0) {
+  if (monthlyFigure <= 0) {
     return { annualSpend: 0, basis: null }
   }
-  const annualSpend = Math.round((totalSpent / historyMonths) * 12 * adjustmentFactor)
+  const annualSpend = Math.round(monthlyFigure * 12 * adjustmentFactor)
   const basis =
     (selectedIds != null ? `${selectedIds.size} categories` : "imported transaction file") +
     `, trailing ${historyMonths} months to ${asOfMonth}` +
+    (projectionType === "mean" ? "" : ` (${EXPENSE_PROJECTION_TYPE_LABELS[projectionType]})`) +
     (adjustmentFactor === 1 ? "" : `, × ${Math.round(adjustmentFactor * 100)}% target income`)
   return { annualSpend, basis }
 }
@@ -233,6 +318,10 @@ export interface CheckOptions {
   crossoverExpenseCategoryIds: readonly string[] | null
   expenseAdjustmentFactor: number
   spendHistoryMonths: number
+  // How those spendHistoryMonths collapse into one flat figure (mean/median/hampel) -- see
+  // ExpenseProjectionType's own doc comment in fire-accounts.ts. Applies to Actual mode's own
+  // selection above AND file/detached mode's own fileModeSpend (see its own doc comment below).
+  expenseProjectionType: ExpenseProjectionType
   // Both needed for the MAGI/effective-tax-rate finding (see magiFinding in fire-analysis.ts) --
   // either missing just skips that finding entirely (checkDashboard), the same "absent, not an
   // error" convention as ruleOf55Boosts/debtPayoffs.
@@ -388,6 +477,7 @@ export async function checkDashboard(
       options.crossoverExpenseCategoryIds,
       options.expenseAdjustmentFactor,
       options.spendHistoryMonths,
+      options.expenseProjectionType,
     ))
   }
 

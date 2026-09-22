@@ -521,9 +521,14 @@ account below, just proposed for you first.
 comma-separated), and the age to assume the plan needs to last to (a
 conservative default, not a lifespan estimate).
 
-**Expense Projection**: target income % and spend history (in months),
-plus **Expense categories** — every input to this app's own annual-spend
-calculation, entirely local (see "Annual spend is entirely local" below).
+**Expense Projection**: **Expense Projection Type** (Mean/Median/Hampel
+Filtered Median — how a trailing window of monthly spend collapses into
+the one flat figure projected forward; Hampel filters statistical
+outliers, like a one-off large medical bill or a big trip, out of the
+window before taking their median), target income %, and spend history
+(in months), plus **Expense categories** — every input to this app's own
+annual-spend calculation, entirely local (see "Annual spend is entirely
+local" below).
 The category picker is always visible (no "use every category" toggle to
 unhide it) — a foldable, per-group checklist, every category checked by
 default, with an **Expand all**/**Collapse all** toolbar, a **Show
@@ -535,15 +540,16 @@ count, so a folded group's selection is still legible without opening
 it. This selection drives every simulation on the page directly (Bridge,
 Monte Carlo, the Spend tile).
 
-In file mode (no live Actual connection — see **Import files** above), an
-**Expense source** radio picks between a flat **Initial Annual Expenses**
-figure and a real one computed from an imported transactions file; picking
-Transactions file with none imported yet opens the Import modal directly
-rather than saving a source with nothing behind it, and canceling reverts
-to Manual. Successfully importing a transactions file — through that
-detour or just updating files via a header chip — selects Transactions
-file automatically, even overriding a prior explicit Manual choice.
-Everything above that's derived from spend history (Overall spend scale,
+In file and detached mode (no live Actual connection — see **Import
+files**/**Detached mode** above), an **Expense source** radio picks
+between a flat **Initial Annual Expenses** figure and a real one computed
+from an imported transactions file; picking Transactions file with none
+imported yet opens the Import modal directly rather than saving a source
+with nothing behind it, and canceling reverts to Manual. Successfully
+importing a transactions file — through that detour or just updating
+files via a header chip — selects Transactions file automatically, even
+overriding a prior explicit Manual choice. Everything above that's
+derived from spend history (Expense Projection Type, Overall spend scale,
 Spend history, Expense categories) only applies once Transactions file is
 the active source; Manual hides all of it except Planned expense changes,
 which always applies regardless of where the current figure comes from.
@@ -724,13 +730,16 @@ the old category field for that account.
 
 **Annual spend is entirely local — this app never reads a live Actual
 widget of any kind to derive it.** Expense Projection's own **Expense
-categories** selection, if set, is a trailing-average over exactly that
-selection (**Spend history** months, 12 by default — tunable in the same
-card), scaled by **Overall spend scale** if set. Left unset, it falls
-back to every non-income, non-hidden category over that same window — a
-plain default, not a reason to go check what's live in Actual. Whichever
-one is active, it feeds every simulation on the page the same way — Monte
-Carlo, Bridge, the Spend tile above.
+categories** selection, if set, collapses a trailing window (**Spend
+history** months, 12 by default — tunable in the same card) into one flat
+figure per **Expense Projection Type** (Mean, the default — a plain
+average; Median; or Hampel Filtered Median, which filters statistical
+outliers out of the window first), scaled by **Overall spend scale** if
+set. Left unset, the category selection falls back to every non-income,
+non-hidden category over that same window — a plain default, not a reason
+to go check what's live in Actual. Whichever category selection is
+active, it feeds every simulation on the page the same way — Monte Carlo,
+Bridge, the Spend tile above.
 
 **Contributions and spending phases are managed for you**, not left at
 a plain per-account default:

@@ -3,6 +3,7 @@ import type {
   ClassifiedAccount,
   DashboardConfig,
   ExpenseAdjustment,
+  ExpenseProjectionType,
   MonteCarloAllocationPreset,
   MonteCarloReturnModel,
   MonteCarloTaxBandMeta,
@@ -420,6 +421,9 @@ export function monteCarloAssumptionsWithOverrides(dashboard: DashboardConfig): 
 // trailing-average spend calculation (fire-generate.ts's spendFromLocalSelection).
 export const DEFAULT_EXPENSE_ADJUSTMENT_FACTOR = 1.0
 export const DEFAULT_SPEND_HISTORY_MONTHS = 12
+// "mean" -- the exact computation every plan already had before ExpenseProjectionType existed (see
+// its own doc comment in fire-accounts.ts), so an untouched plan's numbers never silently move.
+export const DEFAULT_EXPENSE_PROJECTION_TYPE = "mean"
 
 export function expenseAdjustmentFactorWithOverride(dashboard: Pick<DashboardConfig, "crossoverExpenseAdjustmentFactor">): number {
   return dashboard.crossoverExpenseAdjustmentFactor ?? DEFAULT_EXPENSE_ADJUSTMENT_FACTOR
@@ -427,6 +431,10 @@ export function expenseAdjustmentFactorWithOverride(dashboard: Pick<DashboardCon
 
 export function spendHistoryMonthsWithOverride(dashboard: Pick<DashboardConfig, "crossoverSpendHistoryMonths">): number {
   return dashboard.crossoverSpendHistoryMonths ?? DEFAULT_SPEND_HISTORY_MONTHS
+}
+
+export function expenseProjectionTypeWithOverride(dashboard: Pick<DashboardConfig, "expenseProjectionType">): ExpenseProjectionType {
+  return dashboard.expenseProjectionType ?? DEFAULT_EXPENSE_PROJECTION_TYPE
 }
 
 // Function to build one recurring-contribution entry per portfolio account with a nonzero monthly

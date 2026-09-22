@@ -222,6 +222,29 @@ describe("PATCH /api/retirement/plan", () => {
     expect((await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ crossoverSpendHistoryMonths: 3.5 }) })).status).toBe(400)
   })
 
+  it("persists a pinned expenseProjectionType, and reflects it on the next read", async () => {
+    const url = await boot()
+    const patchRes = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ expenseProjectionType: "hampel" }) })
+    expect(patchRes.status).toBe(200)
+    const res = await fetch(`${url}api/retirement/state`)
+    const body = await readJson<StateResponse>(res)
+    expect(body.dashboard.expenseProjectionType).toBe("hampel")
+  })
+
+  it("rejects an unknown expenseProjectionType", async () => {
+    const url = await boot()
+    expect((await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ expenseProjectionType: "bogus" }) })).status).toBe(400)
+  })
+
+  it("accepts expenseProjectionType: null (reverts to mean)", async () => {
+    const url = await boot()
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ expenseProjectionType: "median" }) })
+    const patchRes = await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ expenseProjectionType: null }) })
+    expect(patchRes.status).toBe(200)
+    const body = await readJson<StateResponse>(patchRes)
+    expect(body.dashboard.expenseProjectionType).toBeNull()
+  })
+
   it("persists a pinned monteCarloWithdrawalRule", async () => {
     const url = await boot()
     const res = await fetch(`${url}api/retirement/plan`, {
@@ -1174,6 +1197,30 @@ describe("POST /api/retirement/detached/check", () => {
     // $2,000 spent over a 1-month trailing window -> $24,000/yr, not the $40,000 manual figure.
     expect(body.annualSpend).toBe(24000_00)
     expect(body.spendBasis).toContain("imported transaction file")
+  })
+
+  // Issue: "Expense Projection Type" reintroduced 2026-09-22 -- confirms detached mode's own
+  // fileModeSpend call actually threads plan.expenseProjectionType through (via requirePlan),
+  // not just Actual/file mode's own two call sites.
+  it("expenseProjectionType changes the computed spend here too, not just in Actual/file mode", async () => {
+    const url = await boot()
+    const month = (monthsAgo: number) => {
+      const d = new Date()
+      d.setUTCMonth(d.getUTCMonth() - monthsAgo)
+      return d.toISOString().slice(0, 10)
+    }
+    const content =
+      `Date,Category_Group,Category,Amount\n` +
+      `${month(5)},Bills,Rent,-2000.00\n${month(4)},Bills,Rent,-2200.00\n${month(3)},Bills,Rent,-1900.00\n${month(2)},Bills,Rent,-1800.00\n${month(1)},Bills,Rent,-50000.00\n`
+    const body = {
+      ...validBody,
+      dashboard: { ...validBody.dashboard, crossoverSpendHistoryMonths: 5, expenseProjectionType: "hampel" },
+      transactions: { fileName: "transactions.csv", content },
+    }
+    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify(body) })
+    expect(res.status).toBe(200)
+    // Same figures as fire-generate.test.ts's own hand-calculated hampel scenario.
+    expect((await readJson<CheckResult>(res)).annualSpend).toBe(23400_00)
   })
 
   it("falls back to the manual figure when fileModeSpendSource is explicitly \"manual\", even with a transactions file given", async () => {

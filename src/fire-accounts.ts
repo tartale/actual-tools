@@ -98,6 +98,18 @@ export const MONTE_CARLO_RETURN_MODELS: readonly MonteCarloReturnModel[] = ["nor
 export type MonteCarloTaxModel = "flat" | "bands"
 export const MONTE_CARLO_TAX_MODELS: readonly MonteCarloTaxModel[] = ["flat", "bands"]
 
+// How a trailing window of past monthly spend collapses into the one flat figure Bridge/Monte
+// Carlo/MAGI project forward -- mirrors Actual's own crossover-card widget concept ("Expense
+// Projection Type": mean/median/hampel), reintroduced 2026-09-22 as a genuinely load-bearing input
+// this time (see fire-generate.ts's projectMonthlyExpense) after the ORIGINAL crossover-card
+// fields were cut entirely for being write-only dead weight -- see this file's own git history/
+// DashboardConfig.expenseProjectionType doc comment for that removal's reasoning. "hampel" filters
+// statistical outliers (a one-off large medical bill, a big trip) out of the trailing months before
+// taking their median -- see fire-generate.ts's hampelFilteredMedian for the exact algorithm, ported
+// from Actual's own crossover-spreadsheet.ts so the label means the same thing it did there.
+export type ExpenseProjectionType = "mean" | "median" | "hampel"
+export const EXPENSE_PROJECTION_TYPES: readonly ExpenseProjectionType[] = ["mean", "median", "hampel"]
+
 // Moved here from fire-dashboard.ts for the same reason as the Monte Carlo enums above --
 // DashboardConfig (this file) needs it to let a person pin a withdrawal rule (see
 // fire-dashboard.ts's monteCarloAssumptionsWithOverrides), and fire-accounts.ts cannot import from
@@ -577,6 +589,13 @@ export interface DashboardConfig {
   // How many trailing months of category history the same local-selection spend calculation
   // averages over. Null keeps the default (see DEFAULT_SPEND_HISTORY_MONTHS).
   crossoverSpendHistoryMonths: number | null
+  // How those trailing months of spend collapse into one flat projected figure -- see
+  // ExpenseProjectionType's own doc comment above. Applies everywhere a trailing-history spend
+  // figure is computed (Actual mode's own category selection AND file/detached mode's transactions
+  // import, both in fire-generate.ts), not just one mode. Null means "mean" (see
+  // expenseProjectionTypeWithOverride in fire-dashboard.ts) -- the same computation every existing
+  // plan already had before this field existed, so an untouched plan's numbers never silently move.
+  expenseProjectionType: ExpenseProjectionType | null
   // File-mode ONLY (see currentAccountDataSource in app-server.ts) -- a plain manual annual spend
   // figure, cents, used in place of the Actual-backed spend-history computation above, which has
   // no data to work from without a live Actual connection (a name,balance accounts file carries no
@@ -644,6 +663,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   crossoverExpenseCategoryIds: null,
   crossoverExpenseAdjustmentFactor: null,
   crossoverSpendHistoryMonths: null,
+  expenseProjectionType: null,
   fileModeAnnualExpense: null,
   fileModeSpendSource: null,
   monteCarloWithdrawalRule: null,
@@ -1314,6 +1334,9 @@ export function parseFireConfig(parsed: unknown, path: string): FireConfig {
   ) {
     throw new Error(`Invalid config in ${path}: dashboard.crossoverSpendHistoryMonths must be a positive integer.`)
   }
+  if (dashboardSource.expenseProjectionType != null && !EXPENSE_PROJECTION_TYPES.includes(dashboardSource.expenseProjectionType)) {
+    throw new Error(`Invalid config in ${path}: dashboard.expenseProjectionType must be one of ${EXPENSE_PROJECTION_TYPES.join(", ")}, or null.`)
+  }
   if (dashboardSource.fileModeAnnualExpense != null && (typeof dashboardSource.fileModeAnnualExpense !== "number" || dashboardSource.fileModeAnnualExpense < 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.fileModeAnnualExpense must be a non-negative number.`)
   }
@@ -1395,6 +1418,7 @@ export function parseFireConfig(parsed: unknown, path: string): FireConfig {
       crossoverExpenseCategoryIds: dashboardSource.crossoverExpenseCategoryIds ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseCategoryIds,
       crossoverExpenseAdjustmentFactor: dashboardSource.crossoverExpenseAdjustmentFactor ?? DEFAULT_DASHBOARD_CONFIG.crossoverExpenseAdjustmentFactor,
       crossoverSpendHistoryMonths: dashboardSource.crossoverSpendHistoryMonths ?? DEFAULT_DASHBOARD_CONFIG.crossoverSpendHistoryMonths,
+      expenseProjectionType: dashboardSource.expenseProjectionType ?? DEFAULT_DASHBOARD_CONFIG.expenseProjectionType,
       fileModeAnnualExpense: dashboardSource.fileModeAnnualExpense ?? DEFAULT_DASHBOARD_CONFIG.fileModeAnnualExpense,
       fileModeSpendSource: dashboardSource.fileModeSpendSource ?? DEFAULT_DASHBOARD_CONFIG.fileModeSpendSource,
       monteCarloWithdrawalRule: dashboardSource.monteCarloWithdrawalRule ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalRule,
