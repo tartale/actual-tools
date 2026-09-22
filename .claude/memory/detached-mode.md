@@ -1,11 +1,49 @@
 ---
 name: detached-mode
-description: "Issue #38's standalone FIRE calculator -- a whole separate server deployment (AB_MODE=detached, its own port), not a runtime login choice; fully client-held state, server-side-enforced isolation; unified onto the real Retirement page's own rich editor 2026-09-22"
+description: "Issue #38's standalone FIRE calculator -- a whole separate server deployment (AB_MODE=detached, its own port), not a runtime login choice; fully client-held state, server-side-enforced isolation; unified onto the real Retirement page's own rich editor 2026-09-22; seeded with a working example and CSV-import-to-seed 2026-09-22, closing out the epic's phase list"
 metadata:
   node_type: memory
   type: project
   modified: 2026-09-22T00:00:00.000Z
 ---
+
+**Epic (issue #38) phase list closed out 2026-09-22.** Original phases: (1) stateless client/server
+design -- shipped #45, reworked into AB_MODE in #46; (2) account-list editor UI -- effectively
+superseded/exceeded by the unification below, which gave detached mode the ENTIRE rich editor, not
+just a minimal one; (3) CSV/TSV upload-to-seed -- shipped below; (4) login-screen wiring -- also
+superseded, since the AB_MODE rework (#46) removed the login screen from this mode's story
+entirely. Nothing from the issue's own phase list remains; the "Explicit non-goals" section (public
+multi-tenant hosting, shareable scenario links, saving a scenario) stays deliberately deferred.
+
+**Reasonable defaults 2026-09-22** -- a fresh detached-mode visitor used to land on an error
+("Missing birth date") with every Plan field blank: there's no server-side fallback for birth date
+the way file mode's own annual-expense figure has (see requirePlan in app-server.ts). Detached
+mode's whole point is a zero-setup calculator, so that undercut the point. `defaultDetachedDraft()`
+(app.js) now seeds a complete, generic example instead of an empty draft -- a 40-year-old planning
+to retire at 65, $50k/yr (the same round `DEFAULT_FILE_MODE_ANNUAL_EXPENSE` figure file mode's own
+fresh-import case already uses), plus one $100k "Example brokerage" account -- so Bridge/Monte
+Carlo render real results immediately and every entry box has a sensible, obviously-example, fully
+editable/removable value. "Clear my data" resets back to this SAME example, not a blank state, so
+the baseline holds after a reset too, not just on the very first visit. Chosen over a narrower
+"just enough to not error" set of defaults (AskUserQuestion): a full working example was picked
+specifically so the tool demonstrates itself with zero typing, matching the "try it out" framing in
+the issue's own original design section.
+
+**CSV/TSV import-to-seed 2026-09-22 (issue #38 phase 3, closing out the epic's phase list)** --
+reuses `parseAccountRows` (file-account-data-source.ts, issue #34's own parser) directly via a new
+stateless `POST /api/retirement/detached/parse-accounts` route (added to
+`DETACHED_MODE_ALLOWED_PATHS`, the MODE-gate allowlist -- refactored from a `path !== "..." && ...`
+chain to a named `Set` at the same time, since that chain had grown error-prone by its third
+addition). The route does exactly one thing: parse the given content with the delimiter its
+filename implies, return the rows -- no disk write, no remembered file, unlike file mode's own
+`POST /api/data-source`. The client (`#importAccountsBtn`/`#importAccountsPicker` in the Accounts
+card toolbar, detached-mode-only, gated the same way `manuallyManaged` gates Add/Export) turns the
+returned rows into fresh `DETACHED_DRAFT.accounts` entries (fresh ids, `type: "other"` default --
+same convention as Add account) and REPLACES the whole list, matching file mode's own
+accounts-file-import semantics ("starting fresh," not appended) -- including replacing the seeded
+example account above. A `#downloadAccountsTemplateBtn` was added alongside it (reusing the exact
+same template string the login modal's own template button uses) since detached mode has no login
+screen at all to find that convenience on otherwise.
 
 **Unified onto the real Retirement page 2026-09-22, same day as the AB_MODE rework above** -- before
 starting phase 2 (a richer per-account editor for detached mode), the user asked to maximize code

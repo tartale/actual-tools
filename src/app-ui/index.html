@@ -519,13 +519,26 @@
           <div class="category-picker-toolbar">
             <button type="button" class="btn secondary" id="accountsExpandAll">Expand all</button>
             <button type="button" class="btn secondary" id="accountsCollapseAll">Collapse all</button>
+            <!-- Detached mode only (issue #38 phase 3) -- seeds the account list from a CSV/TSV
+                 file in one shot, reusing the same name,balance schema/parser file mode's own
+                 import uses (parseAccountRows, see POST /api/retirement/detached/parse-accounts in
+                 app-server.ts). Unlike file mode's own import, nothing about the file itself is
+                 remembered afterward -- a one-time seed into the same client-held draft (see
+                 DETACHED_DRAFT in app.js), not a real data source. REPLACES the current account
+                 list (including the starter example -- see defaultDetachedDraft's own doc comment),
+                 same "starting fresh" semantics as file mode's own accounts-file import; clicking
+                 opens the file picker directly, no separate confirm step, since there's only the
+                 one file and no other fields to combine it with. -->
+            <button type="button" class="btn secondary" id="importAccountsBtn" hidden>Import accounts…</button>
+            <input type="file" id="importAccountsPicker" accept=".csv,.tsv,text/csv,text/tab-separated-values" hidden>
+            <button type="button" class="btn secondary" id="downloadAccountsTemplateBtn" hidden>Download Template</button>
             <!-- File and detached mode only -- exports the current accounts back to the same
-                 name,balance shape the login screen imports, so a plan can be edited externally and
-                 reimported later (see file-account-data-source.ts's own doc comment on the round
-                 trip); detached mode has nowhere to reimport a file, but the export itself is still
-                 a useful way to save an ad-hoc plan's numbers. -->
+                 name,balance shape file mode's own login screen imports, or Import accounts above
+                 reads for detached mode, so a plan can be edited externally and reimported later
+                 (see file-account-data-source.ts's own doc comment on the round trip). -->
             <button type="button" class="btn secondary" id="exportAccountsBtn" hidden>Export accounts</button>
           </div>
+          <div class="derived warn-text" id="importAccountsError" hidden></div>
           <div class="accounts" id="accountsList"><div class="empty-note">Loading accounts…</div></div>
           <!-- File mode adds a new account directly, without re-uploading the whole file (see POST
                /api/data-source/accounts in app-server.ts); detached mode adds one straight into its

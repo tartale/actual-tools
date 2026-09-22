@@ -1238,6 +1238,68 @@ describe("POST /api/retirement/detached/state", () => {
   })
 })
 
+describe("POST /api/retirement/detached/parse-accounts", () => {
+  // Issue #38 phase 3: a one-shot "seed my account list from this file" convenience, not a real
+  // data source -- unlike file mode's own POST /api/data-source, nothing here is remembered
+  // between requests. Reuses parseAccountRows (file-account-data-source.ts, issue #34's own
+  // parser) directly, so these tests are really confirming that reuse -- the schema/delimiter/
+  // error-message rules themselves are already covered by that module's own test file.
+  it("parses a CSV accounts file into name,balance rows -- the same strict schema file mode's own import uses", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/parse-accounts`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\nSavings,10000.00\n" }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<{ accounts: { name: string; balance: number }[] }>(res)
+    expect(body.accounts).toEqual([
+      { name: "Brokerage", balance: 5000000 },
+      { name: "Savings", balance: 1000000 },
+    ])
+  })
+
+  it("picks the delimiter from the file extension -- .tsv parses as tab-delimited", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/parse-accounts`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "accounts.tsv", content: "name\tbalance\nBrokerage\t50000.00\n" }),
+    })
+    expect(res.status).toBe(200)
+    const body = await readJson<{ accounts: { name: string; balance: number }[] }>(res)
+    expect(body.accounts).toEqual([{ name: "Brokerage", balance: 5000000 }])
+  })
+
+  it("rejects a malformed file with a real error message, the same one parseAccountRows itself throws", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/parse-accounts`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "accounts.csv", content: "not,the,right,header\n" }),
+    })
+    expect(res.status).toBe(400)
+    const body = await readJson<{ error: string }>(res)
+    expect(body.error).toContain('Expected a header row of "name,balance"')
+  })
+
+  it("writes nothing to disk -- no session, no remembered file, unlike file mode's own import", async () => {
+    const url = await boot()
+    await fetch(`${url}api/retirement/detached/parse-accounts`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\n" }),
+    })
+    expect(existsSync(configPath)).toBe(false)
+    expect(existsSync(dataSourceSessionPath)).toBe(false)
+  })
+
+  it("works on an actual detached-mode server too", async () => {
+    const url = await boot({}, { mode: "detached" })
+    const res = await fetch(`${url}api/retirement/detached/parse-accounts`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,50000.00\n" }),
+    })
+    expect(res.status).toBe(200)
+  })
+})
+
 describe("AB_MODE / detached-mode server gate", () => {
   it("GET /api/mode reports linked by default, and detached when booted that way", async () => {
     const linkedUrl = await boot()

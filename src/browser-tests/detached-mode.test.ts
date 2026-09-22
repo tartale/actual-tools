@@ -19,9 +19,10 @@ import type { RunningServer } from "../app-server.ts"
 // gate itself are covered at the route level (app-server.test.ts); what neither reaches is the
 // client's own half: that a detached server skips the login modal entirely and lands straight on
 // #page-retirement, that the real rich account editor actually persists a detached-mode edit
-// (there's no server-side override store to fall back on if the client-side merge is wrong), and
-// (the whole point of "data lives only in the browser") that the plan and account list actually
-// survive a reload via localStorage with no server ever told about it.
+// (there's no server-side override store to fall back on if the client-side merge is wrong), that
+// a CSV import (issue #38 phase 3) actually replaces the client-held draft rather than just the
+// server-side parse succeeding, and (the whole point of "data lives only in the browser") that the
+// plan and account list actually survive a reload via localStorage with no server ever told about it.
 //
 // No mocked Actual fetch needed at all -- detached mode never talks to Actual (that's the point),
 // and its own routes are reachable with no login step of any kind.
@@ -178,6 +179,43 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(await ui.locator("#retireAges").inputValue()).toBe("55")
     expect(await ui.locator("#planToAge").inputValue()).toBe("90")
     expect(await ui.locator("#fileModeAnnualExpense").inputValue()).toContain("40,000.00")
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("imports accounts from a CSV file (issue #38 phase 3), replacing the current list, and it survives a reload", async () => {
+    const { page: ui, errors } = await openDetachedPage()
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
+
+    await ui.locator("#importAccountsPicker").setInputFiles({
+      name: "accounts.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from("name,balance\nImported Brokerage,75000.00\nImported Savings,15000.00\n"),
+    })
+    // REPLACES the seeded example, not appended to it -- same "starting fresh" semantics as file
+    // mode's own accounts-file import, see #importAccountsBtn's own doc comment in index.html.
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "2 open accounts")
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("Example brokerage")
+    expect(await ui.locator("#accountsList").textContent()).toContain("Imported Brokerage")
+    expect(await ui.locator("#accountsList").textContent()).toContain("Imported Savings")
+    await ui.waitForSelector("#checkResult .findings-group", { timeout: 20000 })
+
+    await ui.reload()
+    await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "2 open accounts")
+    expect(await ui.locator("#accountsList").textContent()).toContain("Imported Brokerage")
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("shows an inline error for a malformed accounts file, without touching the current list", async () => {
+    const { page: ui, errors } = await openDetachedPage()
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
+
+    await ui.locator("#importAccountsPicker").setInputFiles({ name: "bad.csv", mimeType: "text/csv", buffer: Buffer.from("not,the,right,header\n") })
+    await ui.waitForSelector("#importAccountsError:not([hidden])")
+    expect(await ui.locator("#importAccountsError").textContent()).toContain("name,balance")
+    // The seeded example is still exactly what it was -- a failed import doesn't half-apply.
+    expect(await ui.locator("#accountCountHint").textContent()).toBe("1 open accounts")
+    expect(await ui.locator("#accountsList").textContent()).toContain("Example brokerage")
     expect(errors).toEqual([])
   }, 60000)
 

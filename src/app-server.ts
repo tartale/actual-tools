@@ -10,7 +10,7 @@ import type { Action, ActualConfig, CategoryGroup } from "./actual-helpers.ts"
 import { actualAccountDataSource } from "./account-data-source.ts"
 import type { AccountDataSource } from "./account-data-source.ts"
 import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
-import { accountIdFromName, appendAccountRow, categoryGroupsFromTransactions, fileAccountDataSource, parseTransactionRows } from "./file-account-data-source.ts"
+import { accountIdFromName, appendAccountRow, categoryGroupsFromTransactions, fileAccountDataSource, parseAccountRows, parseTransactionRows } from "./file-account-data-source.ts"
 import { detachedAccountDataSource } from "./detached-account-data-source.ts"
 import type { DetachedAccount } from "./detached-account-data-source.ts"
 import { clearFileDataSourceSession, loadFileDataSourceSession, writeFileDataSourceSession } from "./data-source-session.ts"
@@ -219,6 +219,13 @@ interface AccountState {
 // (`detached-${Date.now()}-...`), never reused -- writing them into this cache would just leak
 // forever on a long-running detached server, for zero benefit.
 const balanceCache = new Map<string, number>()
+
+// Every route a detached server allows through its own MODE gate (below) -- kept as one named Set
+// rather than a chain of `path !== "..."` checks, since that chain grows by one comparison every
+// time a new detached-mode route ships (three so far) and is easy to get wrong silently (a missing
+// `&&` leaves the WHOLE gate open). Static files/dev-build-id/mode/account-types are handled by
+// their own earlier routes before the gate is ever reached, so they don't need to be listed here.
+const DETACHED_MODE_ALLOWED_PATHS = new Set(["/api/retirement/detached/check", "/api/retirement/detached/state", "/api/retirement/detached/parse-accounts"])
 
 async function getBalances(dataSource: AccountDataSource, accounts: readonly { id: string }[], mode: "fresh" | "cached" | "uncached"): Promise<Map<string, number>> {
   if (mode === "uncached") {
@@ -869,7 +876,7 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         sendJson(res, 200, { mode })
         return
       }
-      if (mode === "detached" && path !== "/api/retirement/detached/check" && path !== "/api/retirement/detached/state") {
+      if (mode === "detached" && !DETACHED_MODE_ALLOWED_PATHS.has(path)) {
         sendJson(res, 404, { error: `Detached mode has no connection of any kind -- ${req.method} ${path} isn't available on this server.` })
         return
       }
@@ -1410,6 +1417,27 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const irsLifeExpectancy = loadIrsLifeExpectancy(irsLifeExpectancyPath)
         const result = await buildStateFromConfig(dataSource, syntheticFireConfig, irsLimits, federalTaxBrackets, irsLifeExpectancy, "uncached")
         sendJson(res, 200, result)
+        return
+      }
+
+      // Issue #38 phase 3: parses a CSV/TSV accounts file the same strict schema/parser file
+      // mode's own import already uses (parseAccountRows -- issue #34's), but returns the parsed
+      // rows directly instead of writing anything to disk or remembering the file. Detached mode's
+      // account list is entirely client-held (see DETACHED_DRAFT in app.js) -- this is a one-shot
+      // "seed my account list from this file" convenience, not a real data source the way file
+      // mode's own POST /api/data-source is (no session, nothing re-read later). Not gated to a
+      // detached SERVER specifically (same as /detached/check|state above) -- reachable from a
+      // linked server too, since nothing about parsing a file depends on which mode is running.
+      if (req.method === "POST" && path === "/api/retirement/detached/parse-accounts") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const fileName = typeof body.fileName === "string" ? body.fileName.trim() : ""
+        const content = typeof body.content === "string" ? body.content : ""
+        if (!fileName || !content) {
+          throw new Error("fileName and content are both required.")
+        }
+        const delimiter = fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
+        const accounts = parseAccountRows(content, delimiter)
+        sendJson(res, 200, { accounts })
         return
       }
 
