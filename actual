@@ -440,23 +440,25 @@ function serviceStart() {
 # be running with a wedged server inside it -- so that is what decides "up"; the container is then
 # reported alongside as context, and only when docker is actually available.
 function serviceStatus() {
+  local dev=false
   local mode="linked"
   local port=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --dev) dev=true; shift ;;
       --mode) mode="${2:-linked}"; shift 2 ;;
       -p | --port) port="${2:-}"; shift 2 ;;
       -h | --help) serviceUsage 0 ;;
       *) shift ;;
     esac
   done
-  port="${port:-$(defaultPort "${mode}" false)}"
-  local containerName
-  containerName="$(containerNameForMode "${mode}")"
+  port="${port:-$(defaultPort "${mode}" "${dev}")}"
   # Only named in the hints below when it's not the default -- keeps the common (linked) case
-  # reading exactly as it did before --mode existed.
+  # reading exactly as it did before --mode/--dev existed.
   local modeFlag=""
   [[ "${mode}" == "detached" ]] && modeFlag=" --mode detached"
+  local devFlag=""
+  [[ "${dev}" == true ]] && devFlag=" --dev"
 
   if portListening "${port}"; then
     echo "● up      http://localhost:${port}/"
@@ -464,8 +466,10 @@ function serviceStatus() {
     echo "○ down    nothing is listening on port ${port}"
   fi
 
-  if command -v docker &> /dev/null && docker info &> /dev/null; then
-    local container
+  # --dev is a plain node process, never a container -- nothing to report here.
+  if [[ "${dev}" != true ]] && command -v docker &> /dev/null && docker info &> /dev/null; then
+    local containerName container
+    containerName="$(containerNameForMode "${mode}")"
     container="$(docker ps -a --filter "name=^${containerName}$" --format '{{.Status}}' 2> /dev/null || true)"
     if [[ -n "${container}" ]]; then
       echo "          container: ${container}"
@@ -475,9 +479,9 @@ function serviceStatus() {
   fi
 
   if portListening "${port}"; then
-    echo "          Stop with: ./actual service stop${modeFlag}"
+    echo "          Stop with: ./actual service stop${modeFlag}${devFlag}"
   else
-    echo "          Start with: ./actual service start${modeFlag}"
+    echo "          Start with: ./actual service start${modeFlag}${devFlag}"
   fi
 }
 
@@ -487,23 +491,27 @@ function serviceStatus() {
 # compose SERVICE for this mode (docker compose rm -sf, not `down`) -- `down` tears down the whole
 # project, including the network the other mode's own service shares and depends on still being up.
 function serviceStop() {
+  local dev=false
   local mode="linked"
   local port=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --dev) dev=true; shift ;;
       --mode) mode="${2:-linked}"; shift 2 ;;
       -p | --port) port="${2:-}"; shift 2 ;;
       -h | --help) serviceUsage 0 ;;
       *) shift ;;
     esac
   done
-  port="${port:-$(defaultPort "${mode}" false)}"
-  local containerName composeService
-  containerName="$(containerNameForMode "${mode}")"
-  composeService="$(composeServiceForMode "${mode}")"
+  port="${port:-$(defaultPort "${mode}" "${dev}")}"
 
   local stopped=false
-  if command -v docker &> /dev/null && docker info &> /dev/null; then
+  # --dev never touches docker at all (it's a plain node process, not a container) -- the container
+  # for this same mode may well be running at the same time on its own port, and must be left alone.
+  if [[ "${dev}" != true ]] && command -v docker &> /dev/null && docker info &> /dev/null; then
+    local containerName composeService
+    containerName="$(containerNameForMode "${mode}")"
+    composeService="$(composeServiceForMode "${mode}")"
     if [[ -n "$(docker ps -a --filter "name=^${containerName}$" --format '{{.ID}}' 2> /dev/null || true)" ]]; then
       docker compose rm -sf "${composeService}"
       stopped=true
