@@ -1081,13 +1081,13 @@ describe("POST /api/retirement/detached/check", () => {
   // everything it needs travels in the request body itself, every time. boot() defaults to "linked"
   // mode, and this route is reachable there too (see its own doc comment in app-server.ts) --
   // reaching it specifically as a DETACHED server is covered separately, in the MODE gate tests
-  // below.
+  // below. Body shape matches a real FireConfig now (a nested `dashboard`, not top-level
+  // birthDate/retirementAges/planToAge/annualExpenses fields) -- see detachedAccountsFromBody's own
+  // doc comment for why (shared with POST /api/retirement/detached/state, both validated through
+  // parseFireConfig identically to a real config.json).
   const validBody = {
     accounts: [{ id: "a1", name: "Brokerage", balance: 5000000, type: "brokerage" }],
-    birthDate: "1975-01-01",
-    retirementAges: [65],
-    planToAge: 90,
-    annualExpenses: 4000000, // $40,000
+    dashboard: { birthDate: "1975-01-01", retirementAges: [65], planToAge: 90, fileModeAnnualExpense: 4000000 }, // $40,000
   }
 
   it("runs a real check from a request body alone -- one account, no prior setup of any kind", async () => {
@@ -1111,7 +1111,7 @@ describe("POST /api/retirement/detached/check", () => {
     // doesn't belong to a request-scoped, stateless route.
     const res = await fetch(`${url}api/retirement/detached/check`, {
       method: "POST",
-      body: JSON.stringify({ ...validBody, birthDate: "1990-01-01", accounts: [] }),
+      body: JSON.stringify({ ...validBody, dashboard: { ...validBody.dashboard, birthDate: "1990-01-01" }, accounts: [] }),
     })
     const body = await readJson<CheckResult>(res)
     expect(body.currentAge).toBe(36)
@@ -1129,14 +1129,14 @@ describe("POST /api/retirement/detached/check", () => {
 
   it("rejects a missing birth date, the same error requirePlan already gives every other mode", async () => {
     const url = await boot()
-    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify({ ...validBody, birthDate: undefined }) })
+    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify({ ...validBody, dashboard: { ...validBody.dashboard, birthDate: undefined } }) })
     expect(res.status).toBe(400)
     expect((await readJson<{ error: string }>(res)).error).toContain("birth date")
   })
 
-  it("rejects a negative annualExpenses", async () => {
+  it("rejects a negative fileModeAnnualExpense, the same validation a real config.json's own field already gets", async () => {
     const url = await boot()
-    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify({ ...validBody, annualExpenses: -1 }) })
+    const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify({ ...validBody, dashboard: { ...validBody.dashboard, fileModeAnnualExpense: -1 } }) })
     expect(res.status).toBe(400)
   })
 
@@ -1151,6 +1151,90 @@ describe("POST /api/retirement/detached/check", () => {
     const res = await fetch(`${url}api/retirement/detached/check`, { method: "POST", body: JSON.stringify(validBody) })
     expect(res.status).toBe(200)
     expect((await readJson<CheckResult>(res)).annualSpend).toBe(4000000)
+  })
+})
+
+describe("POST /api/retirement/detached/state", () => {
+  // Same shape POST /api/retirement/detached/check takes (a real FireConfig-shaped body) -- this
+  // route's own job is returning the fuller StateResponse (classified accounts, account-type
+  // labels, ...) the real Plan/Expense Projection/Accounts cards need to render, not a check
+  // result. Exercised through buildStateFromConfig, the exact same core GET /api/retirement/state
+  // itself calls -- these tests are really confirming that reuse, not re-testing classifyAccounts.
+  const validBody = {
+    accounts: [{ id: "a1", name: "Brokerage", balance: 5000000, type: "brokerage" }],
+    dashboard: { birthDate: "1975-01-01", retirementAges: [65], planToAge: 90 },
+  }
+
+  it("returns a real StateResponse, with the account fully classified (defaults resolved, not just passed through)", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/state`, { method: "POST", body: JSON.stringify(validBody) })
+    expect(res.status).toBe(200)
+    const body = await readJson<StateResponse>(res)
+    expect(body.currentAge).toBe(51)
+    expect(body.accounts).toHaveLength(1)
+    // brokerage's own defaults (fire-accounts.ts) -- equity-80 allocation, taxable withdrawal --
+    // confirms real classification ran, not a bare echo of what was sent.
+    expect(body.accounts[0]).toMatchObject({ id: "a1", name: "Brokerage", balance: 5000000, type: "brokerage", isPortfolio: true, allocationPreset: "equity-80" })
+    // Real reference data (account-type labels), the same map GET /api/retirement/state returns.
+    expect(body.accountTypes.brokerage?.label).toBe("Taxable brokerage / investment account")
+  })
+
+  it("an account's own override fields (beyond just type) actually take effect -- confirms the fuller field set threads through, not just type", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/state`, {
+      method: "POST",
+      body: JSON.stringify({ ...validBody, accounts: [{ id: "a1", name: "Brokerage", balance: 5000000, type: "brokerage", allocationPreset: "cash", customReturnMean: 0.05 }] }),
+    })
+    const body = await readJson<StateResponse>(res)
+    expect(body.accounts[0]).toMatchObject({ allocationPreset: "cash", customReturnMean: 0.05 })
+  })
+
+  it("writes nothing to config.json", async () => {
+    const url = await boot()
+    expect(existsSync(configPath)).toBe(false)
+    await fetch(`${url}api/retirement/detached/state`, { method: "POST", body: JSON.stringify(validBody) })
+    expect(existsSync(configPath)).toBe(false)
+  })
+
+  it("rejects an account with an unknown type -- the same validation a real config.json's own accounts already get, via parseFireConfig", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/state`, {
+      method: "POST",
+      body: JSON.stringify({ ...validBody, accounts: [{ id: "a1", name: "Brokerage", balance: 5000000, type: "bogus" }] }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it("works with zero accounts and no dashboard fields at all -- the same defaults a brand-new config.json would resolve to", async () => {
+    const url = await boot()
+    const res = await fetch(`${url}api/retirement/detached/state`, { method: "POST", body: JSON.stringify({ accounts: [] }) })
+    expect(res.status).toBe(200)
+    const body = await readJson<StateResponse>(res)
+    expect(body.currentAge).toBeNull()
+    expect(body.accounts).toEqual([])
+  })
+
+  it("works on an actual detached-mode server too", async () => {
+    const url = await boot({}, { mode: "detached" })
+    const res = await fetch(`${url}api/retirement/detached/state`, { method: "POST", body: JSON.stringify(validBody) })
+    expect(res.status).toBe(200)
+  })
+
+  it("never returns a stale balance from a different id reusing this server process's shared cache -- getBalances' own \"uncached\" mode", async () => {
+    // The same account id, two different balances -- linked/file mode's own balanceCache (keyed by
+    // id, never invalidated within a process) would silently keep the FIRST balance for this id
+    // forever if detached mode's own route shared it. A real bug this route deliberately avoids
+    // (see getBalances' own doc comment) since detached ids are per-request/ephemeral, never
+    // "the same real account" the way a cache is meant to speed up.
+    const url = await boot()
+    const first = await fetch(`${url}api/retirement/detached/state`, { method: "POST", body: JSON.stringify(validBody) })
+    expect((await readJson<StateResponse>(first)).accounts[0]?.balance).toBe(5000000)
+
+    const second = await fetch(`${url}api/retirement/detached/state`, {
+      method: "POST",
+      body: JSON.stringify({ ...validBody, accounts: [{ ...validBody.accounts[0], balance: 9999900 }] }),
+    })
+    expect((await readJson<StateResponse>(second)).accounts[0]?.balance).toBe(9999900)
   })
 })
 

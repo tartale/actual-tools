@@ -167,12 +167,6 @@ body.privacy input[data-field="hsaCoverage"] { filter: blur(4px); accent-color: 
    added via margin/border rather than content so it disappears cleanly if this ever wraps off. */
 .wordmark .subline { font-size: 11px; font-weight: 400; color: var(--ink-faint); padding-left: 10px; border-left: 1px solid var(--sidebar-hover); }
 nav.sections { display: flex; flex-direction: row; gap: 2px; }
-/* Hidden entirely on a detached server (issue #38) -- neither Budget nor Retirement exists there
-   at all, so there's nothing for this nav to switch between. This app has no global
-   [hidden]{display:none} rule (see .acct-fields[hidden]'s own doc comment, the established
-   convention here), so display:flex above needs this explicit override or the hidden attribute
-   checkSession sets would silently do nothing. */
-nav.sections[hidden] { display: none; }
 .section-item { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--ink); cursor: pointer; }
 .section-item:hover:not(.active) { background: var(--sidebar-hover); }
 .section-item.active { background: var(--accent-selected-bg); color: var(--accent-selected); }
@@ -588,9 +582,15 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .acct-id { display: flex; gap: 8px; align-items: flex-start; }
 .drag-handle { color: var(--ink-faint); font-size: 15px; line-height: 1.4; cursor: grab; user-select: none; flex: none; }
 .reorderable .drag-handle:active { cursor: grabbing; }
+.acct-id-text { flex: 1 1 auto; }
 .acct-id .name { font-weight: 500; font-size: 13px; color: var(--ink-strong); }
 .acct-id .balance { color: var(--ink-soft); font-size: 12px; margin-top: 2px; }
 .acct-id .cat-note { font-size: 11px; color: var(--ink-faint); margin-top: 6px; }
+/* Detached mode only (issue #38) -- its accounts are entirely client-invented, so unlike a real
+   Actual/file account (closed externally, never here) there's a real "undo the add" action to
+   offer. Sits in .acct-id itself, not .acct-id-text, so it lines up beside the name/balance rather
+   than getting swallowed into that column's own text flow. */
+.acct-remove-btn { flex: none; }
 
 .acct-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 .acct-fields .field.full { grid-column: 1 / -1; }
@@ -1055,24 +1055,13 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    since this one follows a whole OTHER control (the radios), not its own label. */
 .spend-source-buffer { margin-top: 10px; }
 #fileModeSpendSourceField .radio-row { margin-bottom: 12px; }
-/* Add-account inline form (Accounts section, file mode; also detached mode's own account-add row,
-   issue #38 -- same shape plus a type <select>) -- name + a money-affix balance field + the Add
-   button, one row. */
+/* Add-account inline form (Accounts section -- file and detached mode both use it, see
+   #addAccountField's own doc comment in index.html) -- name + a money-affix balance field + the
+   Add button, one row. */
 .add-account-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .add-account-row input[type="text"] { flex: 1 1 160px; min-width: 0; }
 .add-account-row .input-affix { flex: 0 1 140px; }
-.add-account-row select { flex: 1 1 180px; min-width: 0; }
 .add-account-row .btn { flex: none; }
-/* Detached mode's own added-account list (issue #38) -- deliberately lighter than the real
-   Accounts section's own foldable .account-row (no allocation/access-age editor, no drag reorder;
-   every field just takes its type's own default, same as a freshly-classified account with no
-   override anywhere else in the app -- a richer per-account editor is a later phase's own job). */
-.detached-account-row { display: flex; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line-soft); font-size: 12.5px; }
-.detached-account-row:first-child { border-top: none; }
-.detached-account-row .name { flex: 1 1 auto; font-weight: 500; }
-.detached-account-row .money { color: var(--ink); }
-.detached-account-row .type { color: var(--ink-faint); flex: 0 0 auto; }
-.detached-account-row .btn { flex: none; }
 /* Issue #28's suggestions modal -- a plain stack of option cards, each a checkbox (Rule of 55) or
    radio group (SEPP method choice, mutually exclusive per-account) plus its own pros/cons list. */
 .modal-suggestions { max-width: 560px; }

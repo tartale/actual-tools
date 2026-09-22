@@ -72,8 +72,9 @@
                submit button's own label follows suit so it never reads "Log in" while the file
                fields are the ones actually visible. This modal only exists at all in "linked" mode
                (see AppServerOptions.mode) -- a "detached" server (issue #38's standalone FIRE
-               calculator) skips it entirely and lands straight on #page-detached, since there's no
-               connection of any kind to choose between; see checkSession's own mode check. -->
+               calculator) skips it entirely and lands straight on #page-retirement (the same page
+               linked/file mode use), since there's no connection of any kind to choose between; see
+               checkSession's own mode check. -->
           <div class="field data-source-mode" id="dataSourceModeField">
             <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeActual" value="actual" checked> Sync with Actual</label>
             <label class="radio-label"><input type="radio" name="dataSourceMode" id="dataSourceModeFile" value="file"> Import files</label>
@@ -263,17 +264,24 @@
                  time (see fileModeSpendSource in fire-accounts.ts). First in the card: it decides
                  which of everything else below even applies (see #expenseHistoryFields' own doc
                  comment). Transactions file itself is imported from the header chip's own modal
-                 now, not here -- this radio just picks which source is USED. -->
+                 now, not here -- this radio just picks which source is USED. Detached mode never
+                 shows this radio group at all (it can never have a transactions file to switch to),
+                 but shares the manual figure field below with file mode -- see that field's own doc
+                 comment for why it's a sibling, not nested inside this one. -->
             <div class="field full" id="fileModeSpendSourceField" hidden>
               <label>Expense source<button type="button" class="help-icon" data-help="File mode has no live Actual connection to compute spend history from. Pick a fixed annual figure, or use an imported transactions file for a real computed one (import it from the Transactions chip in the header).">?</button></label>
               <div class="radio-row">
                 <label class="radio-label"><input type="radio" name="fileModeSpendSource" id="fileModeSpendSourceManual" value="manual"> Initialize manually</label>
                 <label class="radio-label"><input type="radio" name="fileModeSpendSource" id="fileModeSpendSourceTransactions" value="transactions"> Transactions file<button type="button" class="help-icon" data-help="A CSV or TSV file with columns Date, Category_Group, Category, and Amount (other columns are ignored) -- one row per transaction.">?</button></label>
               </div>
-              <div class="field spend-source-buffer" id="fileModeAnnualExpenseField">
-                <label for="fileModeAnnualExpense">Initial Annual Expenses<button type="button" class="help-icon" data-help="A fixed starting figure, used as-is instead of computed from a transactions file. Planned expense changes below still apply on top of it.">?</button></label>
-                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="fileModeAnnualExpense" placeholder="50,000.00"></div>
-              </div>
+            </div>
+            <!-- File mode (source = manual) and detached mode both share this same figure -- kept
+                 as its own sibling field, not nested inside #fileModeSpendSourceField above, so
+                 detached mode (which never shows that radio group) can still reveal just this one
+                 input (see renderSimSettings in app.js). -->
+            <div class="field spend-source-buffer" id="fileModeAnnualExpenseField">
+              <label for="fileModeAnnualExpense">Initial Annual Expenses<button type="button" class="help-icon" data-help="A fixed starting figure, used as-is instead of computed from a transactions file. Planned expense changes below still apply on top of it.">?</button></label>
+              <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="fileModeAnnualExpense" placeholder="50,000.00"></div>
             </div>
             <!-- Overall spend scale/Spend history/Expense categories all only mean something when
                  there's real spend HISTORY to apply them to -- Actual mode always has that; file
@@ -511,19 +519,23 @@
           <div class="category-picker-toolbar">
             <button type="button" class="btn secondary" id="accountsExpandAll">Expand all</button>
             <button type="button" class="btn secondary" id="accountsCollapseAll">Collapse all</button>
-            <!-- File mode only -- exports the current accounts back to the same name,balance
-                 shape the login screen imports, so a plan can be edited externally and reimported
-                 later (see file-account-data-source.ts's own doc comment on the round trip). -->
+            <!-- File and detached mode only -- exports the current accounts back to the same
+                 name,balance shape the login screen imports, so a plan can be edited externally and
+                 reimported later (see file-account-data-source.ts's own doc comment on the round
+                 trip); detached mode has nowhere to reimport a file, but the export itself is still
+                 a useful way to save an ad-hoc plan's numbers. -->
             <button type="button" class="btn secondary" id="exportAccountsBtn" hidden>Export accounts</button>
           </div>
           <div class="accounts" id="accountsList"><div class="empty-note">Loading accounts…</div></div>
-          <!-- File mode only -- adds a new account directly, without re-uploading the whole file
-               (see POST /api/data-source/accounts in app-server.ts). Fully persisted afterward --
-               indistinguishable from an imported row: configurable below, included in a later
-               export. Sits right after #accountsList (not inside it -- that gets its own innerHTML
-               fully replaced on every render, which would wipe whatever's mid-typing here) but
-               styled as .account-row's own continuation (border-top, matching padding) so it reads
-               as one more row in the same list, not a separate panel. -->
+          <!-- File mode adds a new account directly, without re-uploading the whole file (see POST
+               /api/data-source/accounts in app-server.ts); detached mode adds one straight into its
+               own client-held draft instead (see the click handler in app.js) -- same field/button
+               pair either way. Fully persisted afterward -- indistinguishable from an imported row:
+               configurable below, included in a later export. Sits right after #accountsList (not
+               inside it -- that gets its own innerHTML fully replaced on every render, which would
+               wipe whatever's mid-typing here) but styled as .account-row's own continuation
+               (border-top, matching padding) so it reads as one more row in the same list, not a
+               separate panel. -->
           <div class="field full account-row-style" id="addAccountField" hidden>
             <label>Add account<button type="button" class="help-icon" data-help="Adds a new account directly, without re-uploading the whole file. Persisted the same as an imported one -- configurable above, included in a later export.">?</button></label>
             <div class="add-account-row">
@@ -579,73 +591,6 @@
       </div>
       </div>
 
-      </div>
-      </div>
-
-      <!-- Detached mode (issue #38) -- a standalone FIRE calculator, no connection of any kind:
-           one card to build a made-up plan/account list, one to show the same Bridge/Monte Carlo
-           result every other mode already produces. A whole server run this way (AB_MODE=detached,
-           see AppServerOptions.mode) -- this page IS the app in that case, reached directly with no
-           login screen at all (see checkSession's own mode check in app.js). Deliberately NOT the
-           full Plan/Expense Projection/Accounts card set Actual/file mode get -- those assume a
-           server-persisted STATE object (GET /api/retirement/state, patchPlan/patchAccount) this
-           mode has none of by design (see runDetachedCheck's own doc comment in app.js). A richer
-           account-row editor (allocation, access age, ...) is a later phase's own job, not this
-           one's -- every account here just takes the type's own defaults, the same as a
-           freshly-classified account with no override anywhere else in the app. -->
-      <div class="page" id="page-detached">
-      <div class="retirement-split">
-      <div class="retirement-inputs">
-        <div class="card">
-          <div class="card-head">
-            <span class="card-head-title"><h2>Manual entry</h2></span>
-          </div>
-          <div class="card-body">
-            <div class="plan-grid">
-              <div class="field">
-                <label for="detachedBirthDate">Birth date</label>
-                <input type="date" id="detachedBirthDate">
-              </div>
-              <div class="field">
-                <label for="detachedRetireAges">Retirement ages</label>
-                <input type="text" id="detachedRetireAges" placeholder="e.g. 55, 65">
-                <div class="derived">Space- or comma-separated</div>
-              </div>
-              <div class="field">
-                <label for="detachedPlanToAge">Plan to age</label>
-                <input type="number" id="detachedPlanToAge" placeholder="95">
-              </div>
-              <div class="field">
-                <label for="detachedAnnualExpenses">Annual expenses</label>
-                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="detachedAnnualExpenses" placeholder="50,000.00"></div>
-              </div>
-            </div>
-            <div class="field full spend-config-buffer">
-              <label>Accounts</label>
-              <div class="accounts" id="detachedAccountsList"><div class="empty-note">No accounts yet -- add one below.</div></div>
-              <div class="add-account-row">
-                <input type="text" id="detachedNewAccountName" placeholder="Account name">
-                <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="detachedNewAccountBalance" placeholder="0.00"></div>
-                <select id="detachedNewAccountType"><option value="">Loading types…</option></select>
-                <button type="button" class="btn secondary" id="detachedAddAccountBtn">Add account</button>
-              </div>
-              <div class="derived warn-text" id="detachedAccountError" hidden></div>
-            </div>
-            <button type="button" class="btn" id="detachedRunCheckBtn">Run check</button>
-            <div class="derived warn-text" id="detachedCheckError" hidden></div>
-          </div>
-        </div>
-      </div>
-      <div class="retirement-live-sticky">
-        <div class="card">
-          <div class="card-head">
-            <span class="card-head-title"><h2>Analysis</h2></span>
-          </div>
-          <div class="card-body">
-            <div id="detachedCheckResult"><div class="empty-note">Add at least one account, fill in the fields above, and click Run check.</div></div>
-          </div>
-        </div>
-      </div>
       </div>
       </div>
 
