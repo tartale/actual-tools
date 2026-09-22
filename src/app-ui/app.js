@@ -4634,8 +4634,22 @@ document.getElementById("loginCancelBtn").addEventListener("click", cancelLoginM
 // not a bug to work around.
 const DETACHED_DRAFT_KEY = "runway.detachedMode.draft.v1"
 
+// A complete, working example plan -- not just non-blocking placeholders. Detached mode's whole
+// point (issue #38) is a zero-setup calculator reachable with no login/import step at all, so
+// landing on a blank Plan card (birth date has no server-side fallback the way, say,
+// fileModeAnnualExpense does -- see requirePlan in app-server.ts) undercuts that: it shows an
+// error before showing what the tool even does. Every value here is a generic, round example
+// (a 40-year-old planning to retire at 65, $50k/yr -- the same DEFAULT_FILE_MODE_ANNUAL_EXPENSE
+// figure file mode's own fresh-import case already uses, see fire-accounts.ts) meant to be
+// immediately edited or removed, not a serious estimate -- same spirit as that file-mode default.
+// This is also what "Clear my data" resets back to (see clearDetachedDraft), not a truly blank
+// state, so the reasonable-defaults baseline holds after a reset too, not just on the very first
+// visit.
 function defaultDetachedDraft() {
-  return { dashboard: {}, accounts: [] }
+  return {
+    dashboard: { birthDate: "1986-01-01", retirementAges: [65], fileModeAnnualExpense: 50000_00 },
+    accounts: [{ id: "detached-example-1", name: "Example brokerage", balance: 100000_00, type: "brokerage" }],
+  }
 }
 
 let DETACHED_DRAFT = defaultDetachedDraft()

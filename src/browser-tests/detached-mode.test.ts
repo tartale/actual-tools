@@ -103,25 +103,30 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     const { page: ui, errors } = await openDetachedPage()
     await fillPlanFields(ui)
 
-    await ui.locator("#newAccountName").fill("Brokerage")
+    // Named to not collide (Playwright's hasText is case-insensitive) with the seeded example
+    // account -- "Example brokerage" -- which is present here too, see defaultDetachedDraft.
+    await ui.locator("#newAccountName").fill("New Account")
     await ui.locator("#newAccountBalance").fill("500000")
     await ui.locator("#addAccountBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false)
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("New Account") ?? false)
 
     // A fresh account defaults to type "other" (same as a fresh file/linked-mode account -- see
     // applyAccountPatch's own not-found branch), so the portfolio-only fields (allocation, expected
     // return) start hidden -- picking a real portfolio type here is what a person configuring a
     // brand new detached-mode account would actually do next, and is what proves patchAccount's
     // detached-mode branch actually persists an edit (not just that adding an account works).
-    const row = ui.locator("#accountsList .account-row", { hasText: "Brokerage" })
+    const row = ui.locator("#accountsList .account-row", { hasText: "New Account" })
     await row.locator("select[data-field='type']").selectOption("brokerage")
-    await ui.waitForFunction(() => (document.querySelector("#accountsList") as HTMLElement)?.innerText?.includes("Allocation"))
+    // Scoped to THIS row, not the whole #accountsList -- the seeded example account is already a
+    // portfolio type and already shows its own Allocation field, so a list-wide text check would
+    // pass immediately regardless of whether this edit took effect at all.
+    await row.locator("select[data-field='allocationPreset']").waitFor({ state: "visible" })
 
-    // A findings-group already exists from the boot-time check (type "other" -- not part of the
-    // investable portfolio, so nothing was reachable yet); poll for the SPECIFIC number the type
-    // edit above should produce as the wait condition itself, not just "a findings-group exists"
-    // (true of the stale pre-edit result too) or "Monte Carlo" (also true of an intermediate render
-    // that can land between the edit and scheduleRecheck's own 500ms-debounced settle).
+    // A findings-group already exists from the boot-time check (the seeded example account alone);
+    // poll for the SPECIFIC number the new account's type edit above should produce as the wait
+    // condition itself, not just "a findings-group exists" (true of the pre-edit result too) or
+    // "Monte Carlo" (also true of an intermediate render that can land between the edit and
+    // scheduleRecheck's own 500ms-debounced settle).
     await expect.poll(async () => (await ui.locator("#checkResult").textContent()) ?? "", { timeout: 20000 }).toContain("reachable at retirement (100%)")
     const resultText = await ui.locator("#checkResult").textContent()
     expect(resultText).toContain("Bridge")
@@ -129,10 +134,28 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
-  it("shows an inline error (not a blank/broken result) when required plan fields are missing", async () => {
+  it("boots directly into a complete, working example -- no setup needed, real Bridge/Monte Carlo content immediately", async () => {
     const { page: ui, errors } = await openDetachedPage()
-    // The initial boot-time check fires automatically (activateSection's own "land on Retirement"
-    // behavior, unchanged from linked/file mode) against a completely empty draft.
+    // No field-filling, no account-adding -- this is the page exactly as a first-time visitor
+    // with an empty browser sees it. Detached mode has no server-side fallback for a missing birth
+    // date the way file mode's own annual-expense figure has (see requirePlan), so without a seeded
+    // example this would show an error, not a working tool -- see defaultDetachedDraft's own doc
+    // comment for why that matters specifically for this mode.
+    await expect.poll(async () => (await ui.locator("#checkResult").textContent()) ?? "", { timeout: 20000 }).toContain("Monte Carlo")
+    expect(await ui.locator("#birthDate").inputValue()).toBe("1986-01-01")
+    expect(await ui.locator("#retireAges").inputValue()).toBe("65")
+    expect(await ui.locator("#fileModeAnnualExpense").inputValue()).toContain("50,000.00")
+    expect(await ui.locator("#accountCountHint").textContent()).toBe("1 open accounts")
+    expect(await ui.locator("#accountsList").textContent()).toContain("Example brokerage")
+    expect(await ui.locator("#checkResult").textContent()).toContain("Bridge")
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("still shows a clear inline error (not a blank/broken result) if birth date is cleared", async () => {
+    const { page: ui, errors } = await openDetachedPage()
+    await ui.waitForSelector("#checkResult .findings-group", { timeout: 20000 }) // the example's own boot-time result
+    await ui.locator("#birthDate").fill("")
+    await ui.locator("#birthDate").press("Tab")
     await ui.waitForSelector("#checkResult .empty-note", { timeout: 20000 })
     expect(await ui.locator("#checkResult").textContent()).toContain("birth date")
     expect(errors).toEqual([])
@@ -158,53 +181,61 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
-  it("removing an account drops it from the list and from what a reload restores", async () => {
+  it("removing an account drops it from the list and from what a reload restores, leaving the seeded example alone", async () => {
     const { page: ui, errors } = await openDetachedPage()
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
 
-    await ui.locator("#newAccountName").fill("Brokerage")
+    // Named to not collide (Playwright's hasText is case-insensitive) with the seeded example
+    // account -- "Example brokerage" -- already present here, see defaultDetachedDraft.
+    await ui.locator("#newAccountName").fill("New Account")
     await ui.locator("#newAccountBalance").fill("500000")
     await ui.locator("#addAccountBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false)
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "2 open accounts")
 
-    await ui.locator("#accountsList [data-remove-account]").click()
-    // "no longer contains Brokerage" alone is a weak wait condition here -- it's also trivially
+    await ui.locator("#accountsList .account-row", { hasText: "New Account" }).locator("[data-remove-account]").click()
+    // "no longer contains New Account" alone is a weak wait condition here -- it's also trivially
     // true the instant loadState() sets its own "Loading accounts…" placeholder, well before the
     // real post-removal state has actually loaded and rendered. #accountCountHint is written only
     // by renderSummary() (inside the real render(), never the placeholder), so waiting for its
     // exact expected text is the positive, unambiguous signal that the removal really landed.
-    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "0 open accounts")
-    expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("New Account")
+    expect(await ui.locator("#accountsList").textContent()).toContain("Example brokerage")
 
     await ui.reload()
     await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
-    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "0 open accounts")
-    expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("New Account")
     expect(errors).toEqual([])
   }, 60000)
 
-  it("\"Clear my data\" (the logout icon) resets in place, with no reload and nothing left for a later visit to restore", async () => {
+  it("\"Clear my data\" (the logout icon) resets to the same seeded example, with no reload, and nothing custom left for a later visit to restore", async () => {
     const { page: ui, errors } = await openDetachedPage()
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
     await fillPlanFields(ui)
-    await ui.locator("#newAccountName").fill("Brokerage")
+    await ui.locator("#newAccountName").fill("New Account")
     await ui.locator("#newAccountBalance").fill("500000")
     await ui.locator("#addAccountBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Brokerage") ?? false)
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "2 open accounts")
 
     await ui.locator("#logoutBtn").click()
-    // Same reasoning as the removal test above -- wait for the real cleared render (signaled by
-    // #accountCountHint, written only inside the real render()), not merely "Brokerage is gone,"
-    // which is also true of the loadState() placeholder shown well before the clear actually lands.
-    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "0 open accounts")
+    // Resets to the SAME seeded example defaultDetachedDraft() provides everywhere else -- not a
+    // blank state (see its own doc comment) -- so #accountCountHint back to exactly 1 is the
+    // positive, unambiguous signal the real cleared-and-reseeded render actually landed, not
+    // merely "New Account is gone," which is also true of the loadState() placeholder shown well
+    // before the clear actually lands.
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
     // Still on the same page -- no navigation, no whole-page reload (there's nowhere else to go).
     expect(await ui.locator("#page-retirement").isVisible()).toBe(true)
-    expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
-    expect(await ui.locator("#birthDate").inputValue()).toBe("")
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("New Account")
+    expect(await ui.locator("#accountsList").textContent()).toContain("Example brokerage")
+    expect(await ui.locator("#birthDate").inputValue()).toBe("1986-01-01")
 
     await ui.reload()
     await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
-    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "0 open accounts")
-    expect(await ui.locator("#accountsList").textContent()).not.toContain("Brokerage")
-    expect(await ui.locator("#birthDate").inputValue()).toBe("")
+    await ui.waitForFunction(() => document.querySelector("#accountCountHint")?.textContent === "1 open accounts")
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("New Account")
+    expect(await ui.locator("#birthDate").inputValue()).toBe("1986-01-01")
     expect(errors).toEqual([])
   }, 60000)
 })
