@@ -457,8 +457,6 @@ async function openLoginModalPage(): Promise<{ page: Page; errors: string[] }> {
 
 describe.skipIf(!browser)("File-import data source in a browser", () => {
   it("imports a file from the login modal, lands on Retirement with its accounts, and disables Budget", async () => {
-    const filePath = join(dir, "accounts.csv")
-    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
     const { page: ui, errors } = await openLoginModalPage()
 
     // Starts on the Actual fields -- picking the file radio swaps the visible field group and the
@@ -470,7 +468,10 @@ describe.skipIf(!browser)("File-import data source in a browser", () => {
     expect(await ui.locator("#fileFields").isVisible()).toBe(true)
     expect(await ui.locator("#loginSubmitBtn").textContent()).toBe("Import file")
 
-    await ui.locator("#importFilePath").fill(filePath)
+    // A real upload -- the file's bytes travel through the browser, not a server-side path (see
+    // data-source-session.ts's own 2026-09-21 doc comment on why this replaced the path-based
+    // design). setInputFiles hands Playwright an in-memory file, no disk fixture needed.
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nManual Brokerage,50000.00\n") })
     await ui.locator("#loginSubmitBtn").click()
     await ui.waitForSelector("#loginBackdrop", { state: "hidden" })
 
@@ -491,25 +492,22 @@ describe.skipIf(!browser)("File-import data source in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
-  it("warns inline, without interrupting the page, once the remembered file goes missing", async () => {
-    const filePath = join(dir, "accounts.csv")
-    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
+  it("Refresh reopens the file picker in file mode, and picking a new file re-imports instead of silently re-reading anything", async () => {
     const { page: ui, errors } = await openLoginModalPage()
     await ui.locator("#dataSourceModeFile").check()
-    await ui.locator("#importFilePath").fill(filePath)
+    await ui.locator("#importFilePicker").setInputFiles({ name: "accounts.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nManual Brokerage,50000.00\n") })
     await ui.locator("#loginSubmitBtn").click()
     await ui.waitForSelector("#accountsList")
-    await ui.waitForSelector("#dataSourceChip:not([hidden])")
-    expect(await ui.locator("#dataSourceChip").evaluate((el) => el.classList.contains("warn"))).toBe(false)
+    expect(await ui.locator("#accountsList").textContent()).toContain("Manual Brokerage")
 
-    rmSync(filePath)
+    // Refresh doesn't just re-hit the check endpoint (there's nothing on disk left to silently
+    // re-read) -- it clicks the hidden #refreshFilePicker, which pops the native file dialog (a
+    // no-op click in headless Playwright, but exercises that code path); setInputFiles on that
+    // same hidden input then simulates the user having picked a DIFFERENT file through it.
     await ui.locator("#refreshBtn").click()
-    await ui.waitForFunction(() => document.querySelector("#dataSourceChip")?.classList.contains("warn") === true)
-
-    // The page itself is still up and usable -- no crash, no blocking modal -- just the chip
-    // flipping to its warn styling and copy.
-    expect(await ui.locator("#dataSourceChip").textContent()).toContain("unavailable")
-    expect(await ui.locator("#accountsList").isVisible()).toBe(true)
+    await ui.locator("#refreshFilePicker").setInputFiles({ name: "accounts2.csv", mimeType: "text/csv", buffer: Buffer.from("name,balance\nUpdated Brokerage,75000.00\n") })
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("Updated Brokerage") ?? false)
+    expect(await ui.locator("#accountsList").textContent()).not.toContain("Manual Brokerage")
     expect(errors).toEqual([])
   }, 60000)
 })

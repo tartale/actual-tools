@@ -8,8 +8,10 @@ import type { FileDataSourceSession } from "./data-source-session.ts"
 const TEST_PATH = "/tmp/data-source-session.test.json"
 
 const SESSION: FileDataSourceSession = {
-  filePath: "/home/user/accounts.csv",
+  fileName: "accounts.csv",
+  content: "name,balance\nBrokerage,50000.00\n",
   lastLoadedAt: "2026-09-21T00:00:00.000Z",
+  transactions: null,
 }
 
 afterEach(() => {
@@ -30,23 +32,39 @@ describe("loadFileDataSourceSession", () => {
     expect(loadFileDataSourceSession(TEST_PATH)).toEqual(SESSION)
   })
 
-  it("loads a well-formed file with a null lastLoadedAt (the brief pre-first-load state)", () => {
-    writeFileSync(TEST_PATH, JSON.stringify({ filePath: "/home/user/accounts.csv", lastLoadedAt: null }))
-    expect(loadFileDataSourceSession(TEST_PATH)).toEqual({ filePath: "/home/user/accounts.csv", lastLoadedAt: null })
-  })
-
   it("returns null (never throws) for malformed JSON", () => {
     writeFileSync(TEST_PATH, "{ not json")
     expect(loadFileDataSourceSession(TEST_PATH)).toBeNull()
   })
 
-  it("returns null when filePath is missing", () => {
-    writeFileSync(TEST_PATH, JSON.stringify({ lastLoadedAt: "2026-09-21T00:00:00.000Z" }))
+  it("returns null when fileName is missing", () => {
+    writeFileSync(TEST_PATH, JSON.stringify({ content: SESSION.content, lastLoadedAt: SESSION.lastLoadedAt }))
     expect(loadFileDataSourceSession(TEST_PATH)).toBeNull()
   })
 
-  it("returns null when lastLoadedAt is neither a string nor null", () => {
-    writeFileSync(TEST_PATH, JSON.stringify({ filePath: "/home/user/accounts.csv", lastLoadedAt: 12345 }))
+  it("returns null when content is missing", () => {
+    writeFileSync(TEST_PATH, JSON.stringify({ fileName: SESSION.fileName, lastLoadedAt: SESSION.lastLoadedAt }))
+    expect(loadFileDataSourceSession(TEST_PATH)).toBeNull()
+  })
+
+  it("returns null when lastLoadedAt isn't a string", () => {
+    writeFileSync(TEST_PATH, JSON.stringify({ fileName: SESSION.fileName, content: SESSION.content, lastLoadedAt: null }))
+    expect(loadFileDataSourceSession(TEST_PATH)).toBeNull()
+  })
+
+  it("loads a real transactions sub-object", () => {
+    const withTransactions: FileDataSourceSession = { ...SESSION, transactions: { fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-1500.00\n" } }
+    writeFileSync(TEST_PATH, JSON.stringify(withTransactions))
+    expect(loadFileDataSourceSession(TEST_PATH)).toEqual(withTransactions)
+  })
+
+  it("treats an absent transactions field as null -- a session written before this field existed", () => {
+    writeFileSync(TEST_PATH, JSON.stringify({ fileName: SESSION.fileName, content: SESSION.content, lastLoadedAt: SESSION.lastLoadedAt }))
+    expect(loadFileDataSourceSession(TEST_PATH)).toEqual(SESSION)
+  })
+
+  it("returns null when transactions is present but malformed", () => {
+    writeFileSync(TEST_PATH, JSON.stringify({ fileName: SESSION.fileName, content: SESSION.content, lastLoadedAt: SESSION.lastLoadedAt, transactions: { fileName: "t.csv" } }))
     expect(loadFileDataSourceSession(TEST_PATH)).toBeNull()
   })
 })

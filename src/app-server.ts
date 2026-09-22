@@ -6,17 +6,18 @@ import { networkInterfaces } from "node:os"
 import { extname, join } from "node:path"
 
 import { ACTIONS, ageFromBirthDate, fetchAllOpenAccounts, fetchCategoryGroups, formatError, isAction, parseDollarAmount, validateMonthFormat } from "./actual-helpers.ts"
-import type { Action, ActualConfig } from "./actual-helpers.ts"
+import type { Action, ActualConfig, CategoryGroup } from "./actual-helpers.ts"
 import { actualAccountDataSource } from "./account-data-source.ts"
 import type { AccountDataSource } from "./account-data-source.ts"
 import { clearActualSession, loadActualSession, writeActualSession } from "./actual-session.ts"
-import { fileAccountDataSource } from "./file-account-data-source.ts"
+import { categoryGroupsFromTransactions, fileAccountDataSource, parseTransactionRows } from "./file-account-data-source.ts"
 import { clearFileDataSourceSession, loadFileDataSourceSession, writeFileDataSourceSession } from "./data-source-session.ts"
 import type { FileDataSourceSession } from "./data-source-session.ts"
 import { fetchBudgetTable, findAnomalies, setBudgetValues, tagAnomalyFindings } from "./budget-tools.ts"
 import {
   ACCOUNT_TYPES,
   ACCOUNT_TYPE_TRAITS,
+  DEFAULT_FILE_MODE_ANNUAL_EXPENSE,
   MONTE_CARLO_ALLOCATION_PRESETS,
   MONTE_CARLO_ALLOCATION_PRESET_LABELS,
   MONTE_CARLO_RETURN_MODELS,
@@ -58,7 +59,7 @@ import { SEPP_METHODS, seppAmount } from "./fire-sepp.ts"
 import type { SeppMethod } from "./fire-sepp.ts"
 import { calculateMortgagePayoff, projectAccountBalance, toBridgeAccounts } from "./fire-analysis.ts"
 import type { MortgagePayoff } from "./fire-analysis.ts"
-import { checkDashboard } from "./fire-generate.ts"
+import { annualSpendFromTransactions, checkDashboard } from "./fire-generate.ts"
 import { generateSuggestions } from "./fire-suggestions.ts"
 import {
   ALLOCATION_PRESET_RETURNS,
@@ -723,26 +724,39 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
   // Function to get whichever AccountDataSource is actually active right now -- file mode (when
   // set) takes priority over Actual, matching the login screen's own mutually-exclusive radio
   // choice (see issue #35). Every Retirement route that used to construct
-  // currentAccountDataSource() directly now goes through this instead, so
-  // switching modes doesn't require touching each one individually. The returned fetchAccounts is
-  // wrapped to persist lastLoadedAt on the file-mode session after every REAL successful load
-  // (Refresh, a normal page load, not just the initial connect) -- "the last successful load's own
-  // timestamp" per issue #35's acceptance criteria is a running fact, not a one-time one.
+  // currentAccountDataSource() directly now goes through this instead, so switching modes doesn't
+  // require touching each one individually. Unlike Actual mode, this never touches disk or the
+  // network -- the session already holds the file's own content (see data-source-session.ts's own
+  // doc comment on the 2026-09-21 redesign), so there's nothing left to re-fetch/re-persist here.
   function currentAccountDataSource(): AccountDataSource {
     if (fileDataSourceSession === null) {
       return actualAccountDataSource(requireActualConfig())
     }
-    const session = fileDataSourceSession
-    const source = fileAccountDataSource(session.filePath)
-    return {
-      ...source,
-      async fetchAccounts() {
-        const accounts = await source.fetchAccounts()
-        fileDataSourceSession = { filePath: session.filePath, lastLoadedAt: new Date().toISOString() }
-        writeFileDataSourceSession(dataSourceSessionPath, fileDataSourceSession)
-        return accounts
-      },
+    return fileAccountDataSource(fileDataSourceSession.fileName, fileDataSourceSession.content)
+  }
+
+  // Function to compute file mode's own spend figure -- see CheckOptions.fileModeSpend and
+  // checkDashboard's own doc comment for the full precedence: a transactions file's real trailing
+  // spend (see fire-generate.ts's annualSpendFromTransactions) when one's been imported AND it
+  // comes back nonzero, else the flat manual fileModeAnnualExpense (defaulting to
+  // DEFAULT_FILE_MODE_ANNUAL_EXPENSE so a freshly-imported plan always has a real number to project
+  // from). Callers only invoke this once they already know fileDataSourceSession is non-null.
+  function fileModeSpend(
+    session: FileDataSourceSession,
+    expenseAdjustmentFactor: number,
+    spendHistoryMonths: number,
+    fileModeAnnualExpense: number | null,
+    crossoverExpenseCategoryIds: readonly string[] | null,
+  ): { annualSpend: number; basis: string | null } {
+    if (session.transactions != null) {
+      const delimiter = session.transactions.fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
+      const rows = parseTransactionRows(session.transactions.content, delimiter)
+      const fromTransactions = annualSpendFromTransactions(rows, spendHistoryMonths, expenseAdjustmentFactor, crossoverExpenseCategoryIds)
+      if (fromTransactions.annualSpend > 0) {
+        return fromTransactions
+      }
     }
+    return { annualSpend: fileModeAnnualExpense ?? DEFAULT_FILE_MODE_ANNUAL_EXPENSE, basis: null }
   }
 
   // A fresh id per process start -- the page polls this (see app.js's hot-reload polling) and
@@ -804,49 +818,85 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         return
       }
 
-      // The file-import counterpart to /api/session above -- issue #35. GET is a live health
-      // probe, not just an echo of the persisted path: it actually attempts fetchAccounts() every
-      // time (a file read + parse, cheap) so the client can show a warn chip the moment the file
-      // goes missing or stops parsing, without waiting for a real Retirement check to fail first.
-      // A failed probe here does NOT clear the session or throw to the client -- "doesn't
-      // interrupt the flow" per the issue's own acceptance criteria; it just reports available:
-      // false alongside the reason, and the LAST known-good lastLoadedAt stays exactly where it
-      // was (this probe only advances it on success, via the same currentAccountDataSource wrapper
-      // every other route already goes through).
+      // The file-import counterpart to /api/session above -- issue #35, redesigned 2026-09-21 (see
+      // data-source-session.ts's own doc comment). GET just reports the persisted session -- no
+      // live probe any more, since there's no external file left that could go missing/change
+      // underneath the app between requests. Also reports the OPTIONAL transactions import (issue
+      // #34/#35's follow-up) alongside it, rather than a separate GET route, since the client
+      // always wants both at once (see refreshDataSourceChip in app.js).
       if (req.method === "GET" && path === "/api/data-source") {
-        if (fileDataSourceSession === null) {
-          sendJson(res, 200, { mode: "actual" })
-          return
-        }
-        try {
-          await currentAccountDataSource().fetchAccounts()
-          sendJson(res, 200, { mode: "file", filePath: fileDataSourceSession.filePath, lastLoadedAt: fileDataSourceSession.lastLoadedAt, available: true, error: null })
-        } catch (error) {
-          sendJson(res, 200, { mode: "file", filePath: fileDataSourceSession.filePath, lastLoadedAt: fileDataSourceSession.lastLoadedAt, available: false, error: formatError(error) })
-        }
+        sendJson(
+          res,
+          200,
+          fileDataSourceSession === null
+            ? { mode: "actual" }
+            : {
+                mode: "file",
+                fileName: fileDataSourceSession.fileName,
+                lastLoadedAt: fileDataSourceSession.lastLoadedAt,
+                transactionsFileName: fileDataSourceSession.transactions?.fileName ?? null,
+              },
+        )
         return
       }
       if (req.method === "POST" && path === "/api/data-source") {
         const body = (await readJsonBody(req)) as Record<string, unknown>
-        const filePath = typeof body.filePath === "string" ? body.filePath.trim() : ""
-        if (!filePath) {
-          throw new Error("filePath is required.")
+        const fileName = typeof body.fileName === "string" ? body.fileName.trim() : ""
+        const content = typeof body.content === "string" ? body.content : ""
+        if (!fileName || !content) {
+          throw new Error("fileName and content are both required.")
         }
-        // Proves the file actually parses (same "prove it works before persisting anything"
+        // Proves the content actually parses (same "prove it works before persisting anything"
         // pattern POST /api/session already uses for Actual credentials) before switching modes --
-        // a typo'd path or a malformed file fails here, with a real error message, not on the
-        // first page load after "connecting".
-        await fileAccountDataSource(filePath).fetchAccounts()
-        const session: FileDataSourceSession = { filePath, lastLoadedAt: new Date().toISOString() }
+        // a malformed file fails here, with a real error message, not on the first page load after
+        // "connecting".
+        await fileAccountDataSource(fileName, content).fetchAccounts()
+        // A fresh accounts file starts with no transactions file -- even if one was already
+        // imported, it may well describe a completely different plan/set of accounts now, so
+        // carrying it over silently risks a spend figure that doesn't match. Re-upload it after,
+        // same as the very first time.
+        const session: FileDataSourceSession = { fileName, content, lastLoadedAt: new Date().toISOString(), transactions: null }
         writeFileDataSourceSession(dataSourceSessionPath, session)
         fileDataSourceSession = session
-        sendJson(res, 200, { mode: "file", filePath, lastLoadedAt: session.lastLoadedAt, available: true, error: null })
+        sendJson(res, 200, { mode: "file", fileName, lastLoadedAt: session.lastLoadedAt, transactionsFileName: null })
         return
       }
       if (req.method === "DELETE" && path === "/api/data-source") {
         clearFileDataSourceSession(dataSourceSessionPath)
         fileDataSourceSession = null
         sendJson(res, 200, { mode: "actual" })
+        return
+      }
+
+      // The OPTIONAL transactions import (issue #34/#35's follow-up, 2026-09-21) -- lets a
+      // file-mode plan compute real spend (see fire-generate.ts's annualSpendFromTransactions)
+      // instead of the flat manual fileModeAnnualExpense. A SEPARATE upload from the accounts file
+      // above, not bundled into it (see FileDataSourceSession's own doc comment) -- requires an
+      // accounts file to already be imported (file mode active) first.
+      if (req.method === "POST" && path === "/api/data-source/transactions") {
+        if (fileDataSourceSession === null) {
+          throw new Error("Import an accounts file first -- there's no file-mode session to attach a transactions file to.")
+        }
+        const body = (await readJsonBody(req)) as Record<string, unknown>
+        const fileName = typeof body.fileName === "string" ? body.fileName.trim() : ""
+        const content = typeof body.content === "string" ? body.content : ""
+        if (!fileName || !content) {
+          throw new Error("fileName and content are both required.")
+        }
+        // Same "prove it parses before persisting" pattern as the accounts file above.
+        const delimiter = fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
+        parseTransactionRows(content, delimiter)
+        fileDataSourceSession = { ...fileDataSourceSession, transactions: { fileName, content } }
+        writeFileDataSourceSession(dataSourceSessionPath, fileDataSourceSession)
+        sendJson(res, 200, { mode: "file", fileName: fileDataSourceSession.fileName, lastLoadedAt: fileDataSourceSession.lastLoadedAt, transactionsFileName: fileName })
+        return
+      }
+      if (req.method === "DELETE" && path === "/api/data-source/transactions") {
+        if (fileDataSourceSession !== null) {
+          fileDataSourceSession = { ...fileDataSourceSession, transactions: null }
+          writeFileDataSourceSession(dataSourceSessionPath, fileDataSourceSession)
+        }
+        sendJson(res, 200, { mode: "file", transactionsFileName: null })
         return
       }
 
@@ -1027,6 +1077,13 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
           }
           dashboard.crossoverSpendHistoryMonths = value
         }
+        if ("fileModeAnnualExpense" in body) {
+          const value = body.fileModeAnnualExpense
+          if (value !== null && (typeof value !== "number" || value < 0)) {
+            throw new Error("fileModeAnnualExpense must be a non-negative number or null.")
+          }
+          dashboard.fileModeAnnualExpense = value
+        }
         if ("monteCarloWithdrawalRule" in body) {
           const rule = body.monteCarloWithdrawalRule
           if (rule !== null) {
@@ -1109,11 +1166,12 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const federalTaxBrackets = loadFederalTaxBrackets(federalTaxBracketsPath)
         const federalPovertyGuidelines = loadFederalPovertyGuidelines(federalPovertyGuidelinesPath)
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
-        const result = await checkDashboard(requireActualConfig(), dataSource, accounts, {
+        const result = await checkDashboard(fileDataSourceSession === null ? requireActualConfig() : null, dataSource, accounts, {
           ...plan,
           fallbackInflationMean: 0.03,
           federalTaxBrackets,
           federalPovertyGuidelines,
+          fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds),
         })
         sendJson(res, 200, result)
         return
@@ -1135,18 +1193,40 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         const irsLifeExpectancy = loadIrsLifeExpectancy(irsLifeExpectancyPath)
         const accounts: ClassifiedAccount[] = classifyAccounts(rawAccounts, fireConfig, fireConfig.dashboard.birthDate, irsLimits)
         const result = await generateSuggestions(
-          requireActualConfig(),
+          fileDataSourceSession === null ? requireActualConfig() : null,
           dataSource,
           accounts,
-          { ...plan, fallbackInflationMean: 0.03, federalTaxBrackets, federalPovertyGuidelines },
+          {
+            ...plan,
+            fallbackInflationMean: 0.03,
+            federalTaxBrackets,
+            federalPovertyGuidelines,
+            fileModeSpend: fileDataSourceSession === null ? null : fileModeSpend(fileDataSourceSession, plan.expenseAdjustmentFactor, plan.spendHistoryMonths, fireConfig.dashboard.fileModeAnnualExpense, plan.crossoverExpenseCategoryIds),
+          },
           irsLifeExpectancy,
         )
         sendJson(res, 200, result ?? { targetRetirementAge: null, suggestions: [] })
         return
       }
 
+      // File mode (with a transactions file imported) derives category groups locally instead of
+      // fetching them from Actual -- issue #34/#35's follow-up (2026-09-21). Only the Expense
+      // Categories picker calls this route in file mode (the Budget tab it otherwise also serves is
+      // disabled entirely there -- see applyDataSourceMode in app.js), so branching here is safe.
       if (req.method === "GET" && path === "/api/budget/context") {
-        const groups = await fetchCategoryGroups(requireActualConfig())
+        let groups: CategoryGroup[]
+        if (fileDataSourceSession !== null) {
+          if (fileDataSourceSession.transactions == null) {
+            groups = []
+          } else {
+            const { config: fireConfig } = loadFireConfig(configPath)
+            const delimiter = fileDataSourceSession.transactions.fileName.toLowerCase().endsWith(".tsv") ? "\t" : ","
+            const rows = parseTransactionRows(fileDataSourceSession.transactions.content, delimiter)
+            groups = categoryGroupsFromTransactions(rows, spendHistoryMonthsWithOverride(fireConfig.dashboard))
+          }
+        } else {
+          groups = await fetchCategoryGroups(requireActualConfig())
+        }
         // Income categories/groups are never a valid set-values/anomalies target (see
         // findIncomeFilterMatches in actual-helpers.ts) -- excluded here so the picker can't even
         // offer one, rather than letting the request round-trip into a thrown error.

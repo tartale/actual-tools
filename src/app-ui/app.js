@@ -316,6 +316,10 @@ function renderSimSettings() {
   setIfIdle("mcSimulationCount", d.monteCarloSimulationCount ?? "")
   setIfIdle("crossoverExpenseAdjustment", d.crossoverExpenseAdjustmentFactor == null ? "" : Math.round(d.crossoverExpenseAdjustmentFactor * 100))
   setIfIdle("crossoverSpendHistoryMonths", d.crossoverSpendHistoryMonths ?? "")
+  // File mode only -- see the field's own hidden attribute in index.html.
+  document.getElementById("fileModeAnnualExpenseField").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
+  document.getElementById("transactionsImportField").hidden = ACTIVE_DATA_SOURCE_MODE !== "file"
+  setIfIdle("fileModeAnnualExpense", formatMoneyInputValue(d.fileModeAnnualExpense))
 }
 
 // Withdrawal rule (see MonteCarloWithdrawalRuleMeta in fire-accounts.ts): pinned as one whole
@@ -580,9 +584,16 @@ function saveAccountFolds() {
 function renderExpenseCategoryPicker() {
   const container = document.getElementById("expenseCategoryPicker")
   if (!EXPENSE_CATEGORY_GROUPS || !STATE) return
-  const selected = STATE.dashboard.crossoverExpenseCategoryIds
   const allIds = EXPENSE_CATEGORY_GROUPS.flatMap((group) => group.categories.filter((category) => !category.hidden).map((category) => category.id))
-  const checkedIds = new Set(selected === null ? allIds : selected)
+  // crossoverExpenseCategoryIds is the SAME plan field Actual mode and file mode both use, but the
+  // ids it holds are mode-specific (Actual's own real category UUIDs vs. this file's own derived
+  // ids -- see annualSpendFromTransactions's own doc comment on the 2026-09-21 fix for the matching
+  // server-side issue). A selection left over from the other mode would otherwise show every box
+  // unchecked here even though the actual spend calculation already falls back to "everything" for
+  // the exact same reason -- filtering to ids this picker's own groups actually contain keeps the
+  // checkboxes honest about what's really being used.
+  const selected = STATE.dashboard.crossoverExpenseCategoryIds?.filter((id) => allIds.includes(id)) ?? null
+  const checkedIds = new Set(selected === null || selected.length === 0 ? allIds : selected)
   // Two independent filters over the same group/category data: "selectable" (respects Show
   // hidden, decides what the group's own N/total count is out of) and "displayed" (selectable,
   // further narrowed by Hide unchecked -- a pure view filter that never changes the count).
@@ -674,6 +685,19 @@ function hiddenCategoryMark() {
 }
 
 async function loadExpenseCategoryOptions() {
+  // Expense categories normally come from Actual's own budget data -- a file-imported accounts-only
+  // plan never has that (just name,balance rows, see file-account-data-source.ts), but an OPTIONAL
+  // transactions file (issue #34/#35's follow-up, 2026-09-21) gives /api/budget/context real
+  // categories to derive locally instead (see categoryGroupsFromTransactions), so this now only
+  // skips the fetch when there's genuinely nothing to derive them from yet.
+  if (ACTIVE_DATA_SOURCE_MODE === "file") {
+    const status = await api("/api/data-source").catch(() => null)
+    if (!status || status.transactionsFileName == null) {
+      document.getElementById("expenseCategoryPicker").innerHTML = `<div class="empty-note">Import a transactions file above to pick expense categories.</div>`
+      EXPENSE_CATEGORY_GROUPS = null
+      return
+    }
+  }
   try {
     const { categoryGroups } = await api("/api/budget/context")
     EXPENSE_CATEGORY_GROUPS = categoryGroups.filter((group) => !group.hidden || group.categories.some((category) => category.hidden))
@@ -684,20 +708,48 @@ async function loadExpenseCategoryOptions() {
 }
 
 // The one Refresh button (top of page, beside Expand/Collapse all) pulls fresh data for the whole
-// page at once, from a single /api/retirement/check call.
+// page at once, from a single /api/retirement/check call. In file mode there's nothing on disk
+// left to silently re-read (see data-source-session.ts's own 2026-09-21 doc comment) -- Refresh
+// instead reopens the native file picker (#refreshFilePicker, hidden), and its own "change"
+// listener below does the actual re-import + recheck once a file is chosen.
 async function refreshAll() {
+  if (ACTIVE_DATA_SOURCE_MODE === "file") {
+    document.getElementById("refreshFilePicker").click()
+    return
+  }
   const btn = document.getElementById("refreshBtn")
   btn.disabled = true
   try {
     await runCheck()
   } finally {
     btn.disabled = false
-    // "Refresh reloads the same remembered file when in file mode" (issue #35) already falls out
-    // of runCheck() re-hitting /api/retirement/check, which goes through currentAccountDataSource
-    // -- this just picks up the resulting lastLoadedAt/availability for the topbar chip.
-    refreshDataSourceChip()
   }
 }
+
+document.getElementById("refreshFilePicker").addEventListener("change", async (e) => {
+  const file = e.target.files[0]
+  e.target.value = "" // reset so picking the same file again still fires "change" next time
+  if (!file) return
+  const btn = document.getElementById("refreshBtn")
+  btn.disabled = true
+  try {
+    const content = await file.text()
+    await api("/api/data-source", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
+    // A new file can add/remove/rename accounts, not just change balances -- loadState() (not
+    // just runCheck()) is what actually re-renders #accountsList from the new STATE.accounts.
+    await loadState()
+    await runCheck()
+    refreshDataSourceChip()
+    // A fresh accounts import clears any transactions file server-side (see the POST
+    // /api/data-source route's own doc comment) -- reflect that here too.
+    refreshTransactionsStatus()
+    loadExpenseCategoryOptions()
+  } catch (error) {
+    showError(error.message)
+  } finally {
+    btn.disabled = false
+  }
+})
 
 function parseRetirementAges(text) {
   const tokens = text.split(/[,\s]+/).filter((t) => t !== "")
@@ -2824,9 +2876,87 @@ document.getElementById("crossoverExpenseAdjustment").addEventListener("change",
   const pct = e.target.value === "" ? null : parseFloat(e.target.value)
   runExclusive(() => patchPlan({ crossoverExpenseAdjustmentFactor: pct === null ? null : pct / 100 }, "savedSpendConfig"))
 })
-document.getElementById("crossoverSpendHistoryMonths").addEventListener("change", (e) => {
+document.getElementById("crossoverSpendHistoryMonths").addEventListener("change", async (e) => {
   const months = e.target.value === "" ? null : parseInt(e.target.value, 10)
-  runExclusive(() => patchPlan({ crossoverSpendHistoryMonths: months === null || months <= 0 ? null : months }, "savedSpendConfig"))
+  await runExclusive(() => patchPlan({ crossoverSpendHistoryMonths: months === null || months <= 0 ? null : months }, "savedSpendConfig"))
+  // File mode's own category picker is windowed by this same field (see
+  // categoryGroupsFromTransactions's own doc comment) -- refetch so a category with no activity in
+  // the new window drops out of the checkbox list immediately, not just on the next full reload.
+  await loadExpenseCategoryOptions()
+})
+const fileModeAnnualExpenseInput = document.getElementById("fileModeAnnualExpense")
+attachMoneyFormatting(fileModeAnnualExpenseInput)
+fileModeAnnualExpenseInput.addEventListener("moneycommit", (e) => {
+  runExclusive(() => patchPlan({ fileModeAnnualExpense: parseMoneyInputCents(e.target.value) }, "savedSpendConfig"))
+})
+
+// Function to render the transactions-import status line/buttons under "Transactions file" --
+// separate from refreshDataSourceChip's own topbar chip (this is plan-section detail, not a
+// page-wide status), but reads the same GET /api/data-source response, which reports both at once.
+async function refreshTransactionsStatus() {
+  if (ACTIVE_DATA_SOURCE_MODE !== "file") return
+  try {
+    const status = await api("/api/data-source")
+    const fileName = status.mode === "file" ? status.transactionsFileName : null
+    document.getElementById("transactionsImportStatus").textContent = fileName ? `Imported from ${fileName} -- overrides the manual annual expense above.` : "Not imported -- using the manual annual expense above."
+    document.getElementById("removeTransactionsBtn").hidden = !fileName
+  } catch {
+    // Leave whatever was last shown -- same "don't flash a misleading state on a failed request"
+    // reasoning as refreshDataSourceChip.
+  }
+}
+document.getElementById("transactionsFilePicker").addEventListener("change", async (e) => {
+  const file = e.target.files[0]
+  e.target.value = "" // reset so picking the same file again (e.g. after fixing it) still fires "change"
+  if (!file) return
+  const errorEl = document.getElementById("transactionsImportError")
+  const statusEl = document.getElementById("transactionsImportStatus")
+  errorEl.hidden = true
+  // Resetting the input above means its own native filename display disappears immediately, so
+  // this status line is the only place the person sees confirmation their file was even picked --
+  // shown right away, before the (network) import even resolves.
+  statusEl.textContent = `Importing ${file.name}…`
+  try {
+    const content = await file.text()
+    await api("/api/data-source/transactions", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
+    await refreshTransactionsStatus()
+    await loadExpenseCategoryOptions() // now has real categories to derive -- see its own doc comment
+    await runCheck()
+  } catch (error) {
+    // Inline, next to the picker -- see #transactionsImportError's own doc comment in index.html
+    // for why this doesn't rely on the page-wide #topError banner alone.
+    errorEl.textContent = `${file.name}: ${error.message}`
+    errorEl.hidden = false
+    await refreshTransactionsStatus()
+  }
+})
+document.getElementById("removeTransactionsBtn").addEventListener("click", async () => {
+  try {
+    document.getElementById("transactionsImportError").hidden = true
+    await api("/api/data-source/transactions", { method: "DELETE" })
+    await refreshTransactionsStatus()
+    await loadExpenseCategoryOptions() // no transactions file left -- back to "nothing to pick from"
+    await runCheck()
+  } catch (error) {
+    showError(error.message)
+  }
+})
+document.getElementById("downloadTransactionsTemplateBtn").addEventListener("click", () => {
+  // Matches Actual's own real export header row exactly (see file-account-data-source.ts's
+  // parseTransactionRows) -- only Date/Category_Group/Category/Amount are ever read, but the
+  // template includes every real column so it also doubles as a preview of what a genuine export
+  // looks like.
+  const csv =
+    "Account,Date,Payee,Notes,Category_Group,Category,Amount,Split_Amount,Cleared\n" +
+    "Checking,2026-01-15,Landlord,,Bills,Rent,-1500.00,,Cleared\n" +
+    "Checking,2026-01-20,Grocery Store,,Food,Groceries,-120.50,,Cleared\n"
+  const blob = new Blob([csv], { type: "text/csv" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = "transactions-template.csv"
+  a.click()
+  URL.revokeObjectURL(url)
 })
 document.getElementById("expenseCategoriesExpandAll").addEventListener("click", () => {
   if (!EXPENSE_CATEGORY_GROUPS) return
@@ -4288,11 +4418,11 @@ function applyDataSourceMode(mode) {
   logoutBtn.setAttribute("aria-label", label)
 }
 
-// Function to poll the file-import health probe and update the topbar's own warn chip -- issue
-// #35's "warn chip if the remembered file becomes unavailable" and "last successful load's
-// timestamp is preserved and shown" acceptance criteria. A no-op, chip left hidden, in Actual mode.
-// Deliberately never throws/interrupts the page -- see GET /api/data-source's own doc comment in
-// app-server.ts, this just mirrors whatever it reports.
+// Function to poll the current file-import session and update the topbar's own info chip -- shows
+// which file is active and when it was imported. A no-op, chip left hidden, in Actual mode. Since
+// the 2026-09-21 redesign (see data-source-session.ts's own doc comment), there's no external file
+// left that could go missing/change underneath the app between requests, so this is a plain status
+// display now, not a live health probe -- no warn state to report.
 async function refreshDataSourceChip() {
   const chip = document.getElementById("dataSourceChip")
   if (ACTIVE_DATA_SOURCE_MODE !== "file") {
@@ -4307,14 +4437,14 @@ async function refreshDataSourceChip() {
     }
     const loadedAt = status.lastLoadedAt ? new Date(status.lastLoadedAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "never"
     chip.hidden = false
-    chip.classList.toggle("warn", !status.available)
-    chip.classList.toggle("info", status.available)
-    chip.title = status.available ? `Importing from ${status.filePath}` : `File unavailable: ${status.error}`
-    chip.textContent = status.available ? `File · loaded ${loadedAt}` : `File unavailable · last loaded ${loadedAt}`
+    chip.classList.remove("warn")
+    chip.classList.add("info")
+    chip.title = `Imported from ${status.fileName}`
+    chip.textContent = `File · imported ${loadedAt}`
   } catch {
-    // The probe request itself failed (server unreachable, etc.) -- leave the chip as it was
-    // rather than flashing a misleading state; the next refresh (or the retry-banner path
-    // elsewhere on the page) will pick it back up.
+    // The request itself failed (server unreachable, etc.) -- leave the chip as it was rather than
+    // flashing a misleading state; the next refresh (or the retry-banner path elsewhere on the
+    // page) will pick it back up.
   }
 }
 
@@ -4334,6 +4464,7 @@ function startApp() {
   applySelectedAction()
   applySectionFolds()
   refreshDataSourceChip()
+  refreshTransactionsStatus()
   try {
     const savedSection = getCookie("activeSection")
     const knownSections = [...document.querySelectorAll(".section-item[data-section]")].map((i) => i.dataset.section)
@@ -4383,17 +4514,18 @@ function applyLoginFormMode(mode) {
 }
 document.getElementById("dataSourceModeActual").addEventListener("change", () => applyLoginFormMode("actual"))
 document.getElementById("dataSourceModeFile").addEventListener("change", () => applyLoginFormMode("file"))
-// Best-effort convenience only -- browsers never expose a picked file's real filesystem path to a
-// page (sandboxed by design), just its bare name, so this can prefill a starting point but can't
-// fill in the directory the server would actually need. The path field stays a plain text input
-// the person is expected to check/complete themselves; see the note in #fileFields' own copy.
-document.getElementById("importFilePicker").addEventListener("change", (e) => {
-  const file = e.target.files[0]
-  if (!file) return
-  const pathField = document.getElementById("importFilePath")
-  if (!pathField.value.trim()) {
-    pathField.value = file.name
-  }
+// Produces a starter CSV -- header row plus a couple of example rows -- so someone can see the
+// expected shape without having to read the help copy first. Client-side Blob download, no server
+// route needed for a fixed two-line template.
+document.getElementById("downloadTemplateBtn").addEventListener("click", () => {
+  const csv = "name,balance\nChecking,1000.00\nBrokerage,50000.00\n"
+  const blob = new Blob([csv], { type: "text/csv" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = "accounts-template.csv"
+  a.click()
+  URL.revokeObjectURL(url)
 })
 
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
@@ -4406,9 +4538,10 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   submitBtn.textContent = mode === "file" ? "Importing…" : "Logging in…"
   try {
     if (mode === "file") {
-      const filePath = document.getElementById("importFilePath").value.trim()
-      if (!filePath) throw new Error("Enter the file's path on the server.")
-      await api("/api/data-source", { method: "POST", body: JSON.stringify({ filePath }) })
+      const file = document.getElementById("importFilePicker").files[0]
+      if (!file) throw new Error("Choose a file to import.")
+      const content = await file.text()
+      await api("/api/data-source", { method: "POST", body: JSON.stringify({ fileName: file.name, content }) })
     } else {
       const baseUrl = document.getElementById("loginBaseUrl").value.trim()
       const budgetId = document.getElementById("loginBudgetId").value.trim()

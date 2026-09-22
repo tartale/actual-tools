@@ -1410,16 +1410,15 @@ describe("/api/data-source", () => {
   })
 
   it("imports a file: validates it parses, persists the session, and switches /api/retirement/state to its rows instead of Actual's", async () => {
-    const filePath = join(dir, "accounts.csv")
-    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
+    const content = "name,balance\nManual Brokerage,50000.00\n"
     const url = await boot({ accounts: [{ id: "a1", name: "Actual Checking", offbudget: true, closed: false }] }, { loggedIn: false })
 
-    const res = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath }) })
+    const res = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content }) })
     expect(res.status).toBe(200)
-    const body = await readJson<{ mode: string; filePath: string; lastLoadedAt: string; available: boolean; error: string | null }>(res)
-    expect(body).toMatchObject({ mode: "file", filePath, available: true, error: null })
+    const body = await readJson<{ mode: string; fileName: string; lastLoadedAt: string }>(res)
+    expect(body).toMatchObject({ mode: "file", fileName: "accounts.csv" })
     expect(typeof body.lastLoadedAt).toBe("string")
-    expect(loadFileDataSourceSession(dataSourceSessionPath)).toEqual({ filePath, lastLoadedAt: body.lastLoadedAt })
+    expect(loadFileDataSourceSession(dataSourceSessionPath)).toEqual({ fileName: "accounts.csv", content, lastLoadedAt: body.lastLoadedAt, transactions: null })
 
     const stateRes = await fetch(`${url}api/retirement/state`)
     expect(stateRes.status).toBe(200)
@@ -1428,53 +1427,26 @@ describe("/api/data-source", () => {
     expect(state.accounts[0]).toMatchObject({ id: "manual-brokerage", name: "Manual Brokerage" })
   })
 
-  it("rejects a file that fails to parse, and saves nothing", async () => {
-    const filePath = join(dir, "bad.csv")
-    writeFileSync(filePath, "not,the,right,header\n")
+  it("rejects content that fails to parse, and saves nothing", async () => {
     const url = await boot({}, { loggedIn: false })
 
-    const res = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath }) })
+    const res = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "bad.csv", content: "not,the,right,header\n" }) })
     expect(res.status).toBe(400)
     expect(loadFileDataSourceSession(dataSourceSessionPath)).toBeNull()
   })
 
-  it("rejects an empty filePath before ever touching the filesystem", async () => {
+  it("rejects an empty fileName or content", async () => {
     const url = await boot({}, { loggedIn: false })
-    const res = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath: "" }) })
-    expect(res.status).toBe(400)
+    const noName = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "", content: "name,balance\nA,1\n" }) })
+    expect(noName.status).toBe(400)
+    const noContent = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "" }) })
+    expect(noContent.status).toBe(400)
     expect(loadFileDataSourceSession(dataSourceSessionPath)).toBeNull()
-  })
-
-  it("GET re-probes the file live and warns (without clearing the session) once it goes missing", async () => {
-    const filePath = join(dir, "accounts.csv")
-    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
-    const url = await boot({}, { loggedIn: false })
-    const importRes = await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath }) })
-    const imported = await readJson<{ lastLoadedAt: string }>(importRes)
-
-    rmSync(filePath)
-    const res = await fetch(`${url}api/data-source`)
-    expect(res.status).toBe(200)
-    const body = await readJson<{ mode: string; available: boolean; error: string | null; lastLoadedAt: string }>(res)
-    expect(body.mode).toBe("file")
-    expect(body.available).toBe(false)
-    expect(body.error).toBeTruthy()
-    // The last KNOWN-GOOD timestamp stays put -- a failed probe never advances it.
-    expect(body.lastLoadedAt).toBe(imported.lastLoadedAt)
-    expect(loadFileDataSourceSession(dataSourceSessionPath)).toEqual({ filePath, lastLoadedAt: imported.lastLoadedAt })
-
-    // Doesn't interrupt the flow -- /api/retirement/state still resolves an error (currently
-    // logged out of Actual, and the file is now unavailable too), not a 500 from something
-    // unhandled blowing up the whole request.
-    const stateRes = await fetch(`${url}api/retirement/state`)
-    expect(stateRes.status).toBe(400)
   })
 
   it("clears the file session on DELETE, switching back to Actual-sync mode", async () => {
-    const filePath = join(dir, "accounts.csv")
-    writeFileSync(filePath, "name,balance\nManual Brokerage,50000.00\n")
     const url = await boot({ accounts: [] })
-    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ filePath }) })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nManual Brokerage,50000.00\n" }) })
 
     const res = await fetch(`${url}api/data-source`, { method: "DELETE" })
     expect(res.status).toBe(200)
@@ -1483,6 +1455,118 @@ describe("/api/data-source", () => {
 
     const stateRes = await fetch(`${url}api/retirement/state`)
     expect(stateRes.status).toBe(200)
+  })
+})
+
+// Regression: /api/retirement/check (and /api/retirement/suggestions) used to unconditionally
+// call requireActualConfig() even in file mode, throwing "Not logged in to Actual yet." for the
+// one thing file mode's whole point is to let someone try WITHOUT an Actual connection -- reported
+// live (2026-09-21) once file import itself worked. See checkDashboard's own doc comment.
+describe("/api/retirement/check and /api/retirement/suggestions in file mode (no Actual login at all)", () => {
+  it("runs successfully with no Actual login, defaulting to DEFAULT_FILE_MODE_ANNUAL_EXPENSE when nothing else is set", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,500000.00\n" }) })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90 }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.annualSpend).toBe(50000_00)
+    expect(body.spendBasis).toBeNull()
+  })
+
+  it("uses fileModeAnnualExpense once set, instead of the default", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,500000.00\n" }) })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90, fileModeAnnualExpense: 40000_00 }),
+    })
+
+    const body = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    expect(body.annualSpend).toBe(40000_00)
+  })
+
+  it("uses a transactions file's own real spend once imported, over both the default and fileModeAnnualExpense", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,500000.00\n" }) })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90, fileModeAnnualExpense: 40000_00, crossoverSpendHistoryMonths: 1 }),
+    })
+    const oneMonthAgo = new Date()
+    oneMonthAgo.setUTCMonth(oneMonthAgo.getUTCMonth() - 1)
+    const dateStr = oneMonthAgo.toISOString().slice(0, 10)
+    const transactionsRes = await fetch(`${url}api/data-source/transactions`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "transactions.csv", content: `Date,Category_Group,Category,Amount\n${dateStr},Bills,Rent,-2000.00\n` }),
+    })
+    expect(transactionsRes.status).toBe(200)
+    expect(await readJson<{ transactionsFileName: string }>(transactionsRes)).toMatchObject({ transactionsFileName: "transactions.csv" })
+
+    const body = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    // $2,000 spent over a 1-month trailing window -> $24,000/yr, not the $40,000 manual figure.
+    expect(body.annualSpend).toBe(24000_00)
+    expect(body.spendBasis).toContain("imported transaction file")
+  })
+
+  it("falls back to fileModeAnnualExpense when the transactions file has nothing in the trailing window", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,500000.00\n" }) })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90, fileModeAnnualExpense: 40000_00 }),
+    })
+    await fetch(`${url}api/data-source/transactions`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2010-01-01,Bills,Rent,-2000.00\n" }),
+    })
+
+    const body = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    expect(body.annualSpend).toBe(40000_00)
+  })
+
+  it("DELETE /api/data-source/transactions reverts to the manual figure without losing the accounts file", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,500000.00\n" }) })
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90, fileModeAnnualExpense: 40000_00, crossoverSpendHistoryMonths: 1 }),
+    })
+    const oneMonthAgo = new Date()
+    oneMonthAgo.setUTCMonth(oneMonthAgo.getUTCMonth() - 1)
+    await fetch(`${url}api/data-source/transactions`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "transactions.csv", content: `Date,Category_Group,Category,Amount\n${oneMonthAgo.toISOString().slice(0, 10)},Bills,Rent,-2000.00\n` }),
+    })
+    expect((await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))).annualSpend).toBe(24000_00)
+
+    const delRes = await fetch(`${url}api/data-source/transactions`, { method: "DELETE" })
+    expect(delRes.status).toBe(200)
+    expect(await readJson<{ transactionsFileName: string | null }>(delRes)).toEqual({ mode: "file", transactionsFileName: null })
+
+    const body = await readJson<CheckResult>(await fetch(`${url}api/retirement/check`))
+    expect(body.annualSpend).toBe(40000_00) // back to the manual figure
+    const dataSourceStatus = await readJson<{ mode: string; fileName: string }>(await fetch(`${url}api/data-source`))
+    expect(dataSourceStatus).toMatchObject({ mode: "file", fileName: "accounts.csv" }) // accounts file untouched
+  })
+
+  it("rejects a transactions upload before an accounts file has ever been imported", async () => {
+    const url = await boot({}, { loggedIn: false })
+    const res = await fetch(`${url}api/data-source/transactions`, {
+      method: "POST",
+      body: JSON.stringify({ fileName: "transactions.csv", content: "Date,Category_Group,Category,Amount\n2026-09-01,Bills,Rent,-2000.00\n" }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it("/api/retirement/suggestions also runs with no Actual login", async () => {
+    const url = await boot({}, { loggedIn: false })
+    await fetch(`${url}api/data-source`, { method: "POST", body: JSON.stringify({ fileName: "accounts.csv", content: "name,balance\nBrokerage,500000.00\n" }) })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [65], planToAge: 90 }) })
+
+    const res = await fetch(`${url}api/retirement/suggestions`)
+    expect(res.status).toBe(200)
   })
 })
 
