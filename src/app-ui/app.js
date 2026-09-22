@@ -40,6 +40,25 @@ async function runExclusive(fn) {
   }
 }
 
+// Function to debounce a row's own commit (a PATCH, then the render() that follows -- which
+// rebuilds that row's whole DOM via innerHTML) so quick edits across several fields in the same
+// row -- typing a name then tabbing into Start age, say -- settle into one commit instead of
+// tearing the row down and rebuilding it (stealing focus mid-tab) after every single field's own
+// blur. Same 500ms convention, and the same "a beat after the most recent edit, not one right
+// after each field" reasoning, as scheduleRecheck below -- but a fresh timer per call site (one
+// per row, from renderExpenseAdjustments/renderTaxBands), not a single shared one, since each row
+// commits independently of every other row's own pending edit.
+function debounce(fn, delay = 500) {
+  let timer = null
+  return (...args) => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      fn(...args)
+    }, delay)
+  }
+}
+
 function usd(cents) {
   const sign = cents < 0 ? "-" : ""
   return sign + "$" + (Math.abs(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -375,12 +394,12 @@ function renderTaxBands() {
     const bandId = row.dataset.bandId
     const fromInput = row.querySelector(".tb-from")
     attachMoneyFormatting(fromInput)
-    const commitRow = () => {
+    const commitRow = debounce(() => {
       const next = (STATE.dashboard.monteCarloTaxBands ?? []).map((band) =>
         band.id === bandId ? { id: bandId, from: parseMoneyInputCents(fromInput.value) ?? undefined, rate: rateInput.value === "" ? undefined : parseFloat(rateInput.value) / 100 } : band,
       )
       runExclusive(() => patchPlan({ monteCarloTaxBands: next }, "savedSimSettings"))
-    }
+    })
     const rateInput = row.querySelector(".tb-rate")
     fromInput.addEventListener("moneycommit", commitRow)
     rateInput.addEventListener("change", commitRow)
@@ -446,7 +465,7 @@ function renderExpenseAdjustments() {
     const adjustmentId = row.dataset.adjustmentId
     const amountInput = row.querySelector(".ea-amount")
     attachMoneyFormatting(amountInput)
-    const commitRow = () => {
+    const commitRow = debounce(() => {
       const signInput = row.querySelector(".ea-sign")
       const startAgeInput = row.querySelector(".ea-start-age")
       const endAgeInput = row.querySelector(".ea-end-age")
@@ -465,7 +484,7 @@ function renderExpenseAdjustments() {
           : adjustment,
       )
       runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
-    }
+    })
     row.querySelector(".ea-name").addEventListener("change", commitRow)
     row.querySelector(".ea-sign").addEventListener("change", commitRow)
     amountInput.addEventListener("moneycommit", commitRow)
