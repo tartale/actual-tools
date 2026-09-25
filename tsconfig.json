@@ -4,7 +4,6 @@
     "lib": ["es2023"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
