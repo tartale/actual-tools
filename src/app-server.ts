@@ -55,6 +55,8 @@ import type {
   MonteCarloWithdrawalRuleMeta,
   MonteCarloWithdrawalRuleType,
   MonteCarloWithdrawalStrategy,
+  OtherIncomeStreamConfig,
+  SocialSecurityStreamConfig,
 } from "./fire-accounts.ts"
 import { loadIrsLimits } from "./irs-limits.ts"
 import type { IrsLimits } from "./irs-limits.ts"
@@ -1128,32 +1130,48 @@ export async function startAppServer(options: AppServerOptions): Promise<Running
         if (("acaTargetPctFpl" in body || "acaFloorPctFpl" in body) && dashboard.acaFloorPctFpl != null && dashboard.acaTargetPctFpl != null && dashboard.acaFloorPctFpl >= dashboard.acaTargetPctFpl) {
           throw new Error(`acaFloorPctFpl (${dashboard.acaFloorPctFpl}) must be less than acaTargetPctFpl (${dashboard.acaTargetPctFpl}) when both are set.`)
         }
-        if ("pensionStartAge" in body) {
-          if (body.pensionStartAge !== null && (typeof body.pensionStartAge !== "number" || body.pensionStartAge <= 0)) {
-            throw new Error("pensionStartAge must be a positive number or null.")
+        if ("socialSecurityStreams" in body) {
+          const streams = body.socialSecurityStreams
+          if (!Array.isArray(streams)) {
+            throw new Error("socialSecurityStreams must be an array.")
           }
-          dashboard.pensionStartAge = body.pensionStartAge
-        }
-        if ("pensionMonthlyAmount" in body) {
-          if (body.pensionMonthlyAmount !== null && (typeof body.pensionMonthlyAmount !== "number" || body.pensionMonthlyAmount <= 0)) {
-            throw new Error("pensionMonthlyAmount must be a positive number or null.")
-          }
-          dashboard.pensionMonthlyAmount = body.pensionMonthlyAmount
-        }
-        if ("socialSecurityClaimingAge" in body) {
-          if (body.socialSecurityClaimingAge !== null && ![62, 67, 70].includes(body.socialSecurityClaimingAge as number)) {
-            throw new Error("socialSecurityClaimingAge must be 62, 67, 70, or null.")
-          }
-          dashboard.socialSecurityClaimingAge = body.socialSecurityClaimingAge as 62 | 67 | 70 | null
-        }
-        for (const field of ["socialSecurityMonthlyAt62", "socialSecurityMonthlyAt67", "socialSecurityMonthlyAt70"] as const) {
-          if (field in body) {
-            const value = body[field]
-            if (value !== null && (typeof value !== "number" || value <= 0)) {
-              throw new Error(`${field} must be a positive number or null.`)
+          for (const stream of streams as unknown[]) {
+            const s = stream as { id?: unknown; label?: unknown; claimingAge?: unknown; monthlyAt62?: unknown; monthlyAt67?: unknown; monthlyAt70?: unknown }
+            if (
+              typeof s !== "object" ||
+              s === null ||
+              typeof s.id !== "string" ||
+              (s.label !== null && typeof s.label !== "string") ||
+              (s.claimingAge !== null && ![62, 67, 70].includes(s.claimingAge as number)) ||
+              (s.monthlyAt62 !== null && typeof s.monthlyAt62 !== "number") ||
+              (s.monthlyAt67 !== null && typeof s.monthlyAt67 !== "number") ||
+              (s.monthlyAt70 !== null && typeof s.monthlyAt70 !== "number")
+            ) {
+              throw new Error("Each socialSecurityStreams entry must have a string id, label (string or null), claimingAge (62/67/70 or null), and monthlyAt62/67/70 (number or null).")
             }
-            dashboard[field] = value
           }
+          dashboard.socialSecurityStreams = streams as SocialSecurityStreamConfig[]
+        }
+        if ("otherIncomeStreams" in body) {
+          const streams = body.otherIncomeStreams
+          if (!Array.isArray(streams)) {
+            throw new Error("otherIncomeStreams must be an array.")
+          }
+          for (const stream of streams as unknown[]) {
+            const s = stream as { id?: unknown; label?: unknown; startAge?: unknown; monthlyAmount?: unknown; customWithdrawalTaxRate?: unknown }
+            if (
+              typeof s !== "object" ||
+              s === null ||
+              typeof s.id !== "string" ||
+              typeof s.label !== "string" ||
+              (s.startAge !== null && typeof s.startAge !== "number") ||
+              (s.monthlyAmount !== null && typeof s.monthlyAmount !== "number") ||
+              (s.customWithdrawalTaxRate !== null && (typeof s.customWithdrawalTaxRate !== "number" || s.customWithdrawalTaxRate < 0))
+            ) {
+              throw new Error("Each otherIncomeStreams entry must have a string id/label, startAge (number or null), monthlyAmount (number or null), and customWithdrawalTaxRate (non-negative number or null).")
+            }
+          }
+          dashboard.otherIncomeStreams = streams as OtherIncomeStreamConfig[]
         }
         if ("expenseAdjustments" in body) {
           const adjustments = body.expenseAdjustments

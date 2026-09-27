@@ -385,6 +385,62 @@ describe("loadFireConfig", () => {
     expect(config.dashboard).toEqual({ ...DEFAULT_DASHBOARD_CONFIG, birthDate: "1976-07-31", retirementAges: [55, 60], planToAge: 95 })
   })
 
+  it("issue #55: migrates a legacy pensionStartAge/pensionMonthlyAmount pair into otherIncomeStreams, pinning its withdrawal tax rate to 0 (not auto)", () => {
+    const legacyShape = {
+      version: 1 as const,
+      accounts: [],
+      dashboard: { birthDate: "1976-07-31", retirementAges: [60], planToAge: 95, pensionStartAge: 62, pensionMonthlyAmount: 3000_00 },
+    }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(legacyShape))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.otherIncomeStreams).toEqual([{ id: "pension", label: "Pension", startAge: 62, monthlyAmount: 3000_00, customWithdrawalTaxRate: 0 }])
+  })
+
+  it("issue #55: migrates a legacy socialSecurityClaimingAge/socialSecurityMonthlyAt* set into socialSecurityStreams", () => {
+    const legacyShape = {
+      version: 1 as const,
+      accounts: [],
+      dashboard: {
+        birthDate: "1976-07-31",
+        retirementAges: [60],
+        planToAge: 95,
+        socialSecurityClaimingAge: 67,
+        socialSecurityMonthlyAt62: 1800_00,
+        socialSecurityMonthlyAt67: 2400_00,
+        socialSecurityMonthlyAt70: 3000_00,
+      },
+    }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(legacyShape))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.socialSecurityStreams).toEqual([
+      { id: "social-security", label: null, claimingAge: 67, monthlyAt62: 1800_00, monthlyAt67: 2400_00, monthlyAt70: 3000_00 },
+    ])
+  })
+
+  it("doesn't re-migrate on top of an already-migrated (even intentionally empty) config", () => {
+    const alreadyMigrated = {
+      version: 1 as const,
+      accounts: [],
+      dashboard: {
+        birthDate: "1976-07-31",
+        retirementAges: [60],
+        planToAge: 95,
+        // Stale legacy fields left over on disk (e.g. a config saved once by an older build, then
+        // edited again after this migration shipped) must NOT resurrect a stream once the real
+        // arrays already exist, even as empty ones -- otherwise a deliberate removal (the user
+        // cleared their pension) would keep coming back on every reload.
+        pensionStartAge: 62,
+        pensionMonthlyAmount: 3000_00,
+        socialSecurityStreams: [],
+        otherIncomeStreams: [],
+      },
+    }
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(alreadyMigrated))
+    const { config } = loadFireConfig("/fake/path")
+    expect(config.dashboard.otherIncomeStreams).toEqual([])
+    expect(config.dashboard.socialSecurityStreams).toEqual([])
+  })
+
   it("prefers the new dashboard section over stale flat top-level fields when both are present", () => {
     const mixedShape = { version: 1 as const, accounts: [], birthDate: "1900-01-01", dashboard: { birthDate: "1976-07-31", retirementAges: [], planToAge: DEFAULT_PLAN_TO_AGE } }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mixedShape))

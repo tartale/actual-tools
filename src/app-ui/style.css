@@ -688,6 +688,16 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .ea-remove { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-faint); font-size: 14px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .ea-remove:hover { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
 #addTaxBandBtn { margin-top: 4px; }
+/* The Social Security / Other Income streams lists (issue #55) -- same row-of-fields-plus-remove
+   layout as .expense-adjustment-row above, one grid template per list since the two hold different
+   fields (Social Security's own three SSA-statement figures vs. Other Income's single amount plus
+   its withdrawal tax rate). */
+.ss-stream-row { display: grid; grid-template-columns: 0.9fr 1.15fr 1.15fr 1.15fr 0.85fr auto; gap: 12px; align-items: end; margin-bottom: 8px; }
+.oi-stream-row { display: grid; grid-template-columns: 1fr 0.85fr 1.25fr 1.4fr auto; gap: 12px; align-items: end; margin-bottom: 8px; }
+.ss-stream-row .field, .oi-stream-row .field { margin: 0; }
+.ss-remove, .oi-remove { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-faint); font-size: 14px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
+.ss-remove:hover, .oi-remove:hover { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
+#addSocialSecurityBtn, #addOtherIncomeBtn { margin-top: 4px; }
 .income-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 /* Expense Projection's own income-grid only ever holds two fields (Expense Adjustment, Spend
    history), not four -- stretched across four narrow 1fr columns, "Expense Adjustment" wraps to

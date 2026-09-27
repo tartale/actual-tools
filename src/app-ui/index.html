@@ -484,46 +484,19 @@
           </div>
           <div class="card-fold">
           <div class="card-body">
+            <!-- Empty by default (issue #55) -- unlike the old single fixed Pension/Social Security
+                 pair, arbitrarily many of each can be added, so there's nothing to show until the
+                 user actually adds one. Same dynamic-list pattern as #expenseAdjustmentsList/
+                 #taxBandsList (renderSocialSecurityStreams/renderOtherIncomeStreams in app.js). -->
             <div class="income-section">
-              <div class="income-label">Pension</div>
-              <div class="income-grid">
-                <div class="field">
-                  <label for="pensionStartAge">Starts at age</label>
-                  <input type="number" min="1" id="pensionStartAge">
-                </div>
-                <div class="field">
-                  <label for="pensionMonthlyAmount">Monthly amount</label>
-                  <div class="input-affix prefix-dollar">
-                    <input type="text" inputmode="decimal" id="pensionMonthlyAmount" placeholder="not entered">
-                  </div>
-                </div>
-              </div>
+              <div class="income-label">Social Security<button type="button" class="help-icon" data-help="One entry per person's own benefit -- add a second one (with its own label) for a spouse's. The label appears in the marker, e.g. \"Social Security (Yourself): ...\"; left blank, it defaults to \"Yourself\".">?</button></div>
+              <div id="socialSecurityStreamsList"></div>
+              <button type="button" class="btn secondary" id="addSocialSecurityBtn">Add Social Security</button>
             </div>
             <div class="income-section">
-              <div class="income-label">Social Security</div>
-              <div class="income-grid">
-                <div class="field">
-                  <label for="ss62">At 62</label>
-                  <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="ss62" placeholder="not entered"></div>
-                </div>
-                <div class="field">
-                  <label for="ss67">At 67 (full)</label>
-                  <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="ss67" placeholder="not entered"></div>
-                </div>
-                <div class="field">
-                  <label for="ss70">At 70</label>
-                  <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" id="ss70" placeholder="not entered"></div>
-                </div>
-                <div class="field">
-                  <label for="ssClaimAge">Plan to claim at</label>
-                  <select id="ssClaimAge">
-                    <option value="">Not set</option>
-                    <option value="62">62</option>
-                    <option value="67">67</option>
-                    <option value="70">70</option>
-                  </select>
-                </div>
-              </div>
+              <div class="income-label">Other income<button type="button" class="help-icon" data-help="Any other guaranteed income with its own start age -- a pension, an annuity, rental income. The label is required and used verbatim in the marker. Withdrawal tax rate estimates how much of the gross monthly amount is actually taken by tax before it reduces what the portfolio needs to fund; leave it on auto unless you know your own rate.">?</button></div>
+              <div id="otherIncomeStreamsList"></div>
+              <button type="button" class="btn secondary" id="addOtherIncomeBtn">Add Other Income</button>
             </div>
           </div>
           </div>

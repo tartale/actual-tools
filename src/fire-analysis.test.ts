@@ -269,6 +269,14 @@ describe("simulateBridge", () => {
     expect(withIncome.depletionAge).toBe(65)
   })
 
+  it("issue #55: nets a stream's own withdrawalTaxRate, not its raw gross annualAmount", () => {
+    // A $100 gross stream at a 50% withdrawal tax rate nets exactly $50 -- the same runway as the
+    // test above's own $50 gross, untaxed ($0 rate) stream, so the same depletion age (65) either way.
+    const rental: RetirementIncomeStream = { id: "rental", name: "Rental income", kind: "other", startAge: 55, annualAmount: 100, withdrawalTaxRate: 0.5 }
+    const result = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0, [rental])
+    expect(result.depletionAge).toBe(65)
+  })
+
   it("nets an inflating expense adjustment into spend before inflating, the same as annualSpend/income", () => {
     const result = simulateBridge(
       [bridgeAccount({ id: "a1", balance: 100000 })],

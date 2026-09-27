@@ -526,7 +526,11 @@ export function simulateBridge(
     // portfolio only needs to cover what income doesn't -- while `grossSpend` is the figure every
     // point recorded this iteration (the capturedSplit snapshot below included) carries as its own
     // projectedSpend (see BridgeYear's own doc comment for why that one stays gross).
-    const incomeAtAge = incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount, 0)
+    // Netted at annualAmount * (1 - withdrawalTaxRate), not the raw gross figure -- withdrawalTaxRate
+    // defaults to 0 (every stream except an "other" income one with a real rate, see
+    // RetirementIncomeStream's own doc comment), so this is unchanged for pension/Social
+    // Security/debt-payoff streams and only actually reduces the netted amount for the new case.
+    const incomeAtAge = incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount * (1 - (stream.withdrawalTaxRate ?? 0)), 0)
     // See expenseAdjustmentAt's own doc comment above for why this splits into an inflating (today's-
     // dollars, netted in here) and a fixed (nominal, added after inflating below) part.
     const { inflating: inflatingAdjustment, fixed: fixedAdjustment } = expenseAdjustmentAt != null ? expenseAdjustmentAt(age) : { inflating: 0, fixed: 0 }

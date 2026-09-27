@@ -495,6 +495,38 @@ export interface ExpenseAdjustment {
   inflate: boolean
 }
 
+// One person's own Social Security benefit (issue #55) -- previously a single fixed block, now a
+// list so a second stream (a spouse's own benefit, under its own label) can sit alongside the
+// first. label is optional: retirementIncomeStreams (fire-dashboard.ts) falls back to "Yourself"
+// for the marker/legend when it's null or blank, since most plans only ever have the one. The three
+// SSA-statement figures are still kept independently of which age is actually claimed, same as
+// before, so switching the plan doesn't lose the other two numbers.
+export interface SocialSecurityStreamConfig {
+  id: string
+  label: string | null
+  claimingAge: SocialSecurityClaimingAge | null
+  monthlyAt62: number | null
+  monthlyAt67: number | null
+  monthlyAt70: number | null
+}
+
+// A guaranteed income stream that isn't Social Security -- a pension, an annuity, rental income,
+// anything with its own start age and monthly amount (issue #55; previously a single fixed
+// "Pension" block, now a list). label is REQUIRED, unlike Social Security's optional one above --
+// there's no sensible generic fallback the way "Yourself" is for Social Security -- and used
+// verbatim in the marker. customWithdrawalTaxRate mirrors the per-account field of the same name
+// (AccountOverride, this file): null means "auto." Unlike an account's own auto rate (a nonzero
+// type-based estimate), this one resolves to 0 -- see retirementIncomeStreams in fire-dashboard.ts
+// for why a nonzero default would silently change the numbers of every plan migrated from the old
+// single pensionMonthlyAmount field, which never applied any tax haircut at all.
+export interface OtherIncomeStreamConfig {
+  id: string
+  label: string
+  startAge: number | null
+  monthlyAmount: number | null
+  customWithdrawalTaxRate: number | null
+}
+
 // The plan-wide inputs the app needs that aren't a per-account fact: your birth date, the
 // retirement age(s) to compare, how long the plan should last, and the two guaranteed-income
 // sources (pension, Social Security) that reduce how much the portfolio itself needs to fund once
@@ -541,16 +573,13 @@ export interface DashboardConfig {
   // for why a cross-field check belongs at the write boundary, not the parse/merge layer this file
   // is).
   acaFloorPctFpl: 100 | 138 | null
-  // Cents/mo, null until entered. A pension with no start age (or vice versa) isn't applied --
-  // see retirementIncomeStreams in fire-dashboard.ts.
-  pensionStartAge: number | null
-  pensionMonthlyAmount: number | null
-  // The three SSA-statement figures are kept independently of which age is actually claimed, so
-  // switching the plan (e.g. deciding to wait until 70) doesn't lose the other two numbers.
-  socialSecurityClaimingAge: SocialSecurityClaimingAge | null
-  socialSecurityMonthlyAt62: number | null
-  socialSecurityMonthlyAt67: number | null
-  socialSecurityMonthlyAt70: number | null
+  // Guaranteed income streams that reduce how much the portfolio itself needs to fund once each
+  // starts (issue #55) -- previously one fixed Pension and one fixed Social Security block; now
+  // arbitrarily many of each, added/removed through the UI's own "Add Social Security"/"Add Other
+  // Income" buttons. Both empty (the default) means an empty panel, not "not set yet" the way a
+  // single nullable field would -- there's nothing ambiguous about zero streams.
+  socialSecurityStreams: SocialSecurityStreamConfig[]
+  otherIncomeStreams: OtherIncomeStreamConfig[]
   // Known future changes to living expenses (a kid starting college, a car payment ending, a
   // planned downsize) -- see ExpenseAdjustment's own doc comment below for each entry's shape. An
   // empty array (the default) is a valid "none configured yet" state, unlike
@@ -646,12 +675,8 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   acaTargetPctFpl: null,
   medicareAge: null,
   acaFloorPctFpl: null,
-  pensionStartAge: null,
-  pensionMonthlyAmount: null,
-  socialSecurityClaimingAge: null,
-  socialSecurityMonthlyAt62: null,
-  socialSecurityMonthlyAt67: null,
-  socialSecurityMonthlyAt70: null,
+  socialSecurityStreams: [],
+  otherIncomeStreams: [],
   expenseAdjustments: [],
   monteCarloWithdrawalStrategy: null,
   monteCarloReturnModel: null,
@@ -1257,6 +1282,43 @@ export function parseFireConfig(parsed: unknown, path: string): FireConfig {
     planToAge: partial.planToAge,
   }
 
+  // Issue #55: a config saved before the single fixed Pension/Social Security fields became lists
+  // (socialSecurityStreams/otherIncomeStreams) still has them under their own old names -- migrated
+  // here, on load, the same way this file already forward-compats a legacy category-only account
+  // override (see classifyAccounts), rather than as a one-time script: this is a config SCHEMA
+  // reshape, not a bulk data conversion. Only runs when the new array fields are entirely absent, so
+  // a config already saved once in the new shape (even an intentionally empty one) never gets
+  // re-migrated on top of itself. customWithdrawalTaxRate is pinned to 0, not left as "auto" --
+  // pensionMonthlyAmount never applied any tax haircut, and auto (see OtherIncomeStreamConfig's own
+  // doc comment) is a nonzero estimate reserved for a stream added fresh from here on; pinning this
+  // migrated one keeps its exact prior simulated behavior.
+  if (dashboardSource.socialSecurityStreams === undefined && dashboardSource.otherIncomeStreams === undefined) {
+    const legacy = dashboardSource as Record<string, unknown>
+    if (typeof legacy.pensionStartAge === "number" && typeof legacy.pensionMonthlyAmount === "number") {
+      dashboardSource.otherIncomeStreams = [
+        { id: "pension", label: "Pension", startAge: legacy.pensionStartAge, monthlyAmount: legacy.pensionMonthlyAmount, customWithdrawalTaxRate: 0 },
+      ]
+    }
+    const claimingAge = legacy.socialSecurityClaimingAge
+    if (claimingAge === 62 || claimingAge === 67 || claimingAge === 70) {
+      const at62 = legacy.socialSecurityMonthlyAt62
+      const at67 = legacy.socialSecurityMonthlyAt67
+      const at70 = legacy.socialSecurityMonthlyAt70
+      if (typeof at62 === "number" || typeof at67 === "number" || typeof at70 === "number") {
+        dashboardSource.socialSecurityStreams = [
+          {
+            id: "social-security",
+            label: null,
+            claimingAge,
+            monthlyAt62: typeof at62 === "number" ? at62 : null,
+            monthlyAt67: typeof at67 === "number" ? at67 : null,
+            monthlyAt70: typeof at70 === "number" ? at70 : null,
+          },
+        ]
+      }
+    }
+  }
+
   if (dashboardSource.retirementAges !== undefined) {
     if (!Array.isArray(dashboardSource.retirementAges) || dashboardSource.retirementAges.some((age) => typeof age !== "number" || age <= 0)) {
       throw new Error(`Invalid config in ${path}: dashboard.retirementAges must be an array of positive numbers.`)
@@ -1280,19 +1342,45 @@ export function parseFireConfig(parsed: unknown, path: string): FireConfig {
   if (dashboardSource.medicareAge != null && (typeof dashboardSource.medicareAge !== "number" || dashboardSource.medicareAge <= 0)) {
     throw new Error(`Invalid config in ${path}: dashboard.medicareAge must be a positive number, or null.`)
   }
-  if (dashboardSource.pensionStartAge != null && (typeof dashboardSource.pensionStartAge !== "number" || dashboardSource.pensionStartAge <= 0)) {
-    throw new Error(`Invalid config in ${path}: dashboard.pensionStartAge must be a positive number.`)
+  if (dashboardSource.socialSecurityStreams != null) {
+    if (!Array.isArray(dashboardSource.socialSecurityStreams)) {
+      throw new Error(`Invalid config in ${path}: dashboard.socialSecurityStreams must be an array.`)
+    }
+    for (const stream of dashboardSource.socialSecurityStreams) {
+      if (
+        typeof stream !== "object" ||
+        stream === null ||
+        typeof stream.id !== "string" ||
+        (stream.label !== null && typeof stream.label !== "string") ||
+        (stream.claimingAge !== null && ![62, 67, 70].includes(stream.claimingAge)) ||
+        (stream.monthlyAt62 !== null && typeof stream.monthlyAt62 !== "number") ||
+        (stream.monthlyAt67 !== null && typeof stream.monthlyAt67 !== "number") ||
+        (stream.monthlyAt70 !== null && typeof stream.monthlyAt70 !== "number")
+      ) {
+        throw new Error(
+          `Invalid config in ${path}: each dashboard.socialSecurityStreams entry must have a string id, label (string or null), claimingAge (62/67/70 or null), and monthlyAt62/67/70 (number or null).`,
+        )
+      }
+    }
   }
-  if (dashboardSource.pensionMonthlyAmount != null && (typeof dashboardSource.pensionMonthlyAmount !== "number" || dashboardSource.pensionMonthlyAmount <= 0)) {
-    throw new Error(`Invalid config in ${path}: dashboard.pensionMonthlyAmount must be a positive number.`)
-  }
-  if (dashboardSource.socialSecurityClaimingAge != null && ![62, 67, 70].includes(dashboardSource.socialSecurityClaimingAge)) {
-    throw new Error(`Invalid config in ${path}: dashboard.socialSecurityClaimingAge must be 62, 67, or 70.`)
-  }
-  for (const field of ["socialSecurityMonthlyAt62", "socialSecurityMonthlyAt67", "socialSecurityMonthlyAt70"] as const) {
-    const value = dashboardSource[field]
-    if (value != null && (typeof value !== "number" || value <= 0)) {
-      throw new Error(`Invalid config in ${path}: dashboard.${field} must be a positive number.`)
+  if (dashboardSource.otherIncomeStreams != null) {
+    if (!Array.isArray(dashboardSource.otherIncomeStreams)) {
+      throw new Error(`Invalid config in ${path}: dashboard.otherIncomeStreams must be an array.`)
+    }
+    for (const stream of dashboardSource.otherIncomeStreams) {
+      if (
+        typeof stream !== "object" ||
+        stream === null ||
+        typeof stream.id !== "string" ||
+        typeof stream.label !== "string" ||
+        (stream.startAge !== null && typeof stream.startAge !== "number") ||
+        (stream.monthlyAmount !== null && typeof stream.monthlyAmount !== "number") ||
+        (stream.customWithdrawalTaxRate !== null && (typeof stream.customWithdrawalTaxRate !== "number" || stream.customWithdrawalTaxRate < 0))
+      ) {
+        throw new Error(
+          `Invalid config in ${path}: each dashboard.otherIncomeStreams entry must have a string id/label, startAge (number or null), monthlyAmount (number or null), and customWithdrawalTaxRate (non-negative number or null).`,
+        )
+      }
     }
   }
   if (dashboardSource.monteCarloWithdrawalStrategy != null && !MONTE_CARLO_WITHDRAWAL_STRATEGIES.includes(dashboardSource.monteCarloWithdrawalStrategy)) {
@@ -1404,12 +1492,8 @@ export function parseFireConfig(parsed: unknown, path: string): FireConfig {
       acaTargetPctFpl: dashboardSource.acaTargetPctFpl ?? DEFAULT_DASHBOARD_CONFIG.acaTargetPctFpl,
       medicareAge: dashboardSource.medicareAge ?? DEFAULT_DASHBOARD_CONFIG.medicareAge,
       acaFloorPctFpl: dashboardSource.acaFloorPctFpl ?? DEFAULT_DASHBOARD_CONFIG.acaFloorPctFpl,
-      pensionStartAge: dashboardSource.pensionStartAge ?? DEFAULT_DASHBOARD_CONFIG.pensionStartAge,
-      pensionMonthlyAmount: dashboardSource.pensionMonthlyAmount ?? DEFAULT_DASHBOARD_CONFIG.pensionMonthlyAmount,
-      socialSecurityClaimingAge: dashboardSource.socialSecurityClaimingAge ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityClaimingAge,
-      socialSecurityMonthlyAt62: dashboardSource.socialSecurityMonthlyAt62 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt62,
-      socialSecurityMonthlyAt67: dashboardSource.socialSecurityMonthlyAt67 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt67,
-      socialSecurityMonthlyAt70: dashboardSource.socialSecurityMonthlyAt70 ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityMonthlyAt70,
+      socialSecurityStreams: dashboardSource.socialSecurityStreams ?? DEFAULT_DASHBOARD_CONFIG.socialSecurityStreams,
+      otherIncomeStreams: dashboardSource.otherIncomeStreams ?? DEFAULT_DASHBOARD_CONFIG.otherIncomeStreams,
       monteCarloWithdrawalStrategy: dashboardSource.monteCarloWithdrawalStrategy ?? DEFAULT_DASHBOARD_CONFIG.monteCarloWithdrawalStrategy,
       monteCarloReturnModel: dashboardSource.monteCarloReturnModel ?? DEFAULT_DASHBOARD_CONFIG.monteCarloReturnModel,
       monteCarloTaxModel: dashboardSource.monteCarloTaxModel ?? DEFAULT_DASHBOARD_CONFIG.monteCarloTaxModel,
