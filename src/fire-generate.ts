@@ -511,6 +511,24 @@ export async function checkDashboard(
     return { inflating, fixed }
   }
 
+  // Function to get one age's own GROSS annual withdrawal cap for every HSA account with an
+  // active restriction (issue #59), keyed by account id -- see simulateBridge's own
+  // hsaWithdrawalCapAt parameter for how this is actually enforced. Only "fixed" is implemented so
+  // far: hsaAnnualMedicalExpense grown forward by the plan's own inflationMean, the same
+  // today's-dollars convention as annualSpend/RetirementIncomeStream. Needs BOTH the restriction
+  // mode AND a real amount entered to count -- same "both halves needed" convention as a pension
+  // needing both a start age and an amount (retirementIncomeStreams, fire-dashboard.ts). Built
+  // once and shared by every scenario's own simulateBridge call, same reasoning
+  // expenseAdjustmentAt/taxDeferredCapAt already use.
+  const hsaWithdrawalCapAt = (age: number): Map<string, number> => {
+    const caps = new Map<string, number>()
+    for (const account of accounts) {
+      if (account.type !== "hsa" || account.hsaWithdrawalRestriction !== "fixed" || account.hsaAnnualMedicalExpense == null) continue
+      caps.set(account.id, Math.round(account.hsaAnnualMedicalExpense * Math.pow(1 + inflationMean, age - options.currentAge)))
+    }
+    return caps
+  }
+
   // The same gross-inflate formula simulateBridge's own loop applies for its projectedSpend field
   // (income NOT netted out -- see BridgeYear's own doc comment for why), for an arbitrary age
   // rather than a running simulation -- scenario-independent (annualSpend/inflationMean don't vary
@@ -759,6 +777,7 @@ export async function checkDashboard(
       taxDeferredCapAt,
       rothConversionAmountAt,
       expenseAdjustmentAt,
+      hsaWithdrawalCapAt,
     )
     // Ends on a real point at currentAge itself (today's live balance, not a historical one) --
     // ties the last real-history year to "now" so the chart has something to draw a line between

@@ -54,6 +54,8 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     employerMatchRate: null,
     employerMatchCapRate: null,
     hsaCoverage: null,
+    hsaWithdrawalRestriction: null,
+    hsaAnnualMedicalExpense: null,
     mortgageInterestRate: null,
     mortgageMonthlyPayment: null,
     mortgageBalanceAsOfDate: null,
@@ -267,6 +269,46 @@ describe("simulateBridge", () => {
     const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 55, annualAmount: 50 }
     const withIncome = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0, [pension])
     expect(withIncome.depletionAge).toBe(65)
+  })
+
+  it("issue #59: caps a restricted HSA's own annual draw, pulling the shortfall from other accounts", () => {
+    const hsa = bridgeAccount({ id: "hsa", balance: 20000, taxTreatment: "tax-free" })
+    const brokerage = bridgeAccount({ id: "brokerage", balance: 100000 })
+    const result = simulateBridge([hsa, brokerage], 50, 50, 100, 100, 0, [], undefined, undefined, undefined, () => new Map([["hsa", 20]]))
+    const firstYear = result.timeline[0]
+    expect(firstYear?.withdrawalsByAccountId).toEqual({ hsa: 20, brokerage: 80 })
+  })
+
+  it("issue #59: draws a restricted HSA first -- other accounts stay untouched while its own cap alone covers spend", () => {
+    const hsa = bridgeAccount({ id: "hsa", balance: 20000, taxTreatment: "tax-free" })
+    const brokerage = bridgeAccount({ id: "brokerage", balance: 100000 })
+    const result = simulateBridge([hsa, brokerage], 50, 50, 100, 100, 0, [], undefined, undefined, undefined, () => new Map([["hsa", 150]]))
+    const firstYear = result.timeline[0]
+    expect(firstYear?.withdrawalsByAccountId).toEqual({ hsa: 100, brokerage: 0 })
+  })
+
+  it("issue #59: an unrestricted plan (no hsaWithdrawalCapAt) draws an HSA like any other tax-free pot", () => {
+    const hsa = bridgeAccount({ id: "hsa", balance: 20000, taxTreatment: "tax-free" })
+    const brokerage = bridgeAccount({ id: "brokerage", balance: 100000 })
+    const result = simulateBridge([hsa, brokerage], 50, 50, 100, 100, 0)
+    const firstYear = result.timeline[0]
+    // Proportional split by balance share -- (20000/120000)*100 = 16.67, rounded by the allocation
+    // math the same way an ordinary two-pot proportional split already is.
+    expect(firstYear?.withdrawalsByAccountId?.hsa).toBeCloseTo(16.67, 1)
+    expect(firstYear?.withdrawalsByAccountId?.brokerage).toBeCloseTo(83.33, 1)
+  })
+
+  it("issue #59: a restriction can still show as depleted with real HSA money left, unusable past its own cap", () => {
+    // The unrestricted pool alone (brokerage, $170) has to cover $80/yr (the $100 need minus the
+    // HSA's own $20/yr cap) -- depletes at age 52 (170 -> 90 -> 10, then short). Checking the
+    // depletion threshold against the ORIGINAL $100 need instead of the $80 actually still owed
+    // would call it a year earlier (age 51, since 90 < 100), which is exactly the mutation this
+    // guards against -- the HSA's own much larger $20,000 balance is real, sitting right there, but
+    // genuinely unusable past its own cap, so it must not be what prevents this depletion either.
+    const hsa = bridgeAccount({ id: "hsa", balance: 20000, taxTreatment: "tax-free" })
+    const brokerage = bridgeAccount({ id: "brokerage", balance: 170 })
+    const result = simulateBridge([hsa, brokerage], 50, 50, 100, 100, 0, [], undefined, undefined, undefined, () => new Map([["hsa", 20]]))
+    expect(result.depletionAge).toBe(52)
   })
 
   it("issue #55: nets a stream's own withdrawalTaxRate, not its raw gross annualAmount", () => {

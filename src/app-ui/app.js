@@ -1144,6 +1144,19 @@ function renderAccounts() {
             <label><input type="radio" name="hsaCoverage-${account.id}" data-field="hsaCoverage" value="self" ${account.hsaCoverage !== "family" ? "checked" : ""}> Self-only</label>
             <label><input type="radio" name="hsaCoverage-${account.id}" data-field="hsaCoverage" value="family" ${account.hsaCoverage === "family" ? "checked" : ""}> Family</label>
           </div>
+        </div>
+        <div class="field wide">
+          <label>Withdrawals<button type="button" class="help-icon" data-help="Unrestricted treats this HSA like any other tax-free pot -- withdrawable for any spend, same as today.&#10;&#10;Fixed annual estimate caps what the simulation draws from this account each year at your own estimate of annual medical expenses (grown forward with inflation, same as your planned spending) -- anything beyond that comes from your other accounts instead, modeling the real-world restriction that only medical spend gets this account's tax-free withdrawal treatment.">?</button></label>
+          <div class="radio-row">
+            <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="" ${account.hsaWithdrawalRestriction !== "fixed" ? "checked" : ""}> Unrestricted</label>
+            <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="fixed" ${account.hsaWithdrawalRestriction === "fixed" ? "checked" : ""}> Restrict to medical expenses (fixed annual estimate)</label>
+          </div>
+        </div>
+        <div class="field hsa-medical-expense-field" ${account.hsaWithdrawalRestriction === "fixed" ? "" : "hidden"}>
+          <label>Estimated annual medical expenses</label>
+          <div class="input-affix prefix-dollar">
+            <input type="text" inputmode="decimal" data-field="hsaAnnualMedicalExpense" value="${formatMoneyInputValue(account.hsaAnnualMedicalExpense)}" placeholder="not entered">
+          </div>
         </div>` : ""}
         ${account.type === "roth-ira" ? `
         <div class="field wide">
@@ -1300,6 +1313,23 @@ function renderAccounts() {
         if (e.target.checked) runExclusive(() => patchAccount(account.id, { hsaCoverage: e.target.value }))
       })
     })
+    row.querySelectorAll("input[data-field='hsaWithdrawalRestriction']").forEach((input) => {
+      input.addEventListener("change", (e) => {
+        if (!e.target.checked) return
+        // Toggled instantly, not left to wait for the round trip -- same reasoning the Withdrawal
+        // rule type select's own wr-params visibility already follows.
+        const medicalExpenseField = row.querySelector(".hsa-medical-expense-field")
+        if (medicalExpenseField) medicalExpenseField.hidden = e.target.value !== "fixed"
+        runExclusive(() => patchAccount(account.id, { hsaWithdrawalRestriction: e.target.value === "" ? null : e.target.value }))
+      })
+    })
+    const hsaMedicalExpenseInput = row.querySelector("input[data-field='hsaAnnualMedicalExpense']")
+    if (hsaMedicalExpenseInput) {
+      attachMoneyFormatting(hsaMedicalExpenseInput)
+      hsaMedicalExpenseInput.addEventListener("moneycommit", (e) => {
+        runExclusive(() => patchAccount(account.id, { hsaAnnualMedicalExpense: parseMoneyInputCents(e.target.value) }))
+      })
+    }
     const rothBasisInput = row.querySelector("input[data-field='rothBasis']")
     if (rothBasisInput) {
       attachMoneyFormatting(rothBasisInput)

@@ -130,6 +130,38 @@ describe("checkDashboard in file mode (actualConfig: null)", () => {
     expect(withDepletion as number).toBeGreaterThan(withoutDepletion as number)
     expect(payoffAge).toBeLessThan(withDepletion as number)
   })
+
+  // Issue #59: "restrict HSA withdrawals to Medical expenses only." simulateBridge's own capping
+  // mechanism is already proven in isolation (fire-analysis.test.ts's own "issue #59" tests), but
+  // nothing end-to-end proved an HSA account's own hsaWithdrawalRestriction/hsaAnnualMedicalExpense
+  // fields actually reach it through classifyAccounts -> checkDashboard's hsaWithdrawalCapAt. They
+  // do: the SAME two accounts, differing only in whether the restriction is set, swing from "never
+  // depletes within the plan" to "depletes a few years in" (confirmed live against the real numbers
+  // below before writing this as a permanent regression test).
+  it("an HSA's own withdrawal restriction measurably shortens the bridge runway, once its fields are set", async () => {
+    const dataSource = fileAccountDataSource("accounts.csv", "name,balance\nBrokerage,1700.00\nHSA,2000000.00\n")
+    const rawAccounts = await dataSource.fetchAccounts()
+    const options = { ...baseOptions, currentAge: 65, retirementAges: [65], planToAge: 85, fileModeSpend: { annualSpend: 1000_00, basis: null } }
+
+    const unrestricted = classifyAccounts(rawAccounts, { accounts: [{ match: "HSA", type: "hsa" }] }, "1961-09-27", null)
+    const unrestrictedResult = await checkDashboard(null, dataSource, unrestricted, options)
+    // The HSA's own $2,000,000 dwarfs the $1,700 brokerage -- pooled together, unrestricted, that
+    // comfortably outlasts a 20-year plan at $1,000/yr.
+    expect(unrestrictedResult.bridgeResults[0]?.depletionAge).toBeNull()
+
+    const restricted = classifyAccounts(
+      rawAccounts,
+      { accounts: [{ match: "HSA", type: "hsa", hsaWithdrawalRestriction: "fixed", hsaAnnualMedicalExpense: 200_00 }] },
+      "1961-09-27",
+      null,
+    )
+    const restrictedResult = await checkDashboard(null, dataSource, restricted, options)
+    // Capped at $200/yr, the HSA can only ever cover a fifth of the $1,000/yr need -- the $1,700
+    // brokerage alone has to fund the other $800/yr, and depletes long before the plan's own
+    // horizon despite the HSA's own enormous, but now mostly unusable, balance.
+    expect(restrictedResult.bridgeResults[0]?.depletionAge).not.toBeNull()
+    expect(restrictedResult.bridgeResults[0]?.depletionAge as number).toBeLessThan(85)
+  })
 })
 
 // Dates relative to "now" (not hardcoded) -- the trailing window itself is anchored to the real
