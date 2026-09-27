@@ -375,6 +375,17 @@ export interface ClassifiedAccount {
   employerMatchCapRate: number | null
   // hsa only; null for every other type (there's no "self/family coverage" concept elsewhere).
   hsaCoverage: "self" | "family" | null
+  // hsa only (issue #59) -- restricts this HSA's own withdrawals to at most an estimated annual
+  // medical-expense figure each year, rather than treating it as fully fungible like any other
+  // tax-free pot. null (the default) is unrestricted -- today's behavior, unchanged. "fixed" uses
+  // hsaAnnualMedicalExpense directly. See allocateWithdrawal/simulateBridge's own
+  // hsaWithdrawalCapAt parameter (fire-analysis.ts) for how the cap is actually enforced.
+  hsaWithdrawalRestriction: "fixed" | null
+  // Cents/yr, today's-dollars (grows with the plan's own inflationMean, same convention as
+  // annualSpend/RetirementIncomeStream) -- only meaningful when hsaWithdrawalRestriction is
+  // "fixed". Null until entered, same "not set yet" convention as every other optional dollar
+  // field here.
+  hsaAnnualMedicalExpense: number | null
   // debt only; see FireAccountOverride's doc comment and calculateMortgagePayoff.
   mortgageInterestRate: number | null
   mortgageMonthlyPayment: number | null
@@ -449,6 +460,9 @@ export interface FireAccountOverride {
   // Only meaningful for hsa -- which of the two IRS limits (see contributionLimitLines) applies to
   // this account. Defaults to "self" when absent, since that's the smaller, safer assumption.
   hsaCoverage?: "self" | "family"
+  // Only meaningful for hsa (issue #59) -- see ClassifiedAccount's own doc comment.
+  hsaWithdrawalRestriction?: "fixed" | null
+  hsaAnnualMedicalExpense?: number | null
   // Only meaningful for debt -- independent of Actual's own ledger balance for the account (a
   // mortgage servicer's real payoff balance often isn't what a synced/manually-tracked Actual
   // account reflects), so this is its own anchor point: what the balance was, as of when. See
@@ -1083,6 +1097,8 @@ export function classifyAccounts(
         employerMatchRate: override.employerMatchRate ?? null,
         employerMatchCapRate: override.employerMatchCapRate ?? null,
         hsaCoverage: type === "hsa" ? (override.hsaCoverage ?? "self") : null,
+        hsaWithdrawalRestriction: type === "hsa" ? (override.hsaWithdrawalRestriction ?? null) : null,
+        hsaAnnualMedicalExpense: type === "hsa" ? (override.hsaAnnualMedicalExpense ?? null) : null,
         mortgageInterestRate: override.mortgageInterestRate ?? null,
         mortgageMonthlyPayment: override.mortgageMonthlyPayment ?? null,
         mortgageBalanceAsOfDate: override.mortgageBalanceAsOfDate ?? null,
@@ -1112,6 +1128,8 @@ export function classifyAccounts(
         employerMatchRate: null,
         employerMatchCapRate: null,
         hsaCoverage: heuristicType === "hsa" ? "self" : null,
+        hsaWithdrawalRestriction: null,
+        hsaAnnualMedicalExpense: null,
         mortgageInterestRate: null,
         mortgageMonthlyPayment: null,
         mortgageBalanceAsOfDate: null,
@@ -1139,6 +1157,8 @@ export function classifyAccounts(
       employerMatchRate: null,
       employerMatchCapRate: null,
       hsaCoverage: null,
+      hsaWithdrawalRestriction: null,
+      hsaAnnualMedicalExpense: null,
       mortgageInterestRate: null,
       mortgageMonthlyPayment: null,
       mortgageBalanceAsOfDate: null,
@@ -1273,6 +1293,12 @@ export function parseFireConfig(parsed: unknown, path: string): FireConfig {
     }
     if (override.withdrawalOrder != null && (typeof override.withdrawalOrder !== "number" || !Number.isInteger(override.withdrawalOrder) || override.withdrawalOrder < 0)) {
       throw new Error(`Invalid config in ${path}: withdrawalOrder for "${override.match}" must be a non-negative integer.`)
+    }
+    if (override.hsaWithdrawalRestriction != null && override.hsaWithdrawalRestriction !== "fixed") {
+      throw new Error(`Invalid config in ${path}: hsaWithdrawalRestriction for "${override.match}" must be "fixed" or null.`)
+    }
+    if (override.hsaAnnualMedicalExpense != null && (typeof override.hsaAnnualMedicalExpense !== "number" || override.hsaAnnualMedicalExpense < 0)) {
+      throw new Error(`Invalid config in ${path}: hsaAnnualMedicalExpense for "${override.match}" must be a non-negative number.`)
     }
   }
 

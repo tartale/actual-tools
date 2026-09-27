@@ -193,6 +193,8 @@ interface AccountState {
   employerContribution: EmployerContributionSummary | null
   // hsa only.
   hsaCoverage: "self" | "family" | null
+  hsaWithdrawalRestriction: "fixed" | null
+  hsaAnnualMedicalExpense: number | null
   // debt only.
   mortgageInterestRate: number | null
   mortgageMonthlyPayment: number | null
@@ -374,6 +376,8 @@ async function buildStateFromConfig(
       employerMatchCapRate: account.employerMatchCapRate,
       employerContribution: currentAge === null || irsLimits === null ? null : employerContributionSummary(account, currentAge, irsLimits),
       hsaCoverage: account.hsaCoverage,
+      hsaWithdrawalRestriction: account.hsaWithdrawalRestriction,
+      hsaAnnualMedicalExpense: account.hsaAnnualMedicalExpense,
       mortgageInterestRate: account.mortgageInterestRate,
       mortgageMonthlyPayment: account.mortgageMonthlyPayment,
       mortgageBalanceAsOfDate: account.mortgageBalanceAsOfDate,
@@ -719,6 +723,19 @@ function applyAccountPatch(
       throw new Error('hsaCoverage must be "self" or "family".')
     }
     next.hsaCoverage = patch.hsaCoverage
+  }
+  if ("hsaWithdrawalRestriction" in patch) {
+    if (patch.hsaWithdrawalRestriction !== null && patch.hsaWithdrawalRestriction !== "fixed") {
+      throw new Error('hsaWithdrawalRestriction must be "fixed" or null.')
+    }
+    next.hsaWithdrawalRestriction = patch.hsaWithdrawalRestriction
+  }
+  if ("hsaAnnualMedicalExpense" in patch) {
+    const value = patch.hsaAnnualMedicalExpense
+    if (value !== null && (typeof value !== "number" || value < 0)) {
+      throw new Error("hsaAnnualMedicalExpense must be a non-negative number or null.")
+    }
+    next.hsaAnnualMedicalExpense = value
   }
   if ("withdrawalOrder" in patch) {
     const value = patch.withdrawalOrder

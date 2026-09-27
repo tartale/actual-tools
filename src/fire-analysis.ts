@@ -472,6 +472,20 @@ export function simulateBridge(
   // same reasoning as taxDeferredWithdrawalCapAt above -- undefined (the default) means no
   // adjustment any year, unchanged from before this parameter existed.
   expenseAdjustmentAt?: (age: number) => { inflating: number; fixed: number },
+  // Called once per withdrawal-phase year to get that year's own GROSS annual withdrawal cap for
+  // every HSA account with an active restriction (issue #59), keyed by account id -- an HSA not
+  // present in the returned map that year is unrestricted, drawn from normally alongside every
+  // other account. Restricted HSAs are drawn FIRST, up to their own cap, reducing the net need
+  // before the normal multi-account allocation below ever runs (same "most tax-advantaged pot
+  // first" preference taxDeferredWithdrawalCapAt's own tiering already applies to tax-deferred vs.
+  // non-taxable) -- but UNLIKE that cap, there's no last-resort overflow tier: a restricted HSA
+  // simply isn't available beyond its own cap this year, full stop, since the whole point is a
+  // real eligibility limit (non-medical HSA withdrawals have their own, worse tax treatment this
+  // app doesn't model), not a soft preference. HSA's own withdrawalTaxRate is always 0
+  // (tax-free), so gross and net are the same figure here -- no separate netting needed the way
+  // allocateWithdrawal's own tiers require. undefined (the default) means no HSA is ever
+  // restricted, unchanged from before this parameter existed.
+  hsaWithdrawalCapAt?: (age: number) => ReadonlyMap<string, number>,
 ): BridgeResult {
   const balances = accounts.map((account) => account.balance)
   // Every account's own current balance, keyed by id -- snapshotted onto each BridgeYear alongside
@@ -575,36 +589,59 @@ export function simulateBridge(
         recordDepletion(age)
         break
       }
+      // A restricted HSA (issue #59) is drawn FIRST, up to its own cap, reducing the net need
+      // before the normal multi-account allocation below ever sees it -- see hsaWithdrawalCapAt's
+      // own doc comment for why there's no last-resort overflow tier the way taxDeferredCap has.
+      const hsaCapsThisYear = hsaWithdrawalCapAt != null ? hsaWithdrawalCapAt(age) : null
+      const restrictedIdx = hsaCapsThisYear != null ? reachable.filter((index) => hsaCapsThisYear.has((accounts[index] as BridgeAccount).id)) : []
+      const unrestrictedIdx = restrictedIdx.length > 0 ? reachable.filter((index) => !restrictedIdx.includes(index)) : reachable
+      let remainingSpend = spend
+      const hsaWithdrawalsByAccountId: Record<string, number> = {}
+      for (const index of restrictedIdx) {
+        const account = accounts[index] as BridgeAccount
+        const cap = hsaCapsThisYear!.get(account.id) as number
+        // HSA's own withdrawalTaxRate is always 0 (tax-free) -- gross and net are the same figure.
+        const draw = Math.min(balances[index] as number, cap, remainingSpend)
+        if (draw > 0) {
+          balances[index] = (balances[index] as number) - draw
+          remainingSpend -= draw
+          hsaWithdrawalsByAccountId[account.id] = draw
+        }
+      }
+
       // See allocateWithdrawal's own doc comment -- proportional (today's long-standing default) or
       // sequential (drain pots in withdrawalOrder), depending on whether any reachable account has
       // an order set.
       const taxDeferredCap = taxDeferredWithdrawalCapAt != null ? taxDeferredWithdrawalCapAt(age) : null
       const allocation = allocateWithdrawal(
-        reachable.map((index) => {
+        unrestrictedIdx.map((index) => {
           const account = accounts[index] as BridgeAccount
           return { balance: balances[index] as number, withdrawalTaxRate: withdrawalTaxRateAt(account, age), withdrawalOrder: account.withdrawalOrder, isTaxDeferred: account.isTaxDeferred }
         }),
-        spend,
+        remainingSpend,
         taxDeferredCap,
       )
-      if (allocation.totalNetCapacity < spend - FUNDING_TOLERANCE_CENTS) {
+      if (allocation.totalNetCapacity < remainingSpend - FUNDING_TOLERANCE_CENTS) {
         recordDepletion(age)
         break
       }
       if (thisYearBridge != null) {
-        thisYearBridge.grossTaxDeferredWithdrawal = reachable.reduce(
+        thisYearBridge.grossTaxDeferredWithdrawal = unrestrictedIdx.reduce(
           (sum, index, position) => sum + ((accounts[index] as BridgeAccount).isTaxDeferred ? (allocation.grossByIndex[position] as number) : 0),
           0,
         )
-        thisYearBridge.grossNonTaxDeferredWithdrawal = reachable.reduce(
-          (sum, index, position) => sum + ((accounts[index] as BridgeAccount).isTaxDeferred ? 0 : (allocation.grossByIndex[position] as number)),
-          0,
-        )
-        thisYearBridge.withdrawalsByAccountId = Object.fromEntries(
-          reachable.map((index, position) => [(accounts[index] as BridgeAccount).id, allocation.grossByIndex[position] as number]),
-        )
+        // HSA's own capped draw folds in here too (isTaxDeferred is always false for it, same as
+        // if it had gone through the normal allocation above), so this plus
+        // grossTaxDeferredWithdrawal above still sums to every dollar withdrawn this year.
+        thisYearBridge.grossNonTaxDeferredWithdrawal =
+          unrestrictedIdx.reduce((sum, index, position) => sum + ((accounts[index] as BridgeAccount).isTaxDeferred ? 0 : (allocation.grossByIndex[position] as number)), 0) +
+          Object.values(hsaWithdrawalsByAccountId).reduce((sum, draw) => sum + draw, 0)
+        thisYearBridge.withdrawalsByAccountId = {
+          ...hsaWithdrawalsByAccountId,
+          ...Object.fromEntries(unrestrictedIdx.map((index, position) => [(accounts[index] as BridgeAccount).id, allocation.grossByIndex[position] as number])),
+        }
       }
-      reachable.forEach((index, position) => {
+      unrestrictedIdx.forEach((index, position) => {
         balances[index] = (balances[index] as number) - (allocation.grossByIndex[position] as number)
       })
 
