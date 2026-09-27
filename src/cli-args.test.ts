@@ -31,6 +31,12 @@ let stdout: string[]
 beforeEach(() => {
   stderr = []
   stdout = []
+  // Isolates every test's own default-dryRun expectation from whatever DRY_RUN happens to already
+  // be set in the REAL process environment (e.g. a sandbox's own standing safety default) -- the
+  // matching `delete` in afterEach below only cleans up what THIS suite's own tests set, it can't
+  // protect the very first test from an ambient value that was already there before the suite
+  // ever ran.
+  delete process.env.DRY_RUN
   vi.spyOn(process, "exit").mockImplementation((code?: number | string | null) => {
     throw new ProcessExit(typeof code === "number" ? code : undefined)
   })

@@ -82,6 +82,54 @@ describe("checkDashboard in file mode (actualConfig: null)", () => {
     // row throws right from construction, not from a later fetchAccounts() call.
     expect(() => fileAccountDataSource("bad.csv", "name,balance\nBrokerage,not-a-number\n")).toThrow(/isn't a valid dollar amount/)
   })
+
+  // Issue #55: "Ensure that the 'Debt payoff' drop is being included in the projected expenses."
+  // simulateBridge's own generic income-stream netting is already proven (fire-analysis.test.ts's
+  // "nets a later-starting income stream..."), but nothing end-to-end proved
+  // debtPayoffIncomeStreams (this file) actually PRODUCES that stream from a debt account's own
+  // mortgage-payoff fields and gets it merged into checkDashboard's real bridge result. It does --
+  // the exact same debt account, same balance, differs only in whether the payoff fields are set,
+  // and the version WITH them measurably extends the depletion age (confirmed live against the
+  // real numbers below before writing this as a permanent regression test).
+  it("a debt account's own payoff measurably extends the bridge depletion age, once its mortgage fields are set", async () => {
+    const dataSource = fileAccountDataSource("accounts.csv", "name,balance\nBrokerage,600000.00\nMortgage,100000.00\n")
+    const rawAccounts = await dataSource.fetchAccounts()
+    const options = { ...baseOptions, currentAge: 65, retirementAges: [65], fileModeSpend: { annualSpend: 60000_00, basis: null } }
+
+    const withoutPayoff = classifyAccounts(rawAccounts, { accounts: [{ match: "Mortgage", type: "debt" }] }, "1961-09-27", null)
+    const without = await checkDashboard(null, dataSource, withoutPayoff, options)
+
+    const withPayoff = classifyAccounts(
+      rawAccounts,
+      {
+        accounts: [
+          {
+            match: "Mortgage",
+            type: "debt",
+            mortgageInterestRate: 0.05,
+            mortgageMonthlyPayment: 2000_00,
+            mortgageBalanceAsOfDate: "2026-09-27",
+            mortgageBalanceAsOf: 100000_00,
+          },
+        ],
+      },
+      "1961-09-27",
+      null,
+    )
+    const withPayoffResult = await checkDashboard(null, dataSource, withPayoff, options)
+
+    expect(withPayoffResult.debtPayoffs).toHaveLength(1)
+    expect(withPayoffResult.debtPayoffs[0]).toMatchObject({ accountName: "Mortgage", monthlyAmount: 2000_00 })
+    const payoffAge = withPayoffResult.debtPayoffs[0]?.payoffAge as number
+    // The depletion age only differs from the payoff onward -- before that, both scenarios draw
+    // down identically (the debt account itself has no portfolio balance either way).
+    const withoutDepletion = without.bridgeResults[0]?.depletionAge
+    const withDepletion = withPayoffResult.bridgeResults[0]?.depletionAge
+    expect(withoutDepletion).not.toBeNull()
+    expect(withDepletion).not.toBeNull()
+    expect(withDepletion as number).toBeGreaterThan(withoutDepletion as number)
+    expect(payoffAge).toBeLessThan(withDepletion as number)
+  })
 })
 
 // Dates relative to "now" (not hardcoded) -- the trailing window itself is anchored to the real
