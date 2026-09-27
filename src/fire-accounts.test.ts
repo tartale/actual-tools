@@ -504,10 +504,19 @@ describe("loadFireConfig", () => {
     expect(loadFireConfig("/fake/path")).toEqual({ config: validConfig, found: true })
   })
 
-  it("throws on a monthlyContribution that's neither a positive number nor \"max\"", () => {
-    const badConfig = { version: 1, accounts: [{ match: "x", type: "brokerage", monthlyContribution: 0 }] }
+  // Issue #55: a real, deliberate "$0/mo" (e.g. paused contributions) was rejected outright --
+  // confirmed live by the user ("doesn't recalculate or save correctly"). 0 is a legitimate stored
+  // value, distinct from leaving the field out entirely (which means "not set").
+  it("accepts a monthlyContribution of exactly 0", () => {
+    const validConfig = fireConfig([{ match: "x", type: "brokerage", monthlyContribution: 0 }])
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig))
+    expect(loadFireConfig("/fake/path")).toEqual({ config: validConfig, found: true })
+  })
+
+  it("throws on a monthlyContribution that's neither a non-negative number nor \"max\"", () => {
+    const badConfig = { version: 1, accounts: [{ match: "x", type: "brokerage", monthlyContribution: -100 }] }
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify(badConfig))
-    expect(() => loadFireConfig("/fake/path")).toThrow('monthlyContribution for "x" must be a positive number or "max"')
+    expect(() => loadFireConfig("/fake/path")).toThrow('monthlyContribution for "x" must be a non-negative number or "max"')
   })
 
   it("throws on a non-positive ruleOf55SeparationAge", () => {

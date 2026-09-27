@@ -603,10 +603,15 @@ function applyAccountPatch(
       delete next.monthlyContribution
     } else if (value === "max") {
       next.monthlyContribution = "max"
-    } else if (typeof value === "number" && value > 0) {
+    } else if (typeof value === "number" && value >= 0) {
+      // >= 0, not > 0 -- issue #55: a real, deliberate "$0/mo" (e.g. paused contributions to an
+      // account that still has one configured) is a legitimate value, not the same as "not set"
+      // (null, which just drops the override field entirely). resolveMonthlyContributions already
+      // handles 0 correctly (typeof === "number" is enough for it to resolve/count toward a limit
+      // group's own claimed total) -- this was the one gate rejecting it before it ever got there.
       next.monthlyContribution = value
     } else {
-      throw new Error(`monthlyContribution must be a positive number, "max", or null.`)
+      throw new Error(`monthlyContribution must be a non-negative number, "max", or null.`)
     }
   }
   if ("ruleOf55SeparationAge" in patch) {

@@ -1225,9 +1225,11 @@ export function parseFireConfig(parsed: unknown, path: string): FireConfig {
     if (
       override.monthlyContribution !== undefined &&
       override.monthlyContribution !== "max" &&
-      (typeof override.monthlyContribution !== "number" || override.monthlyContribution <= 0)
+      (typeof override.monthlyContribution !== "number" || override.monthlyContribution < 0)
     ) {
-      throw new Error(`Invalid config in ${path}: monthlyContribution for "${override.match}" must be a positive number or "max".`)
+      // < 0, not <= 0 -- issue #55: a real, deliberate "$0/mo" (e.g. paused contributions) is a
+      // legitimate stored value, not the same as "not set" (leaving the field out entirely).
+      throw new Error(`Invalid config in ${path}: monthlyContribution for "${override.match}" must be a non-negative number or "max".`)
     }
     if (override.ruleOf55SeparationAge != null && (typeof override.ruleOf55SeparationAge !== "number" || override.ruleOf55SeparationAge <= 0)) {
       throw new Error(`Invalid config in ${path}: ruleOf55SeparationAge for "${override.match}" must be a positive number.`)

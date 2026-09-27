@@ -319,6 +319,26 @@ describe("PATCH /api/retirement/accounts/:id", () => {
     expect(res.status).toBe(400)
   })
 
+  // Issue #55: a real, deliberate "$0/mo" (e.g. paused contributions) was rejected outright
+  // (the old validation was `value > 0`, excluding exactly zero) -- confirmed by the user directly
+  // ("doesn't recalculate or save correctly"). Distinct from monthlyContribution: null (unset
+  // entirely, deletes the override field) -- 0 is a real, stored value.
+  it("accepts and correctly recalculates a monthlyContribution of exactly 0", async () => {
+    const url = await boot({ accounts: [{ id: "a1", name: "Money Market", offbudget: true, closed: false }] })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "savings", monthlyContribution: 50000 }) })
+    const res = await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ monthlyContribution: 0 }) })
+    expect(res.status).toBe(200)
+    const body = await readJson<StateResponse>(res)
+    expect(body.accounts[0]?.monthlyContribution).toBe(0)
+  })
+
+  it("rejects a negative monthlyContribution", async () => {
+    const url = await boot({ accounts: [{ id: "a1", name: "Money Market", offbudget: true, closed: false }] })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "savings" }) })
+    const res = await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ monthlyContribution: -100 }) })
+    expect(res.status).toBe(400)
+  })
+
   it("resolves a \"max\" contribution once a birth date and IRS limits are available", async () => {
     writeFileSync(irsLimitsPath, JSON.stringify(IRS_LIMITS))
     const url = await boot({ accounts: [{ id: "a1", name: "401k", offbudget: true, closed: false }] })
