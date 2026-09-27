@@ -676,8 +676,14 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    its own (name/sign/amount/start/end/inflate) -- an explicit column template rather than
    auto-fit/minmax, so every row lines up under the same headings rather than each row's own
    fields independently sizing to their own content. */
-.expense-adjustment-row { display: grid; grid-template-columns: 1.4fr 1.3fr 1fr 0.7fr 0.7fr 1fr auto; gap: 12px; align-items: end; margin-bottom: 8px; }
+.expense-adjustment-row { display: grid; grid-template-columns: 1.4fr 1.3fr 1.2fr 0.7fr 0.7fr 1fr auto; gap: 12px; align-items: end; margin-bottom: 8px; }
 .expense-adjustment-row .field { margin: 0; }
+/* The amount input and its /mo-/yr unit select (issue #55) sit side by side in the same field,
+   rather than the select stacking below the input the way two bare children of .field otherwise
+   would (.field itself has no flex/grid of its own -- see this rule's own neighbors above). */
+.ea-amount-row { display: flex; gap: 6px; align-items: center; }
+.ea-amount-row .input-affix { flex: 1; min-width: 0; }
+.ea-unit { flex: none; width: 56px; padding: 0 4px; }
 .ea-inflate-field { padding-bottom: 8px; }
 .ea-remove { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-faint); font-size: 14px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .ea-remove:hover { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
@@ -1101,8 +1107,11 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    own sizing ever had to answer to) isn't enough; see the height-driven sizing chain beneath this
    rule, which mirrors the one .retirement-live-sticky already uses on the Analysis card (every
    level between the modal and the chart SVGs needs its own flex/min-height:0, same reasoning). */
+/* Widened from 1400px/96vw (issue #55) -- the Bridge table view in particular can carry many
+   account columns, and the old cap left most of a wide monitor's own width unused instead of
+   showing more of them without horizontal scrolling. */
 .modal-chart {
-  max-width: 1400px; width: min(96vw, 1400px);
+  max-width: 1800px; width: min(98vw, 1800px);
   max-height: 92vh;
   display: flex; flex-direction: column;
 }
