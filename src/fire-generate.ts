@@ -565,9 +565,13 @@ export async function checkDashboard(
   // Function to look up one age's guaranteed ordinary income (pension/Social Security, pre-merge
   // with the rest of incomeStreams) -- shared by magiInputsAt and taxDeferredCapAt below, both of
   // which need the SAME raw figures as their own separate MAGI inputs.
+  // Summed across every matching stream, not just the first (issue #55 -- multiple Social Security
+  // streams, e.g. a spouse's own, or multiple Other Income streams, are now possible), always at
+  // its GROSS annualAmount regardless of withdrawalTaxRate -- see RetirementIncomeStream's own doc
+  // comment (fire-dashboard.ts) for why that rate answers a different question from MAGI's own.
   const ordinaryIncomeAt = (age: number): { pensionIncome: number; socialSecurityBenefit: number } => ({
-    pensionIncome: options.incomeStreams.find((s) => s.id === "pension" && s.startAge <= age)?.annualAmount ?? 0,
-    socialSecurityBenefit: options.incomeStreams.find((s) => s.id === "social-security" && s.startAge <= age)?.annualAmount ?? 0,
+    pensionIncome: options.incomeStreams.filter((s) => s.kind === "other" && s.startAge <= age).reduce((sum, s) => sum + s.annualAmount, 0),
+    socialSecurityBenefit: options.incomeStreams.filter((s) => s.kind === "social-security" && s.startAge <= age).reduce((sum, s) => sum + s.annualAmount, 0),
   })
 
   // Function to carry a published (fixed, single-year) FPL guideline forward to a future age's

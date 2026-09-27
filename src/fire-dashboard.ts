@@ -257,30 +257,56 @@ export function buildPot(account: ClassifiedAccount & { allocationPreset: MonteC
 export interface RetirementIncomeStream {
   id: string
   name: string
+  // Classifies a stream for MAGI purposes (fire-generate.ts's ordinaryIncomeAt) -- undefined for a
+  // stream that's neither (debt-payoff, see fire-generate.ts's debtPayoffIncomeStreams), which
+  // correctly counts toward neither pensionIncome nor socialSecurityBenefit there.
+  kind?: "social-security" | "other"
   startAge: number
+  // Always the GROSS figure -- see withdrawalTaxRate below for how much of it actually reduces the
+  // withdrawal need. Also what ordinaryIncomeAt reads for a "social-security"/"other" stream's own
+  // MAGI contribution, which is deliberately NOT reduced by withdrawalTaxRate (that rate answers
+  // "how much of this reaches your pocket," a separate question from "how much of it is ordinary
+  // income for tax purposes" -- the latter is always the full gross amount, same as a real pension
+  // or Social Security check is reported at its gross, pre-withholding figure).
   annualAmount: number
+  // What fraction of annualAmount is actually taken by tax before it's available to offset
+  // spending -- 0 (the default, via ?? 0 at every read site) for every stream except an "other"
+  // income one with a real customWithdrawalTaxRate set (see OtherIncomeStreamConfig, fire-accounts.ts).
+  // Kept separate from `kind` deliberately: a stream's tax classification for MAGI and its own
+  // withdrawal-tax treatment are two independent questions.
+  withdrawalTaxRate?: number
 }
 
-// Function to derive the plan's guaranteed-income streams from the dashboard config -- a pension
-// needs both a start age and an amount to count (an age with no amount, or vice versa, isn't a
-// real stream yet), and Social Security only counts once a claiming age is chosen AND that age's
-// own figure has actually been entered. Order doesn't matter here -- buildSpendingPhases sorts by
-// start age itself.
-export function retirementIncomeStreams(dashboard: Pick<DashboardConfig, "pensionStartAge" | "pensionMonthlyAmount" | "socialSecurityClaimingAge" | "socialSecurityMonthlyAt62" | "socialSecurityMonthlyAt67" | "socialSecurityMonthlyAt70">): RetirementIncomeStream[] {
+// Function to derive the plan's guaranteed-income streams from the dashboard config -- a Social
+// Security stream only counts once a claiming age is chosen AND that age's own figure has actually
+// been entered; an Other Income stream needs both a start age and an amount. Order doesn't matter
+// here -- buildSpendingPhases sorts by start age itself.
+export function retirementIncomeStreams(dashboard: Pick<DashboardConfig, "socialSecurityStreams" | "otherIncomeStreams">): RetirementIncomeStream[] {
   const streams: RetirementIncomeStream[] = []
-  if (dashboard.pensionStartAge != null && dashboard.pensionMonthlyAmount != null) {
-    streams.push({ id: "pension", name: "Pension", startAge: dashboard.pensionStartAge, annualAmount: dashboard.pensionMonthlyAmount * 12 })
+  for (const stream of dashboard.socialSecurityStreams) {
+    const monthly = stream.claimingAge === 62 ? stream.monthlyAt62 : stream.claimingAge === 67 ? stream.monthlyAt67 : stream.claimingAge === 70 ? stream.monthlyAt70 : null
+    if (stream.claimingAge != null && monthly != null) {
+      const label = stream.label?.trim() || "Yourself"
+      streams.push({ id: stream.id, name: `Social Security (${label})`, kind: "social-security", startAge: stream.claimingAge, annualAmount: monthly * 12 })
+    }
   }
-  const socialSecurityMonthly =
-    dashboard.socialSecurityClaimingAge === 62
-      ? dashboard.socialSecurityMonthlyAt62
-      : dashboard.socialSecurityClaimingAge === 67
-        ? dashboard.socialSecurityMonthlyAt67
-        : dashboard.socialSecurityClaimingAge === 70
-          ? dashboard.socialSecurityMonthlyAt70
-          : null
-  if (dashboard.socialSecurityClaimingAge != null && socialSecurityMonthly != null) {
-    streams.push({ id: "social-security", name: "Social Security", startAge: dashboard.socialSecurityClaimingAge, annualAmount: socialSecurityMonthly * 12 })
+  for (const stream of dashboard.otherIncomeStreams) {
+    if (stream.startAge != null && stream.monthlyAmount != null) {
+      streams.push({
+        id: stream.id,
+        name: stream.label,
+        kind: "other",
+        startAge: stream.startAge,
+        annualAmount: stream.monthlyAmount * 12,
+        // null ("auto") resolves to the same ordinary-income estimate an account's own
+        // tax-deferred withdrawal defaults to (WITHDRAWAL_TAX_RATES above) -- a pension/annuity is
+        // typically taxed the same way. A config migrated from the old single pensionMonthlyAmount
+        // field (parseFireConfig, fire-accounts.ts) pins this explicitly to 0 instead, preserving
+        // that field's own prior behavior (no tax haircut at all) rather than silently shrinking an
+        // existing plan's spend-offset the first time this runs.
+        withdrawalTaxRate: stream.customWithdrawalTaxRate ?? WITHDRAWAL_TAX_RATES["tax-deferred"],
+      })
+    }
   }
   return streams
 }
@@ -330,7 +356,10 @@ export function buildSpendingPhases(
   // Computed fresh at any age (not tracked incrementally) so the later loop below can freely
   // interleave income-stream and expense-adjustment boundaries in age order without the two
   // needing to be walked together.
-  const incomeEffectAt = (age: number): number => incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount, 0)
+  // Same withdrawalTaxRate haircut fire-analysis.ts's own incomeAtAge applies -- see
+  // RetirementIncomeStream's own doc comment.
+  const incomeEffectAt = (age: number): number =>
+    incomeStreams.filter((stream) => stream.startAge <= age).reduce((sum, stream) => sum + stream.annualAmount * (1 - (stream.withdrawalTaxRate ?? 0)), 0)
   const adjustmentEffectAt = (age: number): number =>
     expenseAdjustments.filter((adjustment) => adjustment.startAge <= age && (adjustment.endAge == null || adjustment.endAge >= age)).reduce((sum, adjustment) => sum + adjustment.annualAmount, 0)
 

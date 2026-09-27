@@ -11,6 +11,7 @@ import {
   portfolioAccountIds,
   retirementIncomeStreams,
   spendHistoryMonthsWithOverride,
+  WITHDRAWAL_TAX_RATES,
   withdrawalTaxRateFor,
 } from "./fire-dashboard.ts"
 import type { MonteCarloAssumptions, RetirementIncomeStream } from "./fire-dashboard.ts"
@@ -277,6 +278,17 @@ describe("buildSpendingPhases", () => {
     ])
   })
 
+  it("issue #55: nets an Other Income stream's own withdrawalTaxRate out of what actually offsets spend", () => {
+    // $200,000/yr gross at a 25% withdrawal tax rate nets $150,000/yr actually available to offset
+    // spend -- not the full $200,000 a stream with no rate (the default 0, matching every
+    // pre-existing pension/Social Security/debt-payoff stream) would net.
+    const otherIncome: RetirementIncomeStream = { id: "rental", name: "Rental income", kind: "other", startAge: 60, annualAmount: 200000, withdrawalTaxRate: 0.25 }
+    expect(buildSpendingPhases(45, 60, 500000, [otherIncome])).toEqual([
+      { id: "pre-retirement", name: "Pre-retirement (income covers it, no withdrawal)", fromAge: null, annualWithdrawal: 0 },
+      { id: "retirement-spending", name: "Retirement spending", fromAge: 60, annualWithdrawal: 350000 },
+    ])
+  })
+
   it("floors the withdrawal at 0 rather than going negative when income exceeds spend", () => {
     const pension: RetirementIncomeStream = { id: "pension", name: "Pension", startAge: 60, annualAmount: 900000 }
     expect(buildSpendingPhases(45, 60, 500000, [pension])).toEqual([
@@ -325,35 +337,68 @@ describe("buildSpendingPhases", () => {
 })
 
 describe("retirementIncomeStreams", () => {
-  const base: Pick<
-    DashboardConfig,
-    "pensionStartAge" | "pensionMonthlyAmount" | "socialSecurityClaimingAge" | "socialSecurityMonthlyAt62" | "socialSecurityMonthlyAt67" | "socialSecurityMonthlyAt70"
-  > = DEFAULT_DASHBOARD_CONFIG
+  const base: Pick<DashboardConfig, "socialSecurityStreams" | "otherIncomeStreams"> = DEFAULT_DASHBOARD_CONFIG
 
   it("returns nothing when nothing is configured", () => {
     expect(retirementIncomeStreams(base)).toEqual([])
   })
 
-  it("requires both a pension start age and an amount before counting it", () => {
-    expect(retirementIncomeStreams({ ...base, pensionStartAge: 60 })).toEqual([])
-    expect(retirementIncomeStreams({ ...base, pensionMonthlyAmount: 100000 })).toEqual([])
-    expect(retirementIncomeStreams({ ...base, pensionStartAge: 60, pensionMonthlyAmount: 100000 })).toEqual([
-      { id: "pension", name: "Pension", startAge: 60, annualAmount: 1200000 },
+  it("requires both a start age and an amount before counting an Other Income stream", () => {
+    const partial1 = { id: "s1", label: "Pension", startAge: 60, monthlyAmount: null, customWithdrawalTaxRate: null }
+    const partial2 = { id: "s1", label: "Pension", startAge: null, monthlyAmount: 100000, customWithdrawalTaxRate: null }
+    const complete = { id: "s1", label: "Pension", startAge: 60, monthlyAmount: 100000, customWithdrawalTaxRate: null }
+    expect(retirementIncomeStreams({ ...base, otherIncomeStreams: [partial1] })).toEqual([])
+    expect(retirementIncomeStreams({ ...base, otherIncomeStreams: [partial2] })).toEqual([])
+    expect(retirementIncomeStreams({ ...base, otherIncomeStreams: [complete] })).toEqual([
+      { id: "s1", name: "Pension", kind: "other", startAge: 60, annualAmount: 1200000, withdrawalTaxRate: WITHDRAWAL_TAX_RATES["tax-deferred"] },
     ])
   })
 
-  it("uses whichever of the three SSA figures matches the chosen claiming age", () => {
-    const withAllThree = { ...base, socialSecurityMonthlyAt62: 180000, socialSecurityMonthlyAt67: 240000, socialSecurityMonthlyAt70: 300000 }
-    expect(retirementIncomeStreams({ ...withAllThree, socialSecurityClaimingAge: 62 })).toEqual([
-      { id: "social-security", name: "Social Security", startAge: 62, annualAmount: 2160000 },
+  it("uses the stream's own label verbatim, and a real customWithdrawalTaxRate instead of auto", () => {
+    const stream = { id: "s1", label: "Rental income", startAge: 65, monthlyAmount: 200000, customWithdrawalTaxRate: 0.1 }
+    expect(retirementIncomeStreams({ ...base, otherIncomeStreams: [stream] })).toEqual([
+      { id: "s1", name: "Rental income", kind: "other", startAge: 65, annualAmount: 2400000, withdrawalTaxRate: 0.1 },
     ])
-    expect(retirementIncomeStreams({ ...withAllThree, socialSecurityClaimingAge: 70 })).toEqual([
-      { id: "social-security", name: "Social Security", startAge: 70, annualAmount: 3600000 },
+  })
+
+  it("supports multiple Other Income streams at once", () => {
+    const pension = { id: "s1", label: "Pension", startAge: 62, monthlyAmount: 100000, customWithdrawalTaxRate: null }
+    const rental = { id: "s2", label: "Rental income", startAge: 65, monthlyAmount: 200000, customWithdrawalTaxRate: 0 }
+    expect(retirementIncomeStreams({ ...base, otherIncomeStreams: [pension, rental] })).toEqual([
+      { id: "s1", name: "Pension", kind: "other", startAge: 62, annualAmount: 1200000, withdrawalTaxRate: WITHDRAWAL_TAX_RATES["tax-deferred"] },
+      { id: "s2", name: "Rental income", kind: "other", startAge: 65, annualAmount: 2400000, withdrawalTaxRate: 0 },
+    ])
+  })
+
+  it("uses whichever of the three SSA figures matches the chosen claiming age, defaulting the label to Yourself", () => {
+    const withAllThree = { id: "ss1", label: null, monthlyAt62: 180000, monthlyAt67: 240000, monthlyAt70: 300000, claimingAge: null }
+    expect(retirementIncomeStreams({ ...base, socialSecurityStreams: [{ ...withAllThree, claimingAge: 62 }] })).toEqual([
+      { id: "ss1", name: "Social Security (Yourself)", kind: "social-security", startAge: 62, annualAmount: 2160000 },
+    ])
+    expect(retirementIncomeStreams({ ...base, socialSecurityStreams: [{ ...withAllThree, claimingAge: 70 }] })).toEqual([
+      { id: "ss1", name: "Social Security (Yourself)", kind: "social-security", startAge: 70, annualAmount: 3600000 },
+    ])
+  })
+
+  it("uses a real label in the marker name when one is set", () => {
+    const stream = { id: "ss1", label: "Spouse", claimingAge: 67 as const, monthlyAt62: null, monthlyAt67: 240000, monthlyAt70: null }
+    expect(retirementIncomeStreams({ ...base, socialSecurityStreams: [stream] })).toEqual([
+      { id: "ss1", name: "Social Security (Spouse)", kind: "social-security", startAge: 67, annualAmount: 2880000 },
+    ])
+  })
+
+  it("supports multiple Social Security streams at once (e.g. a spouse's own)", () => {
+    const yours = { id: "ss1", label: null, claimingAge: 67 as const, monthlyAt62: null, monthlyAt67: 240000, monthlyAt70: null }
+    const spouses = { id: "ss2", label: "Spouse", claimingAge: 62 as const, monthlyAt62: 180000, monthlyAt67: null, monthlyAt70: null }
+    expect(retirementIncomeStreams({ ...base, socialSecurityStreams: [yours, spouses] })).toEqual([
+      { id: "ss1", name: "Social Security (Yourself)", kind: "social-security", startAge: 67, annualAmount: 2880000 },
+      { id: "ss2", name: "Social Security (Spouse)", kind: "social-security", startAge: 62, annualAmount: 2160000 },
     ])
   })
 
   it("doesn't count Social Security when a claiming age is set but that age's own figure is missing", () => {
-    expect(retirementIncomeStreams({ ...base, socialSecurityClaimingAge: 67, socialSecurityMonthlyAt62: 180000 })).toEqual([])
+    const stream = { id: "ss1", label: null, claimingAge: 67 as const, monthlyAt62: 180000, monthlyAt67: null, monthlyAt70: null }
+    expect(retirementIncomeStreams({ ...base, socialSecurityStreams: [stream] })).toEqual([])
   })
 })
 

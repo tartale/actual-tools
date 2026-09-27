@@ -283,7 +283,8 @@ function render() {
   renderSummary()
   revealTopSectionIfReady()
   renderPlan()
-  renderIncome()
+  renderSocialSecurityStreams()
+  renderOtherIncomeStreams()
   renderSimSettings()
   renderWithdrawalRule()
   renderTaxBands()
@@ -332,25 +333,161 @@ function renderPlan() {
   document.getElementById("ageDerived").textContent = STATE.currentAge ?? "—"
 }
 
-// Renders the optional Pension/Social Security boxes and attaches their money-field formatting --
-// these patch the same /api/retirement/plan route as birth date/retirement ages, since they're
-// plan-wide facts, not tied to any one Actual account.
-function renderIncome() {
-  const d = STATE.dashboard
-  const fields = [
-    ["pensionStartAge", d.pensionStartAge ?? ""],
-    ["ss62", formatMoneyInputValue(d.socialSecurityMonthlyAt62)],
-    ["ss67", formatMoneyInputValue(d.socialSecurityMonthlyAt67)],
-    ["ss70", formatMoneyInputValue(d.socialSecurityMonthlyAt70)],
-  ]
-  fields.forEach(([id, value]) => {
-    const el = document.getElementById(id)
-    if (document.activeElement !== el) el.value = value
+// Mirrors WITHDRAWAL_TAX_RATES["tax-deferred"] in fire-dashboard.ts -- display only (the actual
+// resolution happens server-side; a null customWithdrawalTaxRate always means "let the server
+// decide"), so a drift between this and the server's own constant would only ever show a stale
+// placeholder number, never change what's actually simulated.
+const OTHER_INCOME_AUTO_WITHDRAWAL_TAX_RATE = 0.22
+
+// Renders the Social Security streams list (issue #55) -- same dynamic-list-of-rows pattern as
+// renderExpenseAdjustments/renderTaxBands: one row per stream, a whole-array PATCH on every edit,
+// patching the same /api/retirement/plan route as birth date/retirement ages since these are
+// plan-wide facts, not tied to any one Actual account. label is optional -- most plans only ever
+// have the one person's own benefit, and retirementIncomeStreams (fire-dashboard.ts) falls back to
+// "Yourself" for the marker/legend when it's blank; a second stream (e.g. a spouse's) is what the
+// label is actually for.
+function renderSocialSecurityStreams() {
+  const streams = STATE.dashboard.socialSecurityStreams
+  const container = document.getElementById("socialSecurityStreamsList")
+  container.innerHTML = streams
+    .map(
+      (stream) => `
+    <div class="ss-stream-row" data-stream-id="${escapeHtml(stream.id)}">
+      <div class="field">
+        <label>Label</label>
+        <input type="text" class="ss-label" placeholder="Yourself" value="${escapeHtml(stream.label ?? "")}">
+      </div>
+      <div class="field">
+        <label>At 62</label>
+        <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="ss-62" placeholder="not entered" value="${escapeHtml(formatMoneyInputValue(stream.monthlyAt62))}"></div>
+      </div>
+      <div class="field">
+        <label>At 67 (full)</label>
+        <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="ss-67" placeholder="not entered" value="${escapeHtml(formatMoneyInputValue(stream.monthlyAt67))}"></div>
+      </div>
+      <div class="field">
+        <label>At 70</label>
+        <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="ss-70" placeholder="not entered" value="${escapeHtml(formatMoneyInputValue(stream.monthlyAt70))}"></div>
+      </div>
+      <div class="field">
+        <label>Claim age</label>
+        <select class="ss-claim-age">
+          <option value="">Not set</option>
+          <option value="62"${stream.claimingAge === 62 ? " selected" : ""}>62</option>
+          <option value="67"${stream.claimingAge === 67 ? " selected" : ""}>67</option>
+          <option value="70"${stream.claimingAge === 70 ? " selected" : ""}>70</option>
+        </select>
+      </div>
+      <button type="button" class="icon-btn ss-remove" title="Remove" aria-label="Remove Social Security stream">✕</button>
+    </div>`,
+    )
+    .join("")
+  container.querySelectorAll(".ss-stream-row").forEach((row) => {
+    const streamId = row.dataset.streamId
+    const amount62 = row.querySelector(".ss-62")
+    const amount67 = row.querySelector(".ss-67")
+    const amount70 = row.querySelector(".ss-70")
+    attachMoneyFormatting(amount62)
+    attachMoneyFormatting(amount67)
+    attachMoneyFormatting(amount70)
+    const commitRow = debounce(() => {
+      const label = row.querySelector(".ss-label").value.trim()
+      const claimAge = row.querySelector(".ss-claim-age").value
+      const next = STATE.dashboard.socialSecurityStreams.map((stream) =>
+        stream.id === streamId
+          ? {
+              id: streamId,
+              label: label === "" ? null : label,
+              claimingAge: claimAge === "" ? null : parseInt(claimAge, 10),
+              monthlyAt62: parseMoneyInputCents(amount62.value),
+              monthlyAt67: parseMoneyInputCents(amount67.value),
+              monthlyAt70: parseMoneyInputCents(amount70.value),
+            }
+          : stream,
+      )
+      runExclusive(() => patchPlan({ socialSecurityStreams: next }, "savedIncome"))
+    })
+    row.querySelector(".ss-label").addEventListener("change", commitRow)
+    row.querySelector(".ss-claim-age").addEventListener("change", commitRow)
+    amount62.addEventListener("moneycommit", commitRow)
+    amount67.addEventListener("moneycommit", commitRow)
+    amount70.addEventListener("moneycommit", commitRow)
+    row.querySelector(".ss-remove").addEventListener("click", () => {
+      const next = STATE.dashboard.socialSecurityStreams.filter((stream) => stream.id !== streamId)
+      runExclusive(() => patchPlan({ socialSecurityStreams: next }, "savedIncome"))
+    })
   })
-  const pensionAmountEl = document.getElementById("pensionMonthlyAmount")
-  if (document.activeElement !== pensionAmountEl) pensionAmountEl.value = formatMoneyInputValue(d.pensionMonthlyAmount)
-  const claimSelect = document.getElementById("ssClaimAge")
-  if (document.activeElement !== claimSelect) claimSelect.value = d.socialSecurityClaimingAge == null ? "" : String(d.socialSecurityClaimingAge)
+}
+
+// Renders the Other Income streams list (issue #55) -- same pattern as
+// renderSocialSecurityStreams above. label is REQUIRED here (unlike Social Security's optional
+// one) and used verbatim in the marker -- there's no sensible generic fallback the way "Yourself"
+// is for Social Security, so an emptied label reverts to "Pension" on commit rather than being
+// allowed to save blank. Withdrawal tax rate mirrors an account's own customWithdrawalTaxRate
+// field/placeholder convention (renderAccountRow) -- blank means "auto."
+function renderOtherIncomeStreams() {
+  const streams = STATE.dashboard.otherIncomeStreams
+  const container = document.getElementById("otherIncomeStreamsList")
+  container.innerHTML = streams
+    .map(
+      (stream) => `
+    <div class="oi-stream-row" data-stream-id="${escapeHtml(stream.id)}">
+      <div class="field">
+        <label>Label</label>
+        <input type="text" class="oi-label" value="${escapeHtml(stream.label)}">
+      </div>
+      <div class="field">
+        <label>Starts at age</label>
+        <input type="number" min="1" class="oi-start-age" value="${stream.startAge ?? ""}">
+      </div>
+      <div class="field">
+        <label>Monthly amount</label>
+        <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="oi-amount" placeholder="not entered" value="${escapeHtml(formatMoneyInputValue(stream.monthlyAmount))}"></div>
+      </div>
+      <div class="field">
+        <label>Withdrawal tax rate</label>
+        <div class="input-affix suffix-percent"><input type="number" min="0" step="0.5" class="oi-tax-rate" placeholder="auto (${Math.round(OTHER_INCOME_AUTO_WITHDRAWAL_TAX_RATE * 100)}%)" value="${stream.customWithdrawalTaxRate != null ? stream.customWithdrawalTaxRate * 100 : ""}"></div>
+      </div>
+      <button type="button" class="icon-btn oi-remove" title="Remove" aria-label="Remove income stream">✕</button>
+    </div>`,
+    )
+    .join("")
+  container.querySelectorAll(".oi-stream-row").forEach((row) => {
+    const streamId = row.dataset.streamId
+    const amountInput = row.querySelector(".oi-amount")
+    attachMoneyFormatting(amountInput)
+    const commitRow = debounce(() => {
+      const labelInput = row.querySelector(".oi-label")
+      const startAgeInput = row.querySelector(".oi-start-age")
+      const taxRateInput = row.querySelector(".oi-tax-rate")
+      const next = STATE.dashboard.otherIncomeStreams.map((stream) =>
+        stream.id === streamId
+          ? {
+              id: streamId,
+              label: labelInput.value.trim() === "" ? "Pension" : labelInput.value.trim(),
+              startAge: startAgeInput.value === "" ? null : parseInt(startAgeInput.value, 10),
+              monthlyAmount: parseMoneyInputCents(amountInput.value),
+              customWithdrawalTaxRate: taxRateInput.value === "" ? null : Number(taxRateInput.value) / 100,
+            }
+          : stream,
+      )
+      runExclusive(() => patchPlan({ otherIncomeStreams: next }, "savedIncome"))
+    })
+    row.querySelector(".oi-label").addEventListener("change", commitRow)
+    row.querySelector(".oi-start-age").addEventListener("change", commitRow)
+    amountInput.addEventListener("moneycommit", commitRow)
+    row.querySelector(".oi-tax-rate").addEventListener("change", commitRow)
+    row.querySelector(".oi-remove").addEventListener("click", () => {
+      const next = STATE.dashboard.otherIncomeStreams.filter((stream) => stream.id !== streamId)
+      runExclusive(() => patchPlan({ otherIncomeStreams: next }, "savedIncome"))
+    })
+  })
+}
+
+let incomeStreamIdCounter = 0
+function nextIncomeStreamId(prefix) {
+  incomeStreamIdCounter += 1
+  return `${prefix}-${Date.now()}-${incomeStreamIdCounter}`
 }
 
 // Renders the "Simulation settings" fields a person can pin (see fire-dashboard.ts's
@@ -504,8 +641,8 @@ function nextTaxBandId() {
 // Function to render the Expense adjustments list (issue #24) -- same add/edit/remove-row pattern
 // as renderTaxBands just above (one dynamic list item per ExpenseAdjustment, a whole-array PATCH
 // on every edit rather than a per-field route), with a sign selector splitting the stored signed
-// annualAmount into a magnitude the user enters as a MONTHLY figure (matching pensionMonthlyAmount's
-// own convention) and a +/- direction, rather than asking for a signed number directly.
+// annualAmount into a magnitude the user enters as a MONTHLY figure (matching every income stream's
+// own monthlyAmount convention) and a +/- direction, rather than asking for a signed number directly.
 function renderExpenseAdjustments() {
   const adjustments = STATE.dashboard.expenseAdjustments
   const container = document.getElementById("expenseAdjustmentsList")
@@ -2919,28 +3056,16 @@ document.getElementById("acaFloorPctFpl").addEventListener("change", (e) => {
   runExclusive(() => patchPlan({ acaFloorPctFpl: pct }, "savedAcaFloorPctFpl"))
 })
 
-document.getElementById("pensionStartAge").addEventListener("change", (e) => {
-  const age = e.target.value === "" ? null : parseFloat(e.target.value)
-  runExclusive(() => patchPlan({ pensionStartAge: age === null || age <= 0 ? null : age }, "savedIncome"))
+// Add buttons for the Social Security / Other Income streams lists (issue #55) -- append one new,
+// empty stream and patch immediately; renderSocialSecurityStreams/renderOtherIncomeStreams (called
+// from the main render()) then draw its row and wire its own per-row listeners.
+document.getElementById("addSocialSecurityBtn").addEventListener("click", () => {
+  const next = [...STATE.dashboard.socialSecurityStreams, { id: nextIncomeStreamId("ss"), label: null, claimingAge: null, monthlyAt62: null, monthlyAt67: null, monthlyAt70: null }]
+  runExclusive(() => patchPlan({ socialSecurityStreams: next }, "savedIncome"))
 })
-const pensionAmountInput = document.getElementById("pensionMonthlyAmount")
-attachMoneyFormatting(pensionAmountInput)
-pensionAmountInput.addEventListener("moneycommit", (e) => {
-  runExclusive(() => patchPlan({ pensionMonthlyAmount: parseMoneyInputCents(e.target.value) }, "savedIncome"))
-})
-;[
-  ["ss62", "socialSecurityMonthlyAt62"],
-  ["ss67", "socialSecurityMonthlyAt67"],
-  ["ss70", "socialSecurityMonthlyAt70"],
-].forEach(([id, field]) => {
-  const input = document.getElementById(id)
-  attachMoneyFormatting(input)
-  input.addEventListener("moneycommit", (e) => {
-    runExclusive(() => patchPlan({ [field]: parseMoneyInputCents(e.target.value) }, "savedIncome"))
-  })
-})
-document.getElementById("ssClaimAge").addEventListener("change", (e) => {
-  runExclusive(() => patchPlan({ socialSecurityClaimingAge: e.target.value === "" ? null : parseInt(e.target.value, 10) }, "savedIncome"))
+document.getElementById("addOtherIncomeBtn").addEventListener("click", () => {
+  const next = [...STATE.dashboard.otherIncomeStreams, { id: nextIncomeStreamId("income"), label: "Pension", startAge: null, monthlyAmount: null, customWithdrawalTaxRate: null }]
+  runExclusive(() => patchPlan({ otherIncomeStreams: next }, "savedIncome"))
 })
 
 // Wired once, not per-render, since the container element itself is never recreated -- only its

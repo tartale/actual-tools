@@ -665,6 +665,48 @@ describe("GET /api/retirement/check", () => {
     expect(body.acaCliffCrossings).toEqual([{ retirementAge: 51, crossesAtAge: 54, pctFPL: 902.1 }])
   })
 
+  it("issue #55: sums MULTIPLE Other Income streams toward MAGI, not just one of them", async () => {
+    // pctFPL is MAGI as a raw multiple of the (unmultiplied) FPL guideline itself ($15,650 for
+    // household size 1 -- see federalPovertyGuideline), not of the 400% cliff threshold. Two
+    // $36,000/yr Other Income streams, both active from retirement -- neither alone crosses 400%
+    // FPL (230.1% each), but their SUM ($72,000, 460.1%) does. A regression that only picked up one
+    // of the two (the old single-id .find(), or a kind-based .find() that stopped at the first
+    // match instead of summing every match) would silently miss this crossing.
+    const url = await boot({
+      accounts: [{ id: "a1", name: "Brokerage", offbudget: true, closed: false }],
+      transactionsByAccount: { a1: [{ amount: 2_000_000_00, transfer_id: null }] },
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -2000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        birthDate: "1961-01-01",
+        retirementAges: [65],
+        planToAge: 90,
+        filingStatus: "single",
+        householdSize: 1,
+        otherIncomeStreams: [
+          { id: "s1", label: "Rental A", startAge: 65, monthlyAmount: 3000_00, customWithdrawalTaxRate: 0 },
+          { id: "s2", label: "Rental B", startAge: 65, monthlyAmount: 3000_00, customWithdrawalTaxRate: 0 },
+        ],
+      }),
+    })
+    await fetch(`${url}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "brokerage" }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.acaCliffCrossings).toHaveLength(1)
+    expect(body.acaCliffCrossings[0]).toMatchObject({ retirementAge: 65, crossesAtAge: 65 })
+    expect(body.acaCliffCrossings[0]?.pctFPL).toBeCloseTo(460.1, 1)
+  })
+
   it("issue #55: suppresses an ACA cliff crossing once it lands at or past the plan's own Medicare age", async () => {
     // Same fixture as the crossing test above (crosses at 54) -- Medicare already covers this
     // person by then, so the marker/finding would be moot (there's no ACA marketplace coverage left
@@ -1008,7 +1050,14 @@ describe("GET /api/retirement/check", () => {
     // would still mark a crossing at 80, well past the point the chart already shows $0 accessible.
     await fetch(`${url}api/retirement/plan`, {
       method: "PATCH",
-      body: JSON.stringify({ birthDate: "1970-01-01", retirementAges: [65], planToAge: 90, filingStatus: "single", householdSize: 1, pensionStartAge: 80, pensionMonthlyAmount: 10000_00 }),
+      body: JSON.stringify({
+        birthDate: "1970-01-01",
+        retirementAges: [65],
+        planToAge: 90,
+        filingStatus: "single",
+        householdSize: 1,
+        otherIncomeStreams: [{ id: "pension", label: "Pension", startAge: 80, monthlyAmount: 10000_00, customWithdrawalTaxRate: null }],
+      }),
     })
     await fetch(`${url}api/retirement/accounts/ira`, { method: "PATCH", body: JSON.stringify({ type: "inherited-ira" }) })
 
