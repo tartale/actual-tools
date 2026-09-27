@@ -525,8 +525,14 @@ function renderExpenseAdjustments() {
         </select>
       </div>
       <div class="field">
-        <label>Monthly amount</label>
-        <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="ea-amount" value="${escapeHtml(formatMoneyInputValue(Math.round(Math.abs(adjustment.annualAmount) / 12)))}"></div>
+        <label>Amount</label>
+        <div class="ea-amount-row">
+          <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="ea-amount" value="${escapeHtml(formatMoneyInputValue(Math.round(Math.abs(adjustment.annualAmount) / 12)))}"></div>
+          <select class="ea-unit">
+            <option value="mo" selected>/mo</option>
+            <option value="yr">/yr</option>
+          </select>
+        </div>
       </div>
       <div class="field">
         <label>Start age</label>
@@ -546,19 +552,24 @@ function renderExpenseAdjustments() {
   container.querySelectorAll(".expense-adjustment-row").forEach((row) => {
     const adjustmentId = row.dataset.adjustmentId
     const amountInput = row.querySelector(".ea-amount")
+    const unitInput = row.querySelector(".ea-unit")
     attachMoneyFormatting(amountInput)
+    // Storage is always an ANNUAL total (annualAmount) -- the unit select is purely a display/entry
+    // convenience, not a persisted field, so it starts at "mo" on every render (matching the value
+    // already shown) rather than trying to remember which unit a person last typed in.
     const commitRow = debounce(() => {
       const signInput = row.querySelector(".ea-sign")
       const startAgeInput = row.querySelector(".ea-start-age")
       const endAgeInput = row.querySelector(".ea-end-age")
       const inflateInput = row.querySelector(".ea-inflate")
-      const monthlyAmount = parseMoneyInputCents(amountInput.value) ?? 0
+      const enteredAmount = parseMoneyInputCents(amountInput.value) ?? 0
+      const annualAmount = (unitInput.value === "yr" ? enteredAmount : enteredAmount * 12) * Number(signInput.value)
       const next = STATE.dashboard.expenseAdjustments.map((adjustment) =>
         adjustment.id === adjustmentId
           ? {
               id: adjustmentId,
               name: row.querySelector(".ea-name").value,
-              annualAmount: monthlyAmount * 12 * Number(signInput.value),
+              annualAmount,
               startAge: startAgeInput.value === "" ? adjustment.startAge : parseInt(startAgeInput.value, 10),
               endAge: endAgeInput.value === "" ? null : parseInt(endAgeInput.value, 10),
               inflate: inflateInput.checked,
@@ -566,6 +577,16 @@ function renderExpenseAdjustments() {
           : adjustment,
       )
       runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
+    })
+    // Switching units re-expresses whatever's currently entered in the new unit (so the real-world
+    // amount the person was picturing stays the same), rather than leaving the same number now
+    // meaning something 12x smaller or larger -- then commits, since the stored annualAmount itself
+    // is unaffected either way but a fresh page load should show back exactly what's on screen now.
+    unitInput.addEventListener("change", () => {
+      const entered = parseMoneyInputCents(amountInput.value) ?? 0
+      const converted = unitInput.value === "yr" ? entered * 12 : Math.round(entered / 12)
+      amountInput.value = formatMoneyInputValue(converted)
+      commitRow()
     })
     row.querySelector(".ea-name").addEventListener("change", commitRow)
     row.querySelector(".ea-sign").addEventListener("change", commitRow)
@@ -956,7 +977,7 @@ function renderAccounts() {
             <label class="checkbox-label"><input type="checkbox" data-field="ruleOf55Active" ${isRuleOf55Active ? "checked" : ""}> Account is active</label>
           </div>
           <div class="field">
-            <label>Age you'll separate from this employer</label>
+            <label>Separation age</label>
             <input type="number" min="1" data-field="ruleOf55SeparationAge" value="${account.ruleOf55SeparationAge ?? 55}" ${isRuleOf55Active ? "" : "disabled"}>
           </div>
           <div class="field">
@@ -4549,6 +4570,9 @@ function applyDataSourceMode(mode) {
 async function refreshDataSourceChip() {
   const accountsChip = document.getElementById("dataSourceChip")
   const transactionsChip = document.getElementById("transactionsChip")
+  // Shown only in Actual-sync mode -- the exact opposite of the two chips above, which are always
+  // hidden there (see each of their own early-return branches below).
+  document.getElementById("linkedChip").hidden = ACTIVE_DATA_SOURCE_MODE !== "actual"
   const formatWhen = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "never")
   // Detached mode's own version of this -- everything it needs is already client-held in
   // DETACHED_DRAFT (no server round trip needed, unlike file mode's own GET /api/data-source

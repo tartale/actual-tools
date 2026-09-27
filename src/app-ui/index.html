@@ -37,6 +37,14 @@
            never ambiguous whether the current numbers are real or just the seeded starting point. -->
       <button type="button" class="chip info chip-btn" id="dataSourceChip" hidden></button>
       <button type="button" class="chip info chip-btn" id="transactionsChip" hidden></button>
+      <!-- The Actual-sync counterpart to the two file/detached chips above (issue #55) -- those two
+           read "hidden entirely in Actual-sync mode"; this one is the reverse, shown ONLY in that
+           mode (see refreshDataSourceChip), so there's always some visible answer to "is this page
+           live-synced to Actual right now, or working from an imported file?" no matter which mode
+           it's in. A plain span, not a chip-btn -- unlike the other two, there's no per-mode modal
+           this one would open (showLoginModal(true) assumes file/detached already, see its own doc
+           comment); logging out is already its own icon button right next to this. -->
+      <span class="chip ok" id="linkedChip" hidden>Linked to Actual</span>
       <!-- Global, not tied to either page -- both blur dollar figures via moneySpan. -->
       <button type="button" class="icon-btn" id="privacyToggle" title="Toggle privacy mode" aria-label="Toggle privacy mode" aria-pressed="false">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
