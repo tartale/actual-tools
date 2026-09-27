@@ -1277,7 +1277,11 @@ function moneyify(text) {
 // scenarios by POSITION in the selected retirement-age list, never by value, so a given age keeps
 // its color for as long as it stays selected and a filtered-down comparison never repaints the
 // scenarios that remain.
-const BRIDGE_SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+//
+// Slot 8 is brown, not the reference palette's own red -- red is reserved exclusively for the ACA
+// Subsidy Cliff marker (MARKER_COLORS.acacliff below, itself this app's --fail token), so a balance
+// line never reads as "another red thing" beside it (issue #55).
+const BRIDGE_SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#b5651d"]
 
 // Mirrors DEFAULT_MONTE_CARLO_ASSUMPTIONS in fire-dashboard.ts -- only used for the loading
 // skeleton's own group-label text (see renderLoadingSkeleton), since the real ones only ever
@@ -1345,7 +1349,7 @@ function niceAxisTicks(maxCents, targetCount) {
 // its own line already stops naturally at the age it runs out, which is the entire point.
 const BRIDGE_WINDOW_YEARS = 20
 
-function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = [], debtPayoffs = [], incomeStreams = [], acaCliffCrossings = [], expenseAdjustments = []) {
+function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts = [], debtPayoffs = [], incomeStreams = [], acaCliffCrossings = [], expenseAdjustments = [], medicareAge = null) {
   const usable = bridgeResults.filter((r) => r.timeline.length > 0 && r.accessibleAtRetirement + r.lockedAtRetirement > 0)
   if (usable.length === 0) return null
   // Read once, not per-figure -- see svgMoneyText/svgAgeText's own doc comment for why this
@@ -1445,14 +1449,15 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     .map((age) => `<line x1="${scaleX(age).toFixed(1)}" y1="${margin.top}" x2="${scaleX(age).toFixed(1)}" y2="${height - margin.bottom}" class="bridge-unlock-line" />`)
     .join("")
 
-  // Four kinds of "something changes at this age" reference line -- a 401(k)'s Rule-of-55
+  // Six kinds of "something changes at this age" reference line -- a 401(k)'s Rule-of-55
   // separation making it accessible early, a mortgage/loan's projected payoff, a pension or Social
-  // Security stream starting, a scenario's MAGI crossing the ACA subsidy cliff -- neutral like the
-  // unlock lines above (belongs to no one scenario's balance line, drawn regardless of whether any
-  // scenario depletes). Combined into one x-sorted stack so a crowded age never collides: each
-  // keeps its own class for color, but a shared row index decides its label's height -- leftmost
-  // (soonest) highest, stepping one row lower per marker as age increases to the right, however
-  // many of the four kinds actually land in that stretch.
+  // Security stream starting, a scenario's MAGI crossing the ACA subsidy cliff, a Planned Expense
+  // Change taking effect, and the plan's own Medicare age -- neutral like the unlock lines above
+  // (belongs to no one scenario's balance line, drawn regardless of whether any scenario depletes).
+  // Combined into one x-sorted stack so a crowded age never collides: each keeps its own class for
+  // color, but a shared row index decides its label's height -- leftmost (soonest) highest,
+  // stepping one row lower per marker as age increases to the right, however many of the six kinds
+  // actually land in that stretch.
   const ruleOf55Ages = [...new Set(ruleOf55Boosts.map((b) => b.to))].filter((age) => age > minAge && age <= maxAge)
   const debtPayoffAges = [...new Set(debtPayoffs.map((d) => d.payoffAge))].filter((age) => age > minAge && age <= maxAge)
   const incomeAges = [...new Set(incomeStreams.map((s) => s.startAge))].filter((age) => age > minAge && age <= maxAge)
@@ -1468,6 +1473,9 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     return events
   })
   const expenseAges = [...new Set(expenseEvents.map((e) => e.age))].filter((age) => age > minAge && age <= maxAge)
+  // The plan's own Medicare age (dashboard.medicareAge), not per-scenario like the other five kinds
+  // above -- one marker at most, regardless of how many retirement ages are being compared.
+  const medicareMarkerAge = medicareAge != null && medicareAge > minAge && medicareAge <= maxAge ? medicareAge : null
   const markers = [
     ...ruleOf55Ages.map((age) => ({
       age,
@@ -1513,6 +1521,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
       const total = eventsAtAge.reduce((sum, e) => sum + e.amount, 0)
       return { age, className: "expense", name, amount: `${total >= 0 ? "+" : "-"}${usdCompact(Math.abs(total))}/yr` }
     }),
+    ...(medicareMarkerAge != null ? [{ age: medicareMarkerAge, className: "medicare", name: "Medicare", amount: "starts" }] : []),
   ].sort((a, b) => a.age - b.age)
   const markerRowStep = 13
   // One line per DISTINCT age, not one per marker -- two marker types landing on the exact same
@@ -1567,7 +1576,7 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
   // stacked on that line before even reading the labels. Chained pairwise at decreasing weights
   // (1/2, 1/3, 1/4, ...) rather than flat 50/50 so N colors end up EQUALLY weighted regardless of
   // how many are being folded in, not biased toward whichever was mixed in last.
-  const MARKER_COLORS = { ruleof55: "#9446ed", mortgage: "#66b5fa", income: "#65d6ad", acacliff: "#ff9b9b", expense: "#f2b544" }
+  const MARKER_COLORS = { ruleof55: "#9446ed", mortgage: "#66b5fa", income: "#65d6ad", acacliff: "#ff9b9b", expense: "#f2b544", medicare: "#3ecfb2" }
   const blendMarkerColors = (classNames) =>
     classNames
       .map((cls) => MARKER_COLORS[cls])
@@ -2164,9 +2173,19 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
     // One flex-item span per figure (label + its value together), not bare text nodes -- the
     // row's own flex gap only reads as a clean, even gap next to each "|" separator this way,
     // rather than also prying a label away from its own value.
-    const metricSpan = (unitLabel, amount) => {
+    // lineStyle mirrors the chart's own solid-accessible/dashed-locked convention (see
+    // bridge-style-key beside the chart) so the two stay legible independently of each other --
+    // issue #55: previously only that separate style key carried the line swatch, so a viewer who
+    // only ever looked at the tooltip had no visual tie between "accessible"/"locked" and which
+    // line each one was. null (expenses) gets no swatch -- there's no line style for it to echo.
+    const metricSpan = (unitLabel, amount, lineStyle = null) => {
       const metric = document.createElement("span")
       metric.className = "bridge-tooltip-metric"
+      if (lineStyle != null) {
+        const swatch = document.createElement("span")
+        swatch.className = `bridge-key-line bridge-tooltip-key-line${lineStyle === "dashed" ? " bridge-key-dashed" : ""}`
+        metric.appendChild(swatch)
+      }
       const value = document.createElement("span")
       value.className = "bridge-tooltip-value"
       value.textContent = moneyMaskText(usd(amount), isPrivate)
@@ -2191,8 +2210,8 @@ function wireBridgeTooltip(wrap, scenarios, scale) {
       // isn't a projection at all, just this plan's own expense figure restated for that year.
       const metrics = []
       if (point.projectedSpend != null) metrics.push(metricSpan(age < scale.currentAge ? "expenses" : "projected expenses", point.projectedSpend))
-      metrics.push(metricSpan("accessible", point.accessibleBalance))
-      if (point.lockedBalance > 0) metrics.push(metricSpan("locked", point.lockedBalance))
+      metrics.push(metricSpan("accessible", point.accessibleBalance, "solid"))
+      if (point.lockedBalance > 0) metrics.push(metricSpan("locked", point.lockedBalance, "dashed"))
       metrics.forEach((metric, metricIndex) => {
         if (metricIndex > 0) {
           const sep = document.createElement("span")
@@ -2780,7 +2799,17 @@ function renderCheckResult(result) {
     group.innerHTML = `<div class="group-label">Bridge · mean returns, ${Math.round(result.inflationMean * 1000) / 10}% inflation</div>`
     const chart = isBridgeTableView()
       ? renderBridgeTable(result.bridgeResults, result.currentAge, result.planToAge)
-      : renderBridgeChart(result.bridgeResults, result.currentAge, result.planToAge, result.ruleOf55Boosts, result.debtPayoffs, result.incomeStreams, result.acaCliffCrossings, result.expenseAdjustments)
+      : renderBridgeChart(
+          result.bridgeResults,
+          result.currentAge,
+          result.planToAge,
+          result.ruleOf55Boosts,
+          result.debtPayoffs,
+          result.incomeStreams,
+          result.acaCliffCrossings,
+          result.expenseAdjustments,
+          STATE.dashboard.medicareAge,
+        )
     if (chart) group.appendChild(chart)
     result.bridgeFindings.forEach((f) => group.appendChild(renderFinding(f)))
     container.appendChild(group)

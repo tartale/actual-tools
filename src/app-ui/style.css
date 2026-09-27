@@ -820,7 +820,20 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    ever drawn when a crossing actually happens -- see acaCliffCrossings in fire-generate.ts. */
 .bridge-acacliff-line { stroke: var(--fail); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
 .bridge-acacliff-label { font-size: 8.5px; fill: var(--fail); }
-/* Two+ of the four marker types above landing on the exact same age (e.g. a pension starting the
+/* A Planned Expense Change taking effect (or ending) -- its own literal hex (not one of the four
+   --accent/--info/--ok/--fail tokens above) since there's no existing semantic color left that
+   fits "a spend change, could be either direction" without colliding with one of those four's own
+   meaning. Matches MARKER_COLORS.expense in app.js -- see that object's own doc comment for why
+   the color is duplicated here rather than read via getComputedStyle. */
+.bridge-expense-line { stroke: #f2b544; stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
+.bridge-expense-label { font-size: 8.5px; fill: #f2b544; }
+/* The plan's own Medicare age (issue #55) -- a distinct literal hex too, same reasoning as expense
+   above, chosen specifically clear of every red/pink hue so it never reads as the same family as
+   the ACA cliff marker right above it (that collision, between --fail and a BRIDGE_SERIES_COLORS
+   line, is exactly what this issue's own "reserve red for the ACA marker" ask was about). */
+.bridge-medicare-line { stroke: #3ecfb2; stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.8; }
+.bridge-medicare-label { font-size: 8.5px; fill: #3ecfb2; }
+/* Two+ of the six marker types above landing on the exact same age (e.g. a pension starting the
    same year a mortgage happens to be paid off) share this one neutral line instead of drawing one
    fully-overlapping <line> per type -- see the dedup in renderBridgeChart's `markerLines`. Each
    marker keeps its own colored LABEL regardless (still one per row; only the line is shared). */
@@ -870,7 +883,10 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .bridge-tooltip-key { width: 10px; height: 2px; border-radius: 1px; flex: none; }
 .bridge-tooltip-value { font-weight: 600; color: var(--ink-strong); font-variant-numeric: tabular-nums; }
 .bridge-tooltip-label { color: var(--ink-soft); }
-.bridge-tooltip-metric { color: var(--ink-soft); }
+.bridge-tooltip-metric { color: var(--ink-soft); display: inline-flex; align-items: center; gap: 4px; }
+/* Narrower than bridge-key-line's own 16px -- the tooltip's row is already tight with an
+   "accessible"/"locked" pair plus expenses, each with its own dollar value. */
+.bridge-tooltip-key-line { width: 10px; }
 .bridge-tooltip-sep { color: var(--line); }
 
 /* Bridge table view (issue #25) -- the same per-age/per-account numbers the Bridge chart's own

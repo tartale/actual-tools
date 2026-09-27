@@ -801,9 +801,15 @@ export async function checkDashboard(
   const acaCliffCrossings: { retirementAge: number; crossesAtAge: number; pctFPL: number }[] = []
   if (options.filingStatus != null && options.federalTaxBrackets != null && options.householdSize != null && options.federalPovertyGuidelines != null && options.federalPovertyGuidelines.subsidyCliffAt400Pct) {
     const baseGuideline = federalPovertyGuideline(options.householdSize, options.federalPovertyGuidelines)
+    // Medicare replaces the need for ACA marketplace coverage once it starts (same age-gating
+    // magiInputsAt itself already applies to the ACA subsidy floor's own Roth-conversion transfers,
+    // and acaTargetPctFpl's help text documents) -- issue #55: a cliff crossing at or past that age
+    // is moot, so it's excluded from the scan rather than left to reach a whole year past the point
+    // ACA coverage stops mattering.
     for (const result of bridgeResults) {
       const lastFundedAge = result.depletionAge != null ? result.depletionAge - 1 : options.planToAge
-      for (let age = result.retirementAge; age <= Math.min(options.planToAge, lastFundedAge); age++) {
+      const lastAcaRelevantAge = options.medicareAge != null ? options.medicareAge - 1 : options.planToAge
+      for (let age = result.retirementAge; age <= Math.min(options.planToAge, lastFundedAge, lastAcaRelevantAge); age++) {
         const { grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit } = magiInputsAt(age, result)
         const estimate = estimateMagi({ grossTaxDeferredWithdrawal, rothConversionAmount, pensionIncome, socialSecurityBenefit }, options.filingStatus, options.federalTaxBrackets)
         const pctFPL = (estimate.magi / inflateGuideline(baseGuideline, age)) * 100

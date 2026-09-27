@@ -665,6 +665,39 @@ describe("GET /api/retirement/check", () => {
     expect(body.acaCliffCrossings).toEqual([{ retirementAge: 51, crossesAtAge: 54, pctFPL: 902.1 }])
   })
 
+  it("issue #55: suppresses an ACA cliff crossing once it lands at or past the plan's own Medicare age", async () => {
+    // Same fixture as the crossing test above (crosses at 54) -- Medicare already covers this
+    // person by then, so the marker/finding would be moot (there's no ACA marketplace coverage left
+    // to lose a subsidy on). Setting medicareAge to exactly the crossing age (not one before it)
+    // also confirms the boundary itself is inclusive, matching the >= gating magiInputsAt's own ACA
+    // subsidy floor logic already uses for the same field.
+    const url = await boot({
+      accounts: [
+        { id: "cash", name: "Brokerage", offbudget: true, closed: false },
+        { id: "401k", name: "Fidelity 401k", offbudget: true, closed: false },
+      ],
+      categoryGroups: [
+        { id: "g1", name: "Group", is_income: false, hidden: false, categories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1" }] },
+      ],
+      transactionsByAccount: { cash: [{ amount: 300_000_00, transfer_id: null }], "401k": [{ amount: 2_000_000_00, transfer_id: null }] },
+      monthCategories: [{ id: "cat-a", name: "Rent", is_income: false, hidden: false, group_id: "g1", budgeted: 0, spent: -8000_00, balance: 0, carryover: false }],
+      dashboardRows: [],
+    })
+    writeFileSync(federalTaxBracketsPath, JSON.stringify(FEDERAL_TAX_BRACKETS_FIXTURE))
+    writeFileSync(federalPovertyGuidelinesPath, JSON.stringify(FEDERAL_POVERTY_GUIDELINES_FIXTURE))
+    await fetch(`${url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({ birthDate: "1975-01-01", retirementAges: [51], planToAge: 90, filingStatus: "single", householdSize: 1, medicareAge: 54 }),
+    })
+    await fetch(`${url}api/retirement/accounts/cash`, { method: "PATCH", body: JSON.stringify({ type: "brokerage", withdrawalOrder: 0 }) })
+    await fetch(`${url}api/retirement/accounts/401k`, { method: "PATCH", body: JSON.stringify({ type: "traditional-401k", earlyWithdrawalPenalty: true, withdrawalOrder: 1 }) })
+
+    const res = await fetch(`${url}api/retirement/check`)
+    expect(res.status).toBe(200)
+    const body = await readJson<CheckResult>(res)
+    expect(body.acaCliffCrossings).toEqual([])
+  })
+
   it("draws tax-deferred up to the %FPL ceiling first, even with no explicit withdrawalOrder", async () => {
     // Confirmed live (2026-09-21) that preferring non-taxable here, as an earlier version of this
     // design did, leaves real ceiling headroom sitting unused every year the $50,000 non-taxable
