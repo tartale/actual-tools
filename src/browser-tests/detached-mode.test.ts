@@ -185,6 +185,11 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     await ui.waitForSelector("#checkResult .findings-group", { timeout: 20000 }) // the example's own boot-time result
     await ui.locator("#birthDate").fill("")
     await ui.locator("#birthDate").press("Tab")
+    // The refresh this test is waiting for is now deferred for as long as ANY entry box stays
+    // focused, with no cap (issue: chart shouldn't flash while still mid-edit) -- Tab alone just
+    // moves focus to the NEXT field, which is still an entry box, so an explicit blur here is what
+    // actually signals "done editing," the same way a real user clicking away from the form would.
+    await ui.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
     await ui.waitForSelector("#checkResult .empty-note", { timeout: 20000 })
     expect(await ui.locator("#checkResult").textContent()).toContain("birth date")
     expect(errors).toEqual([])

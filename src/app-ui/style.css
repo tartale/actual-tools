@@ -562,7 +562,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 }
 .employer-block .field.full { grid-column: 1 / -1; }
 .employer-block.inactive { opacity: 0.55; }
-.radio-row { display: flex; gap: 16px; align-items: center; height: 100%; padding-top: 2px; }
+.radio-row { display: flex; gap: 16px; align-items: center; padding-top: 2px; }
 /* display:none rather than opacity:0 -- an invisible-but-still-laid-out flag was reserving its own
    width even at rest, throwing off the right edge of whichever card-head hint sat next to it (see
    the sections whose hint has one vs. doesn't). Trades away the fade transition for hints that are
@@ -600,6 +600,11 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 
 .acct-fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 18px; }
 .acct-fields .field.full { grid-column: 1 / -1; }
+/* Section dividers for the account row's own consistent top-down layout -- type selections (no
+   heading of its own, "Account type" already reads as one), then Contributions, then Withdrawal
+   settings. Same look as .income-label (Retirement Income's own section headings), spans the full
+   row the same way .field.full does since it isn't itself a .field. */
+.acct-section-label { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin: 4px 0 -2px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
 .acct-fields .field.hidden, .acct-fields .employer-block.hidden { display: none; }
 /* Own display:grid needs its own [hidden] override -- there is no global [hidden]{display:none}
    rule in this app (see .bridge-crosshair's own doc comment for the bug that taught us that). */
@@ -607,6 +612,19 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 /* Allocation's option text spells out the stock/bond split (e.g. "equity-80 — 80% stocks / 20%
    bonds") -- one quarter-width column truncates it, so this field gets two. */
 .field.wide { grid-column: span 2; }
+/* Monthly contribution + its own IRS limit note, side by side and top-aligned with each other
+   (issue: consistent account-row layout) -- a nested 2-column/2-row grid rather than two
+   independent .acct-fields items, so the limit note stretches all the way to the row's own right
+   edge (not a fixed-width .field.wide, which left a column empty past it) AND the two labels
+   share one grid ROW. That second part is what actually keeps them lined up: "Monthly
+   contribution" wraps to two lines at this column's width, and a fixed-height spacer for the
+   limit note's own (empty, visually absent) label would only match ONE of those wrapped/unwrapped
+   states -- sharing a real grid row instead means the row's own height is simply however tall the
+   taller of the two labels needs, whichever that turns out to be, so the row below it (the real
+   input and the limit box) always starts at the exact same y for both columns. */
+.contrib-pair { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 3fr; column-gap: 18px; row-gap: 5px; align-items: center; }
+.contrib-pair label { font-size: 11px; font-weight: 500; color: var(--ink-soft); }
+.contrib-pair label[aria-hidden] { visibility: hidden; }
 
 /* The Spend configuration section's expense-category picker: always visible, no master toggle --
    a null selection (nothing customized) renders every non-hidden category checked, matching the

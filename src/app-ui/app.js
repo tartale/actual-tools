@@ -359,7 +359,11 @@ function renderSocialSecurityStreams() {
   // claimingAge saved because a re-render landed between filling the amount and picking the claim
   // age, wiping the just-typed amount's own field back to the row's last-saved (incomplete) state.
   // The next real edit anywhere in this list re-renders normally once focus has actually left it.
-  if (container.contains(document.activeElement)) return
+  // Scoped to a real entry box (isEntryBoxFocused), not any focusable descendant -- a just-clicked
+  // Remove button is INSIDE this container too, and that click's own STATE update (the stream is
+  // already gone) needs this rebuild to actually happen, not get skipped because the very button
+  // being removed still transiently holds focus.
+  if (container.contains(document.activeElement) && isEntryBoxFocused()) return
   const streams = STATE.dashboard.socialSecurityStreams
   container.innerHTML = streams
     .map(
@@ -440,7 +444,7 @@ function renderSocialSecurityStreams() {
 function renderOtherIncomeStreams() {
   const container = document.getElementById("otherIncomeStreamsList")
   // See renderSocialSecurityStreams's own doc comment -- same reasoning, same bug.
-  if (container.contains(document.activeElement)) return
+  if (container.contains(document.activeElement) && isEntryBoxFocused()) return
   const streams = STATE.dashboard.otherIncomeStreams
   container.innerHTML = streams
     .map(
@@ -1027,9 +1031,6 @@ function renderAccounts() {
 
     const showContribution = typeInfo.contributionAllowed
     const contributionValue = formatMoneyInputValue(account.monthlyContribution)
-    const maxCaption = account.monthlyContributionIsMax
-      ? `<div class="derived">≈ ${moneySpan(account.monthlyContribution ?? 0)}/mo — remainder of the ${typeInfo.limitGroup} limit after other accounts</div>`
-      : ""
 
     const isRuleOf55Active = account.ruleOf55SeparationAge != null
     // A 401(k)-family account with no active employer relationship has nothing to contribute
@@ -1061,6 +1062,10 @@ function renderAccounts() {
         ${ACTIVE_DATA_SOURCE_MODE === "detached" ? `<button type="button" class="btn secondary acct-remove-btn" data-remove-account="${account.id}">Remove</button>` : ""}
       </div>
       <div class="acct-fields" ${accountFolded ? "hidden" : ""}>
+        <!-- Section 1: what this account IS -- type, and every field that describes it rather than
+             something you do to it (allocation/return/volatility for a portfolio account, HSA's own
+             coverage tier, a debt account's own loan terms). Consistent top-down order across every
+             account type: type selections, then contributions, then withdrawal settings. -->
         <div class="field full">
           <label>Account type</label>
           <select data-field="type">${typeOptions}</select>
@@ -1082,75 +1087,6 @@ function renderAccounts() {
             <input type="number" min="0" step="0.1" data-field="customReturnStdDev" value="${account.customReturnStdDev != null ? account.customReturnStdDev * 100 : (account.defaultReturnStdDev != null ? Math.round(account.defaultReturnStdDev * 1000) / 10 : "")}" placeholder="e.g. 12">
           </div>
         </div>
-        <div class="field ${typeInfo.isPortfolio ? "" : "hidden"}">
-          <label>Withdrawal tax rate</label>
-          <div class="input-affix suffix-percent">
-            <input type="number" min="0" step="0.5" data-field="customWithdrawalTaxRate" value="${account.customWithdrawalTaxRate != null ? account.customWithdrawalTaxRate * 100 : ""}" placeholder="auto (${Math.round(account.defaultWithdrawalTaxRate * 100)}%)">
-          </div>
-        </div>
-        <div class="field full ${typeInfo.isPortfolio && account.accessAge !== null ? "" : "hidden"}">
-          <label class="checkbox-label"><input type="checkbox" data-field="earlyWithdrawalPenalty" ${account.earlyWithdrawalPenalty ? "checked" : ""}> Accept the 10% early withdrawal penalty for full access now, instead of waiting for age ${account.accessAge}<button type="button" class="help-icon" data-help="IRC §72(t): an early distribution from a qualified retirement plan owes an extra 10% on top of ordinary income tax. Enabling this makes the account fully accessible right away in the Bridge check, at that extra cost for any year before its normal access age.">?</button></label>
-        </div>
-        <div class="employer-block ${account.seppMethod ? "" : "inactive"} ${typeInfo.isPortfolio && account.accessAge !== null ? "" : "hidden"}">
-          <div class="field full">
-            <label>72(t) SEPP election<button type="button" class="help-icon" data-help="Substantially Equal Periodic Payments -- an IRS-approved way to take penalty-free early distributions before your normal access age, in exchange for a MANDATORY annual amount the app computes for you (it must continue for the longer of 5 years or until you reach 59½, or the penalty applies retroactively to everything already taken).&#10;&#10;RMD method: this year's balance ÷ this year's own IRS life-expectancy factor -- recalculated every year, so it moves with the market.&#10;&#10;Fixed amortization: a level payment, calculated once at the start from your balance, life expectancy, and a chosen interest rate -- like a mortgage payment, it never changes afterward.">?</button></label>
-            <select data-field="seppMethod">
-              <option value="" ${account.seppMethod == null ? "selected" : ""}>Not electing</option>
-              <option value="rmd" ${account.seppMethod === "rmd" ? "selected" : ""}>RMD method</option>
-              <option value="amortization" ${account.seppMethod === "amortization" ? "selected" : ""}>Fixed amortization</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Start age</label>
-            <input type="number" min="1" data-field="seppStartAge" value="${account.seppStartAge ?? ""}" ${account.seppMethod ? "" : "disabled"}>
-          </div>
-          <div class="field ${account.seppMethod === "amortization" ? "" : "hidden"}">
-            <label>Interest rate</label>
-            <div class="input-affix suffix-percent">
-              <input type="number" min="0" step="0.1" data-field="seppInterestRate" value="${account.seppInterestRate != null ? account.seppInterestRate * 100 : ""}" ${account.seppMethod === "amortization" ? "" : "disabled"}>
-            </div>
-          </div>
-          ${account.seppAnnualAmount != null ? `<div class="derived">≈ ${moneySpan(account.seppAnnualAmount)}/yr mandatory once started</div>` : ""}
-        </div>
-        <div class="field ${showContribution ? "" : "hidden"}">
-          <label>Monthly contribution</label>
-          <div class="contrib-row">
-            <div class="input-affix prefix-dollar">
-              <input type="text" inputmode="decimal" data-field="monthlyContribution" value="${contributionValue}" placeholder="0" ${account.monthlyContributionIsMax || contributionDisabled ? "disabled" : ""}>
-            </div>
-            ${typeInfo.limitGroup ? `<button type="button" class="toggle ${account.monthlyContributionIsMax ? "on" : ""}" data-toggle-max ${contributionDisabled ? "disabled" : ""}><span class="dot"></span>Max</button>` : ""}
-          </div>
-          ${maxCaption}
-        </div>
-        ${typeInfo.ruleOf55Eligible ? `
-        <div class="employer-block ${isRuleOf55Active ? "" : "inactive"}">
-          <div class="field full">
-            <label class="checkbox-label"><input type="checkbox" data-field="ruleOf55Active" ${isRuleOf55Active ? "checked" : ""}> Account is active</label>
-          </div>
-          <div class="field">
-            <label>Separation age</label>
-            <input type="number" min="1" data-field="ruleOf55SeparationAge" value="${account.ruleOf55SeparationAge ?? 55}" ${isRuleOf55Active ? "" : "disabled"}>
-          </div>
-          <div class="field">
-            <label>Annual salary</label>
-            <div class="input-affix prefix-dollar">
-              <input type="text" inputmode="decimal" data-field="annualSalary" value="${formatMoneyInputValue(account.annualSalary)}" placeholder="not entered" ${isRuleOf55Active ? "" : "disabled"}>
-            </div>
-          </div>
-          <div class="field">
-            <label>Employer match</label>
-            <div class="input-affix suffix-percent">
-              <input type="number" min="0" step="1" data-field="employerMatchRate" value="${account.employerMatchRate != null ? (account.employerMatchRate * 100) : ""}" placeholder="e.g. 100" ${isRuleOf55Active ? "" : "disabled"}>
-            </div>
-          </div>
-          <div class="field">
-            <label>...up to this % of pay</label>
-            <div class="input-affix suffix-percent">
-              <input type="number" min="0" step="0.5" data-field="employerMatchCapRate" value="${account.employerMatchCapRate != null ? (account.employerMatchCapRate * 100) : ""}" placeholder="e.g. 4" ${isRuleOf55Active ? "" : "disabled"}>
-            </div>
-          </div>
-          ${isRuleOf55Active ? employerNote : ""}
-        </div>` : ""}
         ${account.type === "hsa" ? `
         <div class="field wide">
           <label>Coverage</label>
@@ -1158,27 +1094,6 @@ function renderAccounts() {
             <label><input type="radio" name="hsaCoverage-${account.id}" data-field="hsaCoverage" value="self" ${account.hsaCoverage !== "family" ? "checked" : ""}> Self-only</label>
             <label><input type="radio" name="hsaCoverage-${account.id}" data-field="hsaCoverage" value="family" ${account.hsaCoverage === "family" ? "checked" : ""}> Family</label>
           </div>
-        </div>
-        <div class="field full">
-          <label>Withdrawals<button type="button" class="help-icon" data-help="Unrestricted treats this HSA like any other tax-free pot -- withdrawable for any spend, same as today.&#10;&#10;Fixed annual estimate caps what the simulation draws from this account each year at your own estimate of annual medical expenses (grown forward with inflation, same as your planned spending) -- anything beyond that comes from your other accounts instead, modeling the real-world restriction that only medical spend gets this account's tax-free withdrawal treatment.">?</button></label>
-          <div class="radio-row">
-            <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="" ${account.hsaWithdrawalRestriction !== "fixed" ? "checked" : ""}> Unrestricted</label>
-            <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="fixed" ${account.hsaWithdrawalRestriction === "fixed" ? "checked" : ""}> Restrict to medical expenses</label>
-          </div>
-        </div>
-        <div class="field hsa-medical-expense-field" ${account.hsaWithdrawalRestriction === "fixed" ? "" : "hidden"}>
-          <label>Estimated annual medical expenses</label>
-          <div class="input-affix prefix-dollar">
-            <input type="text" inputmode="decimal" data-field="hsaAnnualMedicalExpense" value="${formatMoneyInputValue(account.hsaAnnualMedicalExpense)}" placeholder="not entered">
-          </div>
-        </div>` : ""}
-        ${account.type === "roth-ira" ? `
-        <div class="field wide">
-          <label>Contributed basis (withdrawable anytime)</label>
-          <div class="input-affix prefix-dollar">
-            <input type="text" inputmode="decimal" data-field="rothBasis" value="${formatMoneyInputValue(account.rothBasis)}" placeholder="not entered">
-          </div>
-          <div class="derived">Optional. Roth IRA contributions (not earnings) can be withdrawn tax- and penalty-free at any age (IRC §408A(d)(4)) — affects the Analyze tab's Bridge check only, not the generated Monte Carlo widget.</div>
         </div>` : ""}
         ${account.type === "debt" ? `
         <div class="field">
@@ -1211,7 +1126,116 @@ function renderAccounts() {
         </div>
         ${payoffNote}` : ""}
         ${!typeInfo.isPortfolio ? `<div class="no-fields-note">Not part of the investable portfolio — no allocation or contribution to set.</div>` : ""}
-        ${!typeInfo.isPortfolio ? "" : account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>` : (showContribution ? `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>` : "")}
+
+        <!-- Section 2: Contributions -- for a 401(k)-family account, the "account is active"
+             employer-relationship block comes FIRST (it's what governs whether a contribution can
+             even be made), then the contribution amount itself, then its own IRS limit note
+             alongside it in the same row rather than as a separate bar at the very bottom. -->
+        ${showContribution || typeInfo.ruleOf55Eligible ? `
+        <div class="field full acct-section-label">Contributions</div>
+        ${typeInfo.ruleOf55Eligible ? `
+        <div class="employer-block ${isRuleOf55Active ? "" : "inactive"}">
+          <div class="field full">
+            <label class="checkbox-label"><input type="checkbox" data-field="ruleOf55Active" ${isRuleOf55Active ? "checked" : ""}> Account is active</label>
+          </div>
+          <div class="field">
+            <label>Separation age</label>
+            <input type="number" min="1" data-field="ruleOf55SeparationAge" value="${account.ruleOf55SeparationAge ?? 55}" ${isRuleOf55Active ? "" : "disabled"}>
+          </div>
+          <div class="field">
+            <label>Annual salary</label>
+            <div class="input-affix prefix-dollar">
+              <input type="text" inputmode="decimal" data-field="annualSalary" value="${formatMoneyInputValue(account.annualSalary)}" placeholder="not entered" ${isRuleOf55Active ? "" : "disabled"}>
+            </div>
+          </div>
+          <div class="field">
+            <label>Employer match</label>
+            <div class="input-affix suffix-percent">
+              <input type="number" min="0" step="1" data-field="employerMatchRate" value="${account.employerMatchRate != null ? (account.employerMatchRate * 100) : ""}" placeholder="e.g. 100" ${isRuleOf55Active ? "" : "disabled"}>
+            </div>
+          </div>
+          <div class="field">
+            <label>...up to this % of pay</label>
+            <div class="input-affix suffix-percent">
+              <input type="number" min="0" step="0.5" data-field="employerMatchCapRate" value="${account.employerMatchCapRate != null ? (account.employerMatchCapRate * 100) : ""}" placeholder="e.g. 4" ${isRuleOf55Active ? "" : "disabled"}>
+            </div>
+          </div>
+          ${isRuleOf55Active ? employerNote : ""}
+        </div>` : ""}
+        ${showContribution ? `
+        <div class="contrib-pair">
+          <label>Monthly contribution</label>
+          <label aria-hidden="true"></label>
+          <div>
+            <div class="contrib-row">
+              <div class="input-affix prefix-dollar">
+                <input type="text" inputmode="decimal" data-field="monthlyContribution" value="${contributionValue}" placeholder="0" ${account.monthlyContributionIsMax || contributionDisabled ? "disabled" : ""}>
+              </div>
+              ${typeInfo.limitGroup ? `<button type="button" class="toggle ${account.monthlyContributionIsMax ? "on" : ""}" data-toggle-max ${contributionDisabled ? "disabled" : ""}><span class="dot"></span>Max</button>` : ""}
+            </div>
+          </div>
+          <div>${account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>` : `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>`}</div>
+        </div>` : ""}
+        ` : ""}
+
+        <!-- Section 3: Withdrawal settings -- tax rate, early-access options, and any
+             withdrawal-specific restriction (HSA's own medical-only cap, a Roth IRA's contributed
+             basis, which only matters for how an early withdrawal is taxed/penalized). -->
+        ${typeInfo.isPortfolio ? `
+        <div class="field full acct-section-label">Withdrawal settings</div>
+        <div class="field">
+          <label>Withdrawal tax rate</label>
+          <div class="input-affix suffix-percent">
+            <input type="number" min="0" step="0.5" data-field="customWithdrawalTaxRate" value="${account.customWithdrawalTaxRate != null ? account.customWithdrawalTaxRate * 100 : ""}" placeholder="auto (${Math.round(account.defaultWithdrawalTaxRate * 100)}%)">
+          </div>
+        </div>
+        <div class="field full ${account.accessAge !== null ? "" : "hidden"}">
+          <label class="checkbox-label"><input type="checkbox" data-field="earlyWithdrawalPenalty" ${account.earlyWithdrawalPenalty ? "checked" : ""}> Accept the 10% early withdrawal penalty for full access now, instead of waiting for age ${account.accessAge}<button type="button" class="help-icon" data-help="IRC §72(t): an early distribution from a qualified retirement plan owes an extra 10% on top of ordinary income tax. Enabling this makes the account fully accessible right away in the Bridge check, at that extra cost for any year before its normal access age.">?</button></label>
+        </div>
+        <div class="employer-block ${account.seppMethod ? "" : "inactive"} ${account.accessAge !== null ? "" : "hidden"}">
+          <div class="field full">
+            <label>72(t) SEPP election<button type="button" class="help-icon" data-help="Substantially Equal Periodic Payments -- an IRS-approved way to take penalty-free early distributions before your normal access age, in exchange for a MANDATORY annual amount the app computes for you (it must continue for the longer of 5 years or until you reach 59½, or the penalty applies retroactively to everything already taken).&#10;&#10;RMD method: this year's balance ÷ this year's own IRS life-expectancy factor -- recalculated every year, so it moves with the market.&#10;&#10;Fixed amortization: a level payment, calculated once at the start from your balance, life expectancy, and a chosen interest rate -- like a mortgage payment, it never changes afterward.">?</button></label>
+            <select data-field="seppMethod">
+              <option value="" ${account.seppMethod == null ? "selected" : ""}>Not electing</option>
+              <option value="rmd" ${account.seppMethod === "rmd" ? "selected" : ""}>RMD method</option>
+              <option value="amortization" ${account.seppMethod === "amortization" ? "selected" : ""}>Fixed amortization</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Start age</label>
+            <input type="number" min="1" data-field="seppStartAge" value="${account.seppStartAge ?? ""}" ${account.seppMethod ? "" : "disabled"}>
+          </div>
+          <div class="field ${account.seppMethod === "amortization" ? "" : "hidden"}">
+            <label>Interest rate</label>
+            <div class="input-affix suffix-percent">
+              <input type="number" min="0" step="0.1" data-field="seppInterestRate" value="${account.seppInterestRate != null ? account.seppInterestRate * 100 : ""}" ${account.seppMethod === "amortization" ? "" : "disabled"}>
+            </div>
+          </div>
+          ${account.seppAnnualAmount != null ? `<div class="derived">≈ ${moneySpan(account.seppAnnualAmount)}/yr mandatory once started</div>` : ""}
+        </div>
+        ${account.type === "hsa" ? `
+        <div class="field full">
+          <label>Withdrawals<button type="button" class="help-icon" data-help="Unrestricted treats this HSA like any other tax-free pot -- withdrawable for any spend, same as today.&#10;&#10;Fixed annual estimate caps what the simulation draws from this account each year at your own estimate of annual medical expenses (grown forward with inflation, same as your planned spending) -- anything beyond that comes from your other accounts instead, modeling the real-world restriction that only medical spend gets this account's tax-free withdrawal treatment.">?</button></label>
+          <div class="radio-row">
+            <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="" ${account.hsaWithdrawalRestriction !== "fixed" ? "checked" : ""}> Unrestricted</label>
+            <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="fixed" ${account.hsaWithdrawalRestriction === "fixed" ? "checked" : ""}> Restrict to medical expenses</label>
+          </div>
+        </div>
+        <div class="field hsa-medical-expense-field" ${account.hsaWithdrawalRestriction === "fixed" ? "" : "hidden"}>
+          <label>Estimated annual medical expenses</label>
+          <div class="input-affix prefix-dollar">
+            <input type="text" inputmode="decimal" data-field="hsaAnnualMedicalExpense" value="${formatMoneyInputValue(account.hsaAnnualMedicalExpense)}" placeholder="not entered">
+          </div>
+        </div>` : ""}
+        ${account.type === "roth-ira" ? `
+        <div class="field wide">
+          <label>Contributed basis (withdrawable anytime)</label>
+          <div class="input-affix prefix-dollar">
+            <input type="text" inputmode="decimal" data-field="rothBasis" value="${formatMoneyInputValue(account.rothBasis)}" placeholder="not entered">
+          </div>
+          <div class="derived">Optional. Roth IRA contributions (not earnings) can be withdrawn tax- and penalty-free at any age (IRC §408A(d)(4)) — affects the Analyze tab's Bridge check only, not the generated Monte Carlo widget.</div>
+        </div>` : ""}
+        ` : ""}
       </div>
     `
 
@@ -3066,9 +3090,49 @@ function scheduleRecheck() {
   if (recheckTimer) clearTimeout(recheckTimer)
   recheckTimer = setTimeout(() => {
     recheckTimer = null
-    runCheck()
+    runCheckWhenIdle()
   }, 500)
 }
+
+function isEntryBoxFocused() {
+  const el = document.activeElement
+  return Boolean(el) && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA")
+}
+
+// Defers the actual check/re-render until no entry box anywhere on the page is still focused --
+// runCheck's own renderLoadingSkeleton()+renderCheckResult() tear down and rebuild the whole
+// chart/tiles/findings section wholesale (no incremental diffing), which reads as a jarring "the
+// page just reloaded" if it lands while the user is still mid-edit in an unrelated field. The
+// underlying save already happens on each field's own blur/commit (patchPlan/patchAccount, which
+// call scheduleRecheck AFTER their own PATCH already succeeded) -- this only defers the VISUAL
+// refresh, never the save itself.
+//
+// Deferred for as long as SOME entry box anywhere stays focused, with no cap -- tabbing from one
+// field straight into the next (finishing field A, moving on to field B) is a normal, ongoing
+// edit, not "done," so the refresh keeps waiting it out for however long that continues. It never
+// actually gets stuck: the moment focus leaves every entry box (blurring to a button, the page
+// background, or anywhere non-form), the focusout listener below fires the deferred check right
+// then.
+let runCheckPending = false
+function runCheckWhenIdle() {
+  if (isEntryBoxFocused()) {
+    runCheckPending = true
+    return
+  }
+  runCheck()
+}
+document.addEventListener("focusout", () => {
+  if (!runCheckPending) return
+  // Deferred a tick: focusout fires BEFORE the newly-focused element (if any) actually receives
+  // focus, so activeElement briefly reads as <body> even mid-tab from one field straight into the
+  // next -- checking synchronously here would treat that as "focus left the form" and fire a
+  // premature refresh between two fields the user is still actively moving through.
+  setTimeout(() => {
+    if (isEntryBoxFocused()) return
+    runCheckPending = false
+    runCheck()
+  }, 0)
+})
 
 document.getElementById("birthDate").addEventListener("change", (e) => runExclusive(() => patchPlan({ birthDate: e.target.value || null }, "savedBirth")))
 document.getElementById("retireAges").addEventListener("change", (e) => {
@@ -3106,14 +3170,21 @@ document.getElementById("acaFloorPctFpl").addEventListener("change", (e) => {
 
 // Add buttons for the Social Security / Other Income streams lists (issue #55) -- append one new,
 // empty stream and patch immediately; renderSocialSecurityStreams/renderOtherIncomeStreams (called
-// from the main render()) then draw its row and wire its own per-row listeners.
-document.getElementById("addSocialSecurityBtn").addEventListener("click", () => {
-  const next = [...STATE.dashboard.socialSecurityStreams, { id: nextIncomeStreamId("ss"), label: null, claimingAge: null, monthlyAt62: null, monthlyAt67: null, monthlyAt70: null }]
-  runExclusive(() => patchPlan({ socialSecurityStreams: next }, "savedIncome"))
+// from the main render()) then draw its row and wire its own per-row listeners. Focuses the new
+// row's own label right after, both so the cursor actually lands where you'd type next (rather
+// than staying on the Add button) and so the just-scheduled recheck sees a real entry box focused
+// and defers its own refresh instead of flashing the chart right as the empty row appears.
+document.getElementById("addSocialSecurityBtn").addEventListener("click", async () => {
+  const newId = nextIncomeStreamId("ss")
+  const next = [...STATE.dashboard.socialSecurityStreams, { id: newId, label: null, claimingAge: null, monthlyAt62: null, monthlyAt67: null, monthlyAt70: null }]
+  await runExclusive(() => patchPlan({ socialSecurityStreams: next }, "savedIncome"))
+  document.querySelector(`.ss-stream-row[data-stream-id="${newId}"] .ss-label`)?.focus()
 })
-document.getElementById("addOtherIncomeBtn").addEventListener("click", () => {
-  const next = [...STATE.dashboard.otherIncomeStreams, { id: nextIncomeStreamId("income"), label: "Pension", startAge: null, monthlyAmount: null, customWithdrawalTaxRate: null }]
-  runExclusive(() => patchPlan({ otherIncomeStreams: next }, "savedIncome"))
+document.getElementById("addOtherIncomeBtn").addEventListener("click", async () => {
+  const newId = nextIncomeStreamId("income")
+  const next = [...STATE.dashboard.otherIncomeStreams, { id: newId, label: "Pension", startAge: null, monthlyAmount: null, customWithdrawalTaxRate: null }]
+  await runExclusive(() => patchPlan({ otherIncomeStreams: next }, "savedIncome"))
+  document.querySelector(`.oi-stream-row[data-stream-id="${newId}"] .oi-label`)?.focus()
 })
 
 // Wired once, not per-render, since the container element itself is never recreated -- only its
