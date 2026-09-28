@@ -347,8 +347,20 @@ const OTHER_INCOME_AUTO_WITHDRAWAL_TAX_RATE = 0.22
 // "Yourself" for the marker/legend when it's blank; a second stream (e.g. a spouse's) is what the
 // label is actually for.
 function renderSocialSecurityStreams() {
-  const streams = STATE.dashboard.socialSecurityStreams
   const container = document.getElementById("socialSecurityStreamsList")
+  // Skipped entirely while a field in this list is focused -- a full innerHTML rebuild would
+  // otherwise destroy and recreate every row's own inputs out from under the user (dropping focus,
+  // closing an open select, and -- worse -- discarding whatever they've typed into a DIFFERENT
+  // not-yet-committed field in the same row, since the rebuild draws from STATE, which doesn't
+  // know about that keystroke yet). A row's own fields share one debounced commit
+  // (see the per-row listeners below), but landing a re-render mid-edit from a SEPARATE
+  // action (a different row's own commit resolving, or Add) was still possible -- confirmed live
+  // as the cause of a real bug report where a Social Security entry silently never got its
+  // claimingAge saved because a re-render landed between filling the amount and picking the claim
+  // age, wiping the just-typed amount's own field back to the row's last-saved (incomplete) state.
+  // The next real edit anywhere in this list re-renders normally once focus has actually left it.
+  if (container.contains(document.activeElement)) return
+  const streams = STATE.dashboard.socialSecurityStreams
   container.innerHTML = streams
     .map(
       (stream) => `
@@ -426,8 +438,10 @@ function renderSocialSecurityStreams() {
 // allowed to save blank. Withdrawal tax rate mirrors an account's own customWithdrawalTaxRate
 // field/placeholder convention (renderAccountRow) -- blank means "auto."
 function renderOtherIncomeStreams() {
-  const streams = STATE.dashboard.otherIncomeStreams
   const container = document.getElementById("otherIncomeStreamsList")
+  // See renderSocialSecurityStreams's own doc comment -- same reasoning, same bug.
+  if (container.contains(document.activeElement)) return
+  const streams = STATE.dashboard.otherIncomeStreams
   container.innerHTML = streams
     .map(
       (stream) => `
@@ -1145,11 +1159,11 @@ function renderAccounts() {
             <label><input type="radio" name="hsaCoverage-${account.id}" data-field="hsaCoverage" value="family" ${account.hsaCoverage === "family" ? "checked" : ""}> Family</label>
           </div>
         </div>
-        <div class="field wide">
+        <div class="field full">
           <label>Withdrawals<button type="button" class="help-icon" data-help="Unrestricted treats this HSA like any other tax-free pot -- withdrawable for any spend, same as today.&#10;&#10;Fixed annual estimate caps what the simulation draws from this account each year at your own estimate of annual medical expenses (grown forward with inflation, same as your planned spending) -- anything beyond that comes from your other accounts instead, modeling the real-world restriction that only medical spend gets this account's tax-free withdrawal treatment.">?</button></label>
           <div class="radio-row">
             <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="" ${account.hsaWithdrawalRestriction !== "fixed" ? "checked" : ""}> Unrestricted</label>
-            <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="fixed" ${account.hsaWithdrawalRestriction === "fixed" ? "checked" : ""}> Restrict to medical expenses (fixed annual estimate)</label>
+            <label><input type="radio" name="hsaRestriction-${account.id}" data-field="hsaWithdrawalRestriction" value="fixed" ${account.hsaWithdrawalRestriction === "fixed" ? "checked" : ""}> Restrict to medical expenses</label>
           </div>
         </div>
         <div class="field hsa-medical-expense-field" ${account.hsaWithdrawalRestriction === "fixed" ? "" : "hidden"}>
@@ -1646,10 +1660,14 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
   // color, but a shared row index decides its label's height -- leftmost (soonest) highest,
   // stepping one row lower per marker as age increases to the right, however many of the six kinds
   // actually land in that stretch.
-  const ruleOf55Ages = [...new Set(ruleOf55Boosts.map((b) => b.to))].filter((age) => age > minAge && age <= maxAge)
-  const debtPayoffAges = [...new Set(debtPayoffs.map((d) => d.payoffAge))].filter((age) => age > minAge && age <= maxAge)
-  const incomeAges = [...new Set(incomeStreams.map((s) => s.startAge))].filter((age) => age > minAge && age <= maxAge)
-  const acaCliffAges = [...new Set(acaCliffCrossings.map((c) => c.crossesAtAge))].filter((age) => age > minAge && age <= maxAge)
+  // >= minAge, not > -- a marker landing exactly at the chart's own leftmost age (e.g. claiming
+  // Social Security starting this year, at currentAge itself) is still a real event and needs to
+  // show; the strict > previously here silently dropped it instead. Confirmed live: a Social
+  // Security stream with claimingAge === currentAge produced zero marker lines before this fix.
+  const ruleOf55Ages = [...new Set(ruleOf55Boosts.map((b) => b.to))].filter((age) => age >= minAge && age <= maxAge)
+  const debtPayoffAges = [...new Set(debtPayoffs.map((d) => d.payoffAge))].filter((age) => age >= minAge && age <= maxAge)
+  const incomeAges = [...new Set(incomeStreams.map((s) => s.startAge))].filter((age) => age >= minAge && age <= maxAge)
+  const acaCliffAges = [...new Set(acaCliffCrossings.map((c) => c.crossesAtAge))].filter((age) => age >= minAge && age <= maxAge)
   // Each adjustment contributes up to two dated events -- the start (its own signed amount) and,
   // only when it has an end age, the reversal one year later (endAge is the LAST year it applies,
   // so the reversal lands at endAge + 1, matching how startAge itself is the first year it applies).
@@ -1660,10 +1678,10 @@ function renderBridgeChart(bridgeResults, currentAge, planToAge, ruleOf55Boosts 
     }
     return events
   })
-  const expenseAges = [...new Set(expenseEvents.map((e) => e.age))].filter((age) => age > minAge && age <= maxAge)
+  const expenseAges = [...new Set(expenseEvents.map((e) => e.age))].filter((age) => age >= minAge && age <= maxAge)
   // The plan's own Medicare age (dashboard.medicareAge), not per-scenario like the other five kinds
   // above -- one marker at most, regardless of how many retirement ages are being compared.
-  const medicareMarkerAge = medicareAge != null && medicareAge > minAge && medicareAge <= maxAge ? medicareAge : null
+  const medicareMarkerAge = medicareAge != null && medicareAge >= minAge && medicareAge <= maxAge ? medicareAge : null
   const markers = [
     ...ruleOf55Ages.map((age) => ({
       age,

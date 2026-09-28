@@ -192,6 +192,112 @@ describe.skipIf(!browser)("Bridge burndown chart in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
+  // Regression: a Social Security stream claiming AT the plan's own currentAge/retirementAge (a
+  // natural, common case -- "claim now") landed its own marker at exactly minAge, which the
+  // marker filter's strict `age > minAge` silently excluded -- the stream still correctly netted
+  // against spend everywhere else, but its own chart marker just never appeared. Confirmed live
+  // before this fix (0 marker lines); all five of renderBridgeChart's own age-window filters
+  // (ruleOf55/debtPayoff/income/acaCliff/expense) shared the identical off-by-one.
+  it("shows an income marker for a Social Security stream claiming exactly at the plan's own currentAge", async () => {
+    vi.stubGlobal("fetch", mockActualFetch())
+    const sessionPath = join(dir, "session.json")
+    writeActualSession(sessionPath, actualConfig)
+    server = await startAppServer({
+      sessionPath,
+      dataSourceSessionPath: join(dir, "data-source.json"),
+      configPath: join(dir, "config.json"),
+      irsLimitsPath: join(dir, "irs-limits.json"),
+      federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),
+      irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"),
+      federalPovertyGuidelinesPath: join(dir, "federal-poverty-guidelines.json"),
+      uiDir: UI_DIR,
+    })
+    await fetch(`${server.url}api/retirement/plan`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        birthDate: birthDateForAge(62),
+        retirementAges: [62],
+        planToAge: 100,
+        socialSecurityStreams: [{ id: "ss1", label: null, claimingAge: 62, monthlyAt62: 1800_00, monthlyAt67: null, monthlyAt70: null }],
+      }),
+    })
+
+    const opened = await (browser as Browser).newPage({ viewport: { width: 1400, height: 1000 } })
+    page = opened
+    const errors: string[] = []
+    opened.on("pageerror", (error) => errors.push(error.message))
+    await opened.goto(server.url)
+    await opened.locator('.section-item[data-section="retirement"]').click()
+    await opened.waitForSelector(".bridge-chart", { timeout: 20000 })
+
+    const chart = await opened.evaluate(() => {
+      const el = document.querySelector(".bridge-chart:not(.mc-chart)") as HTMLElement
+      return {
+        incomeLines: el.querySelectorAll(".bridge-income-line").length,
+        incomeLabels: [...el.querySelectorAll(".bridge-income-label")].map((e) => e.textContent),
+      }
+    })
+    expect(chart.incomeLines).toBe(1)
+    expect(chart.incomeLabels[0]).toContain("Social Security")
+    expect(errors).toEqual([])
+  }, 60000)
+
+  // Regression: renderSocialSecurityStreams/renderOtherIncomeStreams rebuild their whole list's
+  // innerHTML on every render() -- landing one while a field elsewhere in the same list is still
+  // focused destroys and recreates it out from under the user, discarding whatever's typed but not
+  // yet committed there. Confirmed live as the mechanism behind a real report of a Social Security
+  // entry silently never getting its own marker: a re-render (triggered by an earlier field's own
+  // debounced commit resolving) landed while a later field was still mid-edit and wiped it.
+  it("a field's own in-progress value survives a re-render landing while it's still focused", async () => {
+    vi.stubGlobal("fetch", mockActualFetch())
+    const sessionPath = join(dir, "session.json")
+    writeActualSession(sessionPath, actualConfig)
+    server = await startAppServer({
+      sessionPath,
+      dataSourceSessionPath: join(dir, "data-source.json"),
+      configPath: join(dir, "config.json"),
+      irsLimitsPath: join(dir, "irs-limits.json"),
+      federalTaxBracketsPath: join(dir, "federal-tax-brackets.json"),
+      irsLifeExpectancyPath: join(dir, "irs-life-expectancy.json"),
+      federalPovertyGuidelinesPath: join(dir, "federal-poverty-guidelines.json"),
+      uiDir: UI_DIR,
+    })
+    await fetch(`${server.url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: birthDateForAge(60), retirementAges: [65], planToAge: 100 }) })
+
+    const opened = await (browser as Browser).newPage({ viewport: { width: 1400, height: 1400 } })
+    page = opened
+    const errors: string[] = []
+    opened.on("pageerror", (error) => errors.push(error.message))
+    await opened.goto(server.url)
+    await opened.locator('.section-item[data-section="retirement"]').click()
+    await opened.waitForSelector(".bridge-chart", { timeout: 20000 })
+    const incomeFoldToggle = opened.locator('[data-section="retirement-income"] .card-fold-toggle')
+    if ((await incomeFoldToggle.getAttribute("aria-expanded")) === "false") await incomeFoldToggle.click()
+
+    await opened.locator("#addSocialSecurityBtn").click()
+    const ssRow = opened.locator(".ss-stream-row").first()
+
+    // Commits the label first (schedules its own debounced patchPlan -> recheck -> render ~1s
+    // out), then immediately focuses a DIFFERENT field and leaves it mid-edit, unblurred.
+    await ssRow.locator(".ss-label").fill("Spouse")
+    await ssRow.locator(".ss-label").dispatchEvent("blur")
+    await ssRow.locator(".ss-67").click()
+    await ssRow.locator(".ss-67").fill("2,400.00")
+
+    // Long enough for the label's own debounced commit (500ms) + scheduleRecheck's own debounce
+    // (500ms) + a local round trip to land while ss-67 is still focused and uncommitted.
+    await opened.waitForTimeout(1500)
+    expect(await ssRow.locator(".ss-67").inputValue()).toBe("2,400.00")
+    // The real discriminator: without the guard, the pending re-render still lands and destroys
+    // the row's own DOM (a fresh element replaces the one the user was just typing into), even in
+    // a run where the destroyed element's LAST value happened to read back correctly afterward --
+    // losing native focus this way is itself the disruptive, user-visible part of the bug (a
+    // closed dropdown, a reset cursor, and under real keystroke-by-keystroke typing rather than
+    // this test's own instant .fill(), a real dropped character).
+    expect(await opened.evaluate(() => document.activeElement?.className)).toBe("ss-67")
+    expect(errors).toEqual([])
+  }, 60000)
+
   it("draws a plain, unmarked line for a scenario that funds through the plan", async () => {
     const { page: ui, errors } = await openRetirementPage([65])
     await ui.waitForSelector(".bridge-chart", { timeout: 20000 })
