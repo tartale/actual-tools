@@ -1025,23 +1025,23 @@ export function contributionLimitLines(type: AccountType, irsLimits: IrsLimits |
   const line = (tierLabel: string, annualCents: number): string =>
     `${tierLabel}: ${formatUsd(annualCents)}/yr [${formatUsd(Math.round(annualCents / 12))}/mo]`
 
+  // Sub-tiers (a later age bracket on the same limit group) repeat only "Age ..." rather than the
+  // full account-type label again -- the label's already established by the first line, and
+  // app.js indents any line starting with "Age " under it, so the parent/child relationship reads
+  // visually instead of through repeated text.
   if (limitGroup === "employer-plan") {
     const { standard, catchUp50, catchUp60to63 } = irsLimits.employerPlan
-    return [
-      line(label, standard),
-      line(`${label} age 50-59, 64+`, standard + catchUp50),
-      line(`${label} age 60-63`, standard + catchUp60to63),
-    ]
+    return [line(label, standard), line("Age 50-59, 64+", standard + catchUp50), line("Age 60-63", standard + catchUp60to63)]
   }
   if (limitGroup === "ira") {
     const { standard, catchUp50 } = irsLimits.ira
-    return [line(label, standard), line(`${label} age 50+`, standard + catchUp50)]
+    return [line(label, standard), line("Age 50+", standard + catchUp50)]
   }
   // hsa -- shows whichever coverage tier is actually selected for this account, not both, matching
   // the "one limit that actually applies" pattern used for every other type above.
   const base = hsaCoverage === "family" ? irsLimits.hsa.family : irsLimits.hsa.selfOnly
   const coverageLabel = hsaCoverage === "family" ? "family" : "self-only"
-  return [line(`${label} (${coverageLabel})`, base), line(`${label} (${coverageLabel}) age 55+`, base + irsLimits.hsa.catchUp55)]
+  return [line(`${label} (${coverageLabel})`, base), line("Age 55+", base + irsLimits.hsa.catchUp55)]
 }
 
 // Function to classify every account: override > heuristic > safe default ("other"). "other" --

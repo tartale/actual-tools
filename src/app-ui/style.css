@@ -527,8 +527,13 @@ main:has(#page-retirement.active) { max-width: none; }
 .input-affix::before, .input-affix::after {
   position: absolute; top: 50%; transform: translateY(-50%); color: var(--ink-faint); font-size: 12px; pointer-events: none;
 }
+/* Capped at roughly what "$999,999,999.00" needs (issue: dollar boxes bigger than they need to
+   be) -- every dollar-entry field previously stretched to its own grid cell's full width, which
+   for a single-column field (Monthly contribution, say) was often two or three times wider than
+   any real balance would ever need. */
+.input-affix.prefix-dollar { max-width: 110px; }
 .input-affix.prefix-dollar::before { content: "$"; left: 8px; }
-.input-affix.prefix-dollar input { padding-left: 17px; }
+.input-affix.prefix-dollar input { padding-left: 17px; max-width: 110px; }
 .input-affix.suffix-percent::after { content: "%"; right: 9px; }
 .input-affix.suffix-percent input { padding-right: 22px; }
 .input-affix.suffix-months::after { content: "mo"; right: 9px; }
@@ -622,7 +627,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    states -- sharing a real grid row instead means the row's own height is simply however tall the
    taller of the two labels needs, whichever that turns out to be, so the row below it (the real
    input and the limit box) always starts at the exact same y for both columns. */
-.contrib-pair { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 3fr; column-gap: 18px; row-gap: 5px; align-items: center; }
+.contrib-pair { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(150px, 1.3fr) 2.7fr; column-gap: 18px; row-gap: 5px; align-items: center; }
 .contrib-pair label { font-size: 11px; font-weight: 500; color: var(--ink-soft); }
 .contrib-pair label[aria-hidden] { visibility: hidden; }
 
@@ -690,19 +695,21 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 .tax-band-row .field { margin: 0; }
 .tax-band-remove { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-faint); font-size: 16px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .tax-band-remove:hover { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
-/* Same row-of-fields-plus-remove-button layout as .tax-band-row above, just with more columns of
-   its own (name/sign/amount/start/end/inflate) -- an explicit column template rather than
-   auto-fit/minmax, so every row lines up under the same headings rather than each row's own
-   fields independently sizing to their own content. */
-.expense-adjustment-row { display: grid; grid-template-columns: 1.4fr 1.3fr 1.2fr 0.7fr 0.7fr 1fr auto; gap: 12px; align-items: end; margin-bottom: 8px; }
+/* Same row-of-fields-plus-remove-button layout as .tax-band-row above, just split across two
+   sub-rows (name/sign/amount/remove, then start age/end age/inflate below) so the amount field --
+   the one people actually need room to read -- isn't squeezed down to fit four other fields too. */
+.expense-adjustment-row { margin-bottom: 12px; }
 .expense-adjustment-row .field { margin: 0; }
+.ea-row1 { display: grid; grid-template-columns: 1.1fr 0.9fr 1.5fr auto; gap: 12px; align-items: end; }
+.ea-row2 { display: flex; gap: 12px; align-items: end; margin-top: 8px; }
+.ea-row2 .field:not(.ea-inflate-field) { flex: 0 0 90px; }
+.ea-inflate-field { padding-bottom: 8px; }
 /* The amount input and its /mo-/yr unit select (issue #55) sit side by side in the same field,
    rather than the select stacking below the input the way two bare children of .field otherwise
    would (.field itself has no flex/grid of its own -- see this rule's own neighbors above). */
 .ea-amount-row { display: flex; gap: 6px; align-items: center; }
 .ea-amount-row .input-affix { flex: 1; min-width: 0; }
-.ea-unit { flex: none; width: 56px; padding: 0 4px; }
-.ea-inflate-field { padding-bottom: 8px; }
+.ea-unit { flex: none; width: 56px; padding: 5px 4px; }
 .ea-remove { width: 30px; height: 30px; border: none; background: transparent; color: var(--ink-faint); font-size: 14px; line-height: 1; cursor: pointer; border-radius: var(--radius-sm); }
 .ea-remove:hover { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
 #addTaxBandBtn { margin-top: 4px; }
@@ -742,6 +749,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
 
 .limit-lines { grid-column: 1 / -1; font-size: 11px; color: var(--ink-soft); background: var(--surface-2); border-radius: var(--radius-sm); padding: 7px 9px; display: flex; flex-direction: column; gap: 2px; }
 .limit-lines .empty { color: var(--ink-faint); font-style: italic; }
+.limit-lines .sub { padding-left: 14px; }
 .no-fields-note { grid-column: 1 / -1; font-size: 11.5px; color: var(--ink-faint); font-style: italic; padding-top: 2px; }
 
 /* The Action dropdown and the buttons that run it share one row -- the months are chosen in the

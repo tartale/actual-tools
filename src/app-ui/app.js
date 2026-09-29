@@ -661,46 +661,62 @@ function nextTaxBandId() {
 // on every edit rather than a per-field route), with a sign selector splitting the stored signed
 // annualAmount into a magnitude the user enters as a MONTHLY figure (matching every income stream's
 // own monthlyAmount convention) and a +/- direction, rather than asking for a signed number directly.
+//
+// The /mo-/yr unit itself is never persisted (annualAmount is always the one stored figure -- see
+// the comment on the row's own template below), so it has to be remembered here in plain JS instead,
+// keyed by adjustment id, or every re-render of this list (any row's own commit, or a sibling row's
+// Add/Remove) would silently snap the select back to its hardcoded "mo" default -- confirmed live as
+// the cause of a real bug report where a /yr selection wouldn't "stick" past the next re-render.
+const EA_UNIT_BY_ID = new Map()
 function renderExpenseAdjustments() {
-  const adjustments = STATE.dashboard.expenseAdjustments
   const container = document.getElementById("expenseAdjustmentsList")
+  // Skipped entirely while a field in this list is focused -- same rebuild-destroys-focus hazard as
+  // renderSocialSecurityStreams/renderOtherIncomeStreams (see their own comment for the full
+  // reasoning); a debounced row commit resolving, or Add adding a sibling row, would otherwise land
+  // a full innerHTML rebuild mid-edit and drop focus/unsaved keystrokes in this row.
+  if (container.contains(document.activeElement) && isEntryBoxFocused()) return
+  const adjustments = STATE.dashboard.expenseAdjustments
   container.innerHTML = adjustments
     .map(
       (adjustment) => `
     <div class="expense-adjustment-row" data-adjustment-id="${escapeHtml(adjustment.id)}">
-      <div class="field">
-        <label>Name</label>
-        <input type="text" class="ea-name" value="${escapeHtml(adjustment.name)}">
-      </div>
-      <div class="field">
-        <label>Effect</label>
-        <select class="ea-sign">
-          <option value="1"${adjustment.annualAmount >= 0 ? " selected" : ""}>Additional expense (+)</option>
-          <option value="-1"${adjustment.annualAmount < 0 ? " selected" : ""}>Reduced expense (-)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Amount</label>
-        <div class="ea-amount-row">
-          <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="ea-amount" value="${escapeHtml(formatMoneyInputValue(Math.round(Math.abs(adjustment.annualAmount) / 12)))}"></div>
-          <select class="ea-unit">
-            <option value="mo" selected>/mo</option>
-            <option value="yr">/yr</option>
+      <div class="ea-row1">
+        <div class="field">
+          <label>Name</label>
+          <input type="text" class="ea-name" value="${escapeHtml(adjustment.name)}">
+        </div>
+        <div class="field">
+          <label>Effect</label>
+          <select class="ea-sign">
+            <option value="1"${adjustment.annualAmount >= 0 ? " selected" : ""}>Additional expense (+)</option>
+            <option value="-1"${adjustment.annualAmount < 0 ? " selected" : ""}>Reduced expense (-)</option>
           </select>
         </div>
+        <div class="field">
+          <label>Amount</label>
+          <div class="ea-amount-row">
+            <div class="input-affix prefix-dollar"><input type="text" inputmode="decimal" class="ea-amount" value="${escapeHtml(formatMoneyInputValue((EA_UNIT_BY_ID.get(adjustment.id) ?? "mo") === "yr" ? Math.abs(adjustment.annualAmount) : Math.round(Math.abs(adjustment.annualAmount) / 12)))}"></div>
+            <select class="ea-unit">
+              <option value="mo"${(EA_UNIT_BY_ID.get(adjustment.id) ?? "mo") === "mo" ? " selected" : ""}>/mo</option>
+              <option value="yr"${EA_UNIT_BY_ID.get(adjustment.id) === "yr" ? " selected" : ""}>/yr</option>
+            </select>
+          </div>
+        </div>
+        <button type="button" class="icon-btn ea-remove" title="Remove" aria-label="Remove expense adjustment" tabindex="-1">✕</button>
       </div>
-      <div class="field">
-        <label>Start age</label>
-        <input type="number" min="1" class="ea-start-age" value="${adjustment.startAge}">
+      <div class="ea-row2">
+        <div class="field">
+          <label>Start age</label>
+          <input type="number" min="1" class="ea-start-age" value="${adjustment.startAge}">
+        </div>
+        <div class="field">
+          <label>End age</label>
+          <input type="number" min="1" class="ea-end-age" placeholder="none" value="${adjustment.endAge ?? ""}">
+        </div>
+        <div class="field ea-inflate-field">
+          <label class="checkbox-label"><input type="checkbox" class="ea-inflate"${adjustment.inflate ? " checked" : ""}> Grows with inflation</label>
+        </div>
       </div>
-      <div class="field">
-        <label>End age</label>
-        <input type="number" min="1" class="ea-end-age" placeholder="none" value="${adjustment.endAge ?? ""}">
-      </div>
-      <div class="field ea-inflate-field">
-        <label class="checkbox-label"><input type="checkbox" class="ea-inflate"${adjustment.inflate ? " checked" : ""}> Grows with inflation</label>
-      </div>
-      <button type="button" class="icon-btn ea-remove" title="Remove" aria-label="Remove expense adjustment">✕</button>
     </div>`,
     )
     .join("")
@@ -710,8 +726,8 @@ function renderExpenseAdjustments() {
     const unitInput = row.querySelector(".ea-unit")
     attachMoneyFormatting(amountInput)
     // Storage is always an ANNUAL total (annualAmount) -- the unit select is purely a display/entry
-    // convenience, not a persisted field, so it starts at "mo" on every render (matching the value
-    // already shown) rather than trying to remember which unit a person last typed in.
+    // convenience, not a persisted field, so which unit is currently showing is remembered in
+    // EA_UNIT_BY_ID (see its own comment above) rather than in the adjustment itself.
     const commitRow = debounce(() => {
       const signInput = row.querySelector(".ea-sign")
       const startAgeInput = row.querySelector(".ea-start-age")
@@ -738,6 +754,7 @@ function renderExpenseAdjustments() {
     // meaning something 12x smaller or larger -- then commits, since the stored annualAmount itself
     // is unaffected either way but a fresh page load should show back exactly what's on screen now.
     unitInput.addEventListener("change", () => {
+      EA_UNIT_BY_ID.set(adjustmentId, unitInput.value)
       const entered = parseMoneyInputCents(amountInput.value) ?? 0
       const converted = unitInput.value === "yr" ? entered * 12 : Math.round(entered / 12)
       amountInput.value = formatMoneyInputValue(converted)
@@ -750,6 +767,7 @@ function renderExpenseAdjustments() {
     row.querySelector(".ea-end-age").addEventListener("change", commitRow)
     row.querySelector(".ea-inflate").addEventListener("change", commitRow)
     row.querySelector(".ea-remove").addEventListener("click", () => {
+      EA_UNIT_BY_ID.delete(adjustmentId)
       const next = STATE.dashboard.expenseAdjustments.filter((adjustment) => adjustment.id !== adjustmentId)
       runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
     })
@@ -1166,7 +1184,7 @@ function renderAccounts() {
         <div class="contrib-pair">
           <label>Monthly contribution</label>
           <label aria-hidden="true"></label>
-          <div>
+          <div class="field">
             <div class="contrib-row">
               <div class="input-affix prefix-dollar">
                 <input type="text" inputmode="decimal" data-field="monthlyContribution" value="${contributionValue}" placeholder="0" ${account.monthlyContributionIsMax || contributionDisabled ? "disabled" : ""}>
@@ -1174,7 +1192,7 @@ function renderAccounts() {
               ${typeInfo.limitGroup ? `<button type="button" class="toggle ${account.monthlyContributionIsMax ? "on" : ""}" data-toggle-max ${contributionDisabled ? "disabled" : ""}><span class="dot"></span>Max</button>` : ""}
             </div>
           </div>
-          <div>${account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>` : `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>`}</div>
+          <div class="field">${account.limitLines.length ? `<div class="limit-lines">${account.limitLines.map((line) => `<div${line.startsWith("Age ") ? ' class="sub"' : ""}>${escapeHtml(line)}</div>`).join("")}</div>` : `<div class="limit-lines"><span class="empty">No IRS contribution limit applies to this account type.</span></div>`}</div>
         </div>` : ""}
         ` : ""}
 
@@ -1229,11 +1247,10 @@ function renderAccounts() {
         </div>` : ""}
         ${account.type === "roth-ira" ? `
         <div class="field wide">
-          <label>Contributed basis (withdrawable anytime)</label>
+          <label>Contributed basis (withdrawable anytime)<button type="button" class="help-icon" data-help="Optional. Roth IRA contributions (not earnings) can be withdrawn tax- and penalty-free at any age (IRC §408A(d)(4)) -- affects the Analyze tab's Bridge check only, not the generated Monte Carlo widget.">?</button></label>
           <div class="input-affix prefix-dollar">
             <input type="text" inputmode="decimal" data-field="rothBasis" value="${formatMoneyInputValue(account.rothBasis)}" placeholder="not entered">
           </div>
-          <div class="derived">Optional. Roth IRA contributions (not earnings) can be withdrawn tax- and penalty-free at any age (IRC §408A(d)(4)) — affects the Analyze tab's Bridge check only, not the generated Monte Carlo widget.</div>
         </div>` : ""}
         ` : ""}
       </div>
@@ -3398,7 +3415,7 @@ document.getElementById("addTaxBandBtn").addEventListener("click", () => {
   const next = [...(STATE.dashboard.monteCarloTaxBands ?? []), { id: nextTaxBandId() }]
   runExclusive(() => patchPlan({ monteCarloTaxBands: next }, "savedSimSettings"))
 })
-document.getElementById("addExpenseAdjustmentBtn").addEventListener("click", () => {
+document.getElementById("addExpenseAdjustmentBtn").addEventListener("click", async () => {
   // A real (if generic) starting point, not a blank/zero row -- every field already has a valid
   // value, so it shows up on the chart/table immediately rather than needing to be filled in
   // before it does anything. currentAge falls back to 30 on the rare chance birth date isn't set
@@ -3406,8 +3423,16 @@ document.getElementById("addExpenseAdjustmentBtn").addEventListener("click", () 
   // overwrite long before this ever reaches a real check anyway (no birth date means no check can
   // run at all yet).
   const startAge = (STATE.currentAge ?? 30) + 1
-  const next = [...STATE.dashboard.expenseAdjustments, { id: nextExpenseAdjustmentId(), name: "New expense", annualAmount: 0, startAge, endAge: null, inflate: true }]
-  runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
+  const newId = nextExpenseAdjustmentId()
+  const next = [...STATE.dashboard.expenseAdjustments, { id: newId, name: "New expense", annualAmount: 0, startAge, endAge: null, inflate: true }]
+  await runExclusive(() => patchPlan({ expenseAdjustments: next }, "savedExpenseAdjustments"))
+  // Focuses the new row's own Name field, both so the cursor lands where you'd type next (rather
+  // than staying on the Add button) and so the just-scheduled recheck sees a real entry box focused
+  // and defers its own chart refresh instead of flashing it right as the empty row appears -- same
+  // pattern as the Social Security / Other Income "Add" buttons above.
+  const nameInput = document.querySelector(`.expense-adjustment-row[data-adjustment-id="${newId}"] .ea-name`)
+  nameInput?.focus()
+  nameInput?.select()
 })
 // --- Chart zoom ---
 //
