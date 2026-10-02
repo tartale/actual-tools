@@ -643,7 +643,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    picker's header menu, minus the menu -- these controls are used often enough here to stay
    visible rather than tucked behind a "⋮". The list still scrolls rather than growing the card
    indefinitely for a budget with many groups, but folding is the first tool for managing that. */
-.spend-config-buffer { margin-top: 20px; }
+.spend-config-buffer { margin-top: 34px; }
 .category-picker-toolbar { display: flex; align-items: center; gap: 14px; margin: 6px 0 8px; flex-wrap: wrap; }
 .category-picker-toolbar .checkbox-label { font-size: 11.5px; }
 /* Unlike the Expense Projection instance (already indented by its own .field wrapper), this one
@@ -686,7 +686,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    all when "Show hidden" is checked. */
 .category-picker-item.hidden-category { color: var(--ink-faint); font-style: italic; }
 
-.income-section + .income-section { margin-top: 16px; }
+.income-section + .income-section { margin-top: 30px; }
 .income-label { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
 .income-label + .wr-params, .income-grid + .wr-params { margin-top: -4px; margin-bottom: 12px; }
 .wr-params[hidden] { display: none; }
@@ -732,7 +732,7 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    bands / Inflation & simulation) -- see index.html's own grouping. */
 .income-grid + .income-label, .wr-params + .income-label, #taxBandsList + .income-label,
 #addTaxBandBtn + .income-label {
-  margin-top: 14px;
+  margin-top: 28px;
 }
 
 .contrib-row { display: flex; align-items: center; gap: 6px; }
@@ -784,6 +784,14 @@ label.checkbox-label, .radio-row label { display: flex; align-items: center; gap
    border and brighter text. */
 .btn:disabled, .btn.secondary:disabled { background: var(--surface-2); color: var(--ink-faint); border: none; cursor: default; }
 .btn:disabled:hover, .btn.secondary:disabled:hover { background: var(--surface-2); box-shadow: none; }
+/* The "Add ..." buttons (new expense/tax band/income stream/account) used to be plain
+   .btn.secondary, same as every neighboring Expand/Collapse/Browse button -- making them blend
+   into the row instead of standing out as the one action that actually adds something new. A
+   purple outline + a leading "+" gives them their own visual identity without a new button shape;
+   white text (not the purple itself) keeps it readable against the plain surface background. */
+.btn.secondary.btn-add { color: var(--accent-ink); border-color: var(--accent); font-size: 12px; padding: 3px 8px; }
+.btn.secondary.btn-add:hover { border-color: var(--accent-hover); background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+.btn-add::before { content: "+"; margin-right: 4px; font-weight: 700; }
 
 .line { font-size: 12.5px; margin-bottom: 5px; }
 .line .num { color: var(--accent-selected); font-weight: 500; }
