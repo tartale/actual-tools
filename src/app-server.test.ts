@@ -382,6 +382,47 @@ describe("PATCH /api/retirement/accounts/:id", () => {
     expect(body.accounts[0]?.seppAnnualAmount).toBeNull()
   })
 
+  it("grows a SEPP account's projected balance (and so its distribution amount) with salaryColaRate, through the real API end to end", async () => {
+    // currentAge 50 (birthDate 1976-01-01), seppStartAge 52 -- projectAccountBalance's loop runs
+    // for exactly two years (age 50 and 51), long enough for salaryColaRate's compounding to show
+    // up, unlike the other SEPP tests above which deliberately keep it at zero iterations. No
+    // transactions fixture -- balance starts at exactly $0, so the whole projected balance comes
+    // from the employee's own flat $120,000/yr contribution plus the employer match, isolating
+    // salaryColaRate's effect with clean, independently-verifiable arithmetic. returnMean is 0
+    // (explicit customReturnMean override), so no compounding return muddies the numbers. Uses its
+    // own account id, distinct from the other SEPP tests' "401k" -- getBalances' own balanceCache
+    // (app-server.ts) is a module-level Map keyed only by account id, so reusing "401k" here would
+    // leak their $1,000,000 fixture balance into this test's supposedly-$0-starting account.
+    writeFileSync(irsLifeExpectancyPath, JSON.stringify({ tableRevisionYear: 2022, source: "test", factorByAge: [36.2] }))
+    const url = await boot({ accounts: [{ id: "401k-cola", name: "401k", offbudget: true, closed: false }] })
+    await fetch(`${url}api/retirement/plan`, { method: "PATCH", body: JSON.stringify({ birthDate: "1976-01-01", retirementAges: [55] }) })
+    await fetch(`${url}api/retirement/accounts/401k-cola`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        type: "traditional-401k",
+        customReturnMean: 0, // override traditional-401k's equity-80 default -- isolate the COLA effect from any return growth
+        monthlyContribution: 1_000_000, // $10,000/mo -> $120,000/yr, flat
+        annualSalary: 10_000_000, // $100,000/yr
+        employerMatchRate: 1, // 100% match
+        employerMatchCapRate: 0.04, // ...up to 4% of salary -- the actual binding constraint here
+      }),
+    })
+
+    const flatRes = await fetch(`${url}api/retirement/accounts/401k-cola`, { method: "PATCH", body: JSON.stringify({ seppMethod: "rmd", seppStartAge: 52 }) })
+    const flatBody = await readJson<StateResponse>(flatRes)
+    // Match cap is $4,000/yr both years (flat salary) -> balance = ($120,000 + $4,000) x 2 = $248,000.
+    // $248,000 / 36.2 = $6,850.83... x 100 = 685,082.9 -> 685,083 cents.
+    expect(flatBody.accounts[0]?.seppAnnualAmount).toBe(685083)
+
+    const growingRes = await fetch(`${url}api/retirement/accounts/401k-cola`, { method: "PATCH", body: JSON.stringify({ salaryColaRate: 1 }) }) // 100% raise/yr
+    const growingBody = await readJson<StateResponse>(growingRes)
+    // Year 1 (age 50): salary $100,000, cap $4,000. Year 2 (age 51): salary doubles to $200,000,
+    // cap doubles to $8,000. Balance = ($120,000 + $4,000) + ($120,000 + $8,000) = $252,000.
+    // $252,000 / 36.2 = $6,961.33... x 100 = 696,132.6 -> 696,133 cents -- strictly more than the
+    // flat case above, proving salaryColaRate actually grows the employer match's contribution.
+    expect(growingBody.accounts[0]?.seppAnnualAmount).toBe(696133)
+  })
+
   it("prunes an override whose account has since closed", async () => {
     const firstUrl = await boot({ accounts: [{ id: "a1", name: "Checking", offbudget: false, closed: false }] })
     await fetch(`${firstUrl}api/retirement/accounts/a1`, { method: "PATCH", body: JSON.stringify({ type: "cash" }) })
