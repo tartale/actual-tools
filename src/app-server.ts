@@ -190,6 +190,8 @@ interface AccountState {
   annualSalary: number | null
   employerMatchRate: number | null
   employerMatchCapRate: number | null
+  // See ClassifiedAccount's doc comment. Null and 0 both mean "flat, no raises."
+  salaryColaRate: number | null
   employerContribution: EmployerContributionSummary | null
   // hsa only.
   hsaCoverage: "self" | "family" | null
@@ -374,6 +376,7 @@ async function buildStateFromConfig(
       annualSalary: account.annualSalary,
       employerMatchRate: account.employerMatchRate,
       employerMatchCapRate: account.employerMatchCapRate,
+      salaryColaRate: account.salaryColaRate,
       employerContribution: currentAge === null || irsLimits === null ? null : employerContributionSummary(account, currentAge, irsLimits),
       hsaCoverage: account.hsaCoverage,
       hsaWithdrawalRestriction: account.hsaWithdrawalRestriction,
@@ -693,6 +696,7 @@ function applyAccountPatch(
   applyPositiveOrNull("annualSalary", "annualSalary")
   applyPositiveOrNull("employerMatchRate", "employerMatchRate")
   applyPositiveOrNull("employerMatchCapRate", "employerMatchCapRate")
+  applyPositiveOrNull("salaryColaRate", "salaryColaRate")
   applyPositiveOrNull("mortgageMonthlyPayment", "mortgageMonthlyPayment")
   applyPositiveOrNull("mortgageBalanceAsOf", "mortgageBalanceAsOf", "allow")
   applyPositiveOrNull("mortgageExtraPrincipal", "mortgageExtraPrincipal")

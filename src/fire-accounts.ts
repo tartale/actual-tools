@@ -373,6 +373,12 @@ export interface ClassifiedAccount {
   annualSalary: number | null
   employerMatchRate: number | null
   employerMatchCapRate: number | null
+  // Annual raise rate applied to annualSalary for every future accumulation-phase year in the
+  // bridge/Check projection (see computeEmployerContribution's own per-year call in
+  // toBridgeAccounts/simulateBridge) -- a real employer match grows with salary, not just with
+  // plan inflation. Null and 0 behave identically (flat salary, today's behavior), same
+  // null-is-the-default convention as every other optional rate here.
+  salaryColaRate: number | null
   // hsa only; null for every other type (there's no "self/family coverage" concept elsewhere).
   hsaCoverage: "self" | "family" | null
   // hsa only (issue #59) -- restricts this HSA's own withdrawals to at most an estimated annual
@@ -457,6 +463,8 @@ export interface FireAccountOverride {
   annualSalary?: number
   employerMatchRate?: number
   employerMatchCapRate?: number
+  // See ClassifiedAccount's doc comment.
+  salaryColaRate?: number
   // Only meaningful for hsa -- which of the two IRS limits (see contributionLimitLines) applies to
   // this account. Defaults to "self" when absent, since that's the smaller, safer assumption.
   hsaCoverage?: "self" | "family"
@@ -1096,6 +1104,7 @@ export function classifyAccounts(
         annualSalary: override.annualSalary ?? null,
         employerMatchRate: override.employerMatchRate ?? null,
         employerMatchCapRate: override.employerMatchCapRate ?? null,
+        salaryColaRate: override.salaryColaRate ?? null,
         hsaCoverage: type === "hsa" ? (override.hsaCoverage ?? "self") : null,
         hsaWithdrawalRestriction: type === "hsa" ? (override.hsaWithdrawalRestriction ?? null) : null,
         hsaAnnualMedicalExpense: type === "hsa" ? (override.hsaAnnualMedicalExpense ?? null) : null,
@@ -1127,6 +1136,7 @@ export function classifyAccounts(
         annualSalary: null,
         employerMatchRate: null,
         employerMatchCapRate: null,
+        salaryColaRate: null,
         hsaCoverage: heuristicType === "hsa" ? "self" : null,
         hsaWithdrawalRestriction: null,
         hsaAnnualMedicalExpense: null,
@@ -1156,6 +1166,7 @@ export function classifyAccounts(
       annualSalary: null,
       employerMatchRate: null,
       employerMatchCapRate: null,
+      salaryColaRate: null,
       hsaCoverage: null,
       hsaWithdrawalRestriction: null,
       hsaAnnualMedicalExpense: null,

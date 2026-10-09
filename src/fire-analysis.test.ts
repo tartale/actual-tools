@@ -6,6 +6,7 @@ import {
   calculateMortgagePayoff,
   magiFinding,
   monteCarloFinding,
+  projectAccountBalance,
   simulateBridge,
   toBridgeAccounts,
 } from "./fire-analysis.ts"
@@ -24,6 +25,10 @@ function bridgeAccount(overrides: Partial<BridgeAccount> & Pick<BridgeAccount, "
     name: "Some Account",
     accessAge: null,
     annualContribution: 0,
+    annualSalary: null,
+    employerMatchRate: null,
+    employerMatchCapRate: null,
+    salaryColaRate: 0,
     returnMean: 0,
     withdrawalTaxRate: 0,
     earlyWithdrawalPenaltyUntilAge: null,
@@ -53,6 +58,7 @@ function account(overrides: Partial<ClassifiedAccount> & Pick<ClassifiedAccount,
     annualSalary: null,
     employerMatchRate: null,
     employerMatchCapRate: null,
+    salaryColaRate: null,
     hsaCoverage: null,
     hsaWithdrawalRestriction: null,
     hsaAnnualMedicalExpense: null,
@@ -451,6 +457,23 @@ describe("simulateBridge", () => {
     expect(result.depletionAge).toBe(62)
   })
 
+  it("adds a growing employer match on top of the flat employee contribution during accumulation", () => {
+    // Employee's own $1,000,000/yr contribution is always the non-binding side -- the 4%-of-salary
+    // cap is what actually limits the match both years, so growing salary via salaryColaRate grows
+    // the match itself, exactly what this is meant to prove.
+    const base = { annualContribution: 1000000, annualSalary: 1000000, employerMatchRate: 1.0, employerMatchCapRate: 0.04 }
+    const flat = simulateBridge([bridgeAccount({ id: "a1", balance: 0, ...base, salaryColaRate: 0 })], 50, 52, 100, 0, 0)
+    const growing = simulateBridge([bridgeAccount({ id: "a1", balance: 0, ...base, salaryColaRate: 1.0 })], 50, 52, 100, 0, 0)
+    const noMatch = simulateBridge([bridgeAccount({ id: "a1", balance: 0, annualContribution: 1000000 })], 50, 52, 100, 0, 0)
+    // noMatch: employee-only, 2 years x $1,000,000 = $2,000,000.
+    // flat (0% COLA): + 2 years x min($1,000,000, $1,000,000*4%) = $40,000 match = $80,000 -> $2,080,000.
+    // growing (100% COLA): year 1 match $40,000 (salary still $1,000,000), year 2 salary doubles to
+    // $2,000,000 -> cap $80,000 -> match $80,000 -- total match $120,000 -> $2,120,000.
+    expect(noMatch.accessibleAtRetirement).toBe(2000000)
+    expect(flat.accessibleAtRetirement).toBe(2080000)
+    expect(growing.accessibleAtRetirement).toBe(2120000)
+  })
+
   it("inflates spending against the current age, not the retirement age", () => {
     const flat = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0)
     const inflated = simulateBridge([bridgeAccount({ id: "a1", balance: 1000 })], 50, 50, 100, 100, 0.1)
@@ -677,6 +700,18 @@ describe("toBridgeAccounts", () => {
     expect(built[0]).toMatchObject({ id: "a1", balance: 500, accessAge: 55, annualContribution: 1200, withdrawalTaxRate: 0.22 })
   })
 
+  it("threads salary/employer-match fields through, defaulting salaryColaRate to 0", () => {
+    const accounts = [account({ id: "a1", category: "retirement-tax-deferred", annualSalary: 15000000, employerMatchRate: 1.0, employerMatchCapRate: 0.04 })]
+    const built = toBridgeAccounts(accounts, new Map(), new Map(), 65)
+    expect(built[0]).toMatchObject({ annualSalary: 15000000, employerMatchRate: 1.0, employerMatchCapRate: 0.04, salaryColaRate: 0 })
+  })
+
+  it("carries a configured salaryColaRate through unchanged", () => {
+    const accounts = [account({ id: "a1", category: "retirement-tax-deferred", annualSalary: 15000000, salaryColaRate: 0.03 })]
+    const built = toBridgeAccounts(accounts, new Map(), new Map(), 65)
+    expect(built[0]).toMatchObject({ salaryColaRate: 0.03 })
+  })
+
   it("treats a missing balance or contribution as zero and a missing preset as no growth", () => {
     const accounts = [account({ id: "a1", category: "investment-taxable" })]
     const built = toBridgeAccounts(accounts, new Map(), new Map(), 65)
@@ -753,6 +788,52 @@ describe("toBridgeAccounts", () => {
       65,
     )
     expect(traditional).toHaveLength(1)
+  })
+})
+
+describe("projectAccountBalance", () => {
+  it("grows balance by contribution then mean return every year, same as before employer match existed", () => {
+    const acct = bridgeAccount({ id: "a1", balance: 100000, annualContribution: 10000, returnMean: 0.1 })
+    // Year 1: (100000 + 10000) * 1.1 = 121000. Year 2: (121000 + 10000) * 1.1 = 144100.
+    expect(projectAccountBalance([acct], 60, 62)).toBeCloseTo(144100)
+  })
+
+  it("adds a flat employer match every year when salaryColaRate is 0", () => {
+    const acct = bridgeAccount({
+      id: "a1", balance: 0, annualContribution: 100000, returnMean: 0,
+      annualSalary: 10000000, employerMatchRate: 1.0, employerMatchCapRate: 0.04, salaryColaRate: 0,
+    })
+    // Employer match each year: min(100000, 10000000*0.04) = 100000, matched 100% = 100000.
+    // Two years, no growth: 0 + (100000 + 100000) + (100000 + 100000) = 400000.
+    expect(projectAccountBalance([acct], 60, 62)).toBe(400000)
+  })
+
+  it("grows the employer match with salary via salaryColaRate, while the employee's own contribution stays flat", () => {
+    const acct = bridgeAccount({
+      id: "a1", balance: 0, annualContribution: 100000, returnMean: 0,
+      annualSalary: 10000000, employerMatchRate: 1.0, employerMatchCapRate: 0.04, salaryColaRate: 0.1,
+    })
+    // Year 1 (age 60, 0 years elapsed): salary 10,000,000 -> cap 400,000 -> match min(100000, 400000) = 100000.
+    // Year 2 (age 61, 1 year elapsed): salary 11,000,000 -> cap 440,000 -> match still capped by employee's own 100000.
+    // Employer match doesn't actually change here since employee's own contribution (100000) is always
+    // the binding constraint well under either year's cap -- so this and the 0%-COLA case above agree.
+    expect(projectAccountBalance([acct], 60, 62)).toBe(400000)
+  })
+
+  it("lets a growing employer-match cap overtake a larger flat employee contribution once salary catches up", () => {
+    const acct = bridgeAccount({
+      id: "a1", balance: 0, annualContribution: 500000, returnMean: 0,
+      annualSalary: 10000000, employerMatchRate: 1.0, employerMatchCapRate: 0.04, salaryColaRate: 0.5,
+    })
+    // Year 1 (0 years elapsed): salary 10,000,000 -> cap 400,000 -> match min(500000, 400000) = 400000.
+    // Year 2 (1 year elapsed): salary 15,000,000 -> cap 600,000 -> match min(500000, 600000) = 500000.
+    // Total added to balance: (500000 + 400000) + (500000 + 500000) = 1900000.
+    expect(projectAccountBalance([acct], 60, 62)).toBe(1900000)
+  })
+
+  it("adds nothing for an account with no employer match configured", () => {
+    const acct = bridgeAccount({ id: "a1", balance: 0, annualContribution: 100000, returnMean: 0 })
+    expect(projectAccountBalance([acct], 60, 62)).toBe(200000)
   })
 })
 

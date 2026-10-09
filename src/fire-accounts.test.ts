@@ -155,6 +155,20 @@ describe("classifyAccounts", () => {
     expect(withoutPenalty).toMatchObject({ earlyWithdrawalPenalty: false })
   })
 
+  it("resolves salaryColaRate from the override, defaulting to null when absent", () => {
+    const accounts = [
+      { id: "acct-1", name: "401k", offbudget: true },
+      { id: "acct-2", name: "IRA", offbudget: true },
+    ]
+    const cfg = { accounts: [{ match: "acct-1", type: "traditional-401k", salaryColaRate: 0.03 }, { match: "acct-2", type: "traditional-ira" }] } as Pick<
+      FireConfig,
+      "accounts"
+    >
+    const [withCola, withoutCola] = classifyAccounts(accounts, cfg)
+    expect(withCola).toMatchObject({ salaryColaRate: 0.03 })
+    expect(withoutCola).toMatchObject({ salaryColaRate: null })
+  })
+
   it("falls back to the heuristic when there's no override", () => {
     const accounts = [{ id: "acct-1", name: "E*Trade Roth IRA", offbudget: true }]
     const [result] = classifyAccounts(accounts, { accounts: [] })
@@ -728,6 +742,7 @@ describe("loadClassifiedAccounts", () => {
         annualSalary: null,
         employerMatchRate: null,
         employerMatchCapRate: null,
+        salaryColaRate: null,
         hsaCoverage: null,
         hsaWithdrawalRestriction: null,
         hsaAnnualMedicalExpense: null,
@@ -976,6 +991,7 @@ describe("portfolioAccounts", () => {
       annualSalary: null,
       employerMatchRate: null,
       employerMatchCapRate: null,
+      salaryColaRate: null,
       hsaCoverage: null,
       hsaWithdrawalRestriction: null,
       hsaAnnualMedicalExpense: null,

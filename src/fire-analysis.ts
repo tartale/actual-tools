@@ -1,5 +1,5 @@
 import { addMonthsToDate, formatUsd } from "./actual-helpers.ts"
-import { isPortfolioCategory } from "./fire-accounts.ts"
+import { computeEmployerContribution, isPortfolioCategory } from "./fire-accounts.ts"
 import type { ClassifiedAccount, TaxTreatment } from "./fire-accounts.ts"
 import { ALLOCATION_PRESET_RETURNS, EARLY_WITHDRAWAL_PENALTY_RATE, effectiveAccessAge, withdrawalTaxRateFor } from "./fire-dashboard.ts"
 import type { RetirementIncomeStream } from "./fire-dashboard.ts"
@@ -72,6 +72,15 @@ export interface BridgeAccount {
   balance: number
   accessAge: number | null
   annualContribution: number
+  // Employer-match inputs, same fields and meaning as ClassifiedAccount's own -- null throughout
+  // for any account without an employer match configured, in which case computeEmployerContribution
+  // below returns 0 every year, same as today's behavior before these existed. Salary grows at
+  // salaryColaRate every accumulation year (see the accumulation loop below); annualContribution
+  // itself (the employee's own side) does not grow -- same flat-nominal treatment it's always had.
+  annualSalary: number | null
+  employerMatchRate: number | null
+  employerMatchCapRate: number | null
+  salaryColaRate: number
   returnMean: number
   withdrawalTaxRate: number
   // The account's own normal accessAge (pre-Rule-of-55, pre-early-withdrawal-penalty) -- when set,
@@ -425,7 +434,10 @@ export function projectAccountBalance(accounts: readonly BridgeAccount[], curren
   return accounts.reduce((total, account) => {
     let value = account.balance
     for (let age = currentAge; age < targetAge; age++) {
-      value = (value + account.annualContribution) * (1 + account.returnMean)
+      // Same employer-match-grows-with-salary reasoning as simulateBridge's own accumulation loop.
+      const salaryThisYear = account.annualSalary != null ? account.annualSalary * Math.pow(1 + account.salaryColaRate, age - currentAge) : null
+      const employerContribution = computeEmployerContribution(salaryThisYear, account.employerMatchRate, account.employerMatchCapRate, account.annualContribution)
+      value = (value + account.annualContribution + employerContribution) * (1 + account.returnMean)
     }
     return total + value
   }, 0)
@@ -579,8 +591,16 @@ export function simulateBridge(
     }
 
     if (age < retirementAge) {
+      // Employer match grows with salary, not with plan inflation -- salaryColaRate compounds
+      // annualSalary for every accumulation year elapsed so far (0 at currentAge itself), same
+      // reasoning computeEmployerContribution already applies to a single point in time, just
+      // repeated once per year here instead of only "today." The employee's own annualContribution
+      // stays flat, as it always has.
+      const yearsElapsed = age - currentAge
       accounts.forEach((account, index) => {
-        balances[index] = (balances[index] as number) + account.annualContribution
+        const salaryThisYear = account.annualSalary != null ? account.annualSalary * Math.pow(1 + account.salaryColaRate, yearsElapsed) : null
+        const employerContribution = computeEmployerContribution(salaryThisYear, account.employerMatchRate, account.employerMatchCapRate, account.annualContribution)
+        balances[index] = (balances[index] as number) + account.annualContribution + employerContribution
       })
     } else {
       const reachable = accounts.map((account, index) => index).filter((index) => isAccessible(accounts[index] as BridgeAccount, age))
@@ -875,6 +895,10 @@ export function toBridgeAccounts(
           balance: basisPortion,
           accessAge: null,
           annualContribution: annualContributions.get(account.id) ?? 0,
+          annualSalary: account.annualSalary,
+          employerMatchRate: account.employerMatchRate,
+          employerMatchCapRate: account.employerMatchCapRate,
+          salaryColaRate: account.salaryColaRate ?? 0,
           returnMean,
           withdrawalTaxRate,
           // Contributed basis is already unconditionally accessible (IRC Sec. 408A(d)(4)) -- the
@@ -894,6 +918,10 @@ export function toBridgeAccounts(
           balance: growthPortion,
           accessAge: effectiveAccessAge(account, retirementAge),
           annualContribution: 0,
+          annualSalary: null,
+          employerMatchRate: null,
+          employerMatchCapRate: null,
+          salaryColaRate: 0,
           returnMean,
           withdrawalTaxRate,
           earlyWithdrawalPenaltyUntilAge,
@@ -911,6 +939,10 @@ export function toBridgeAccounts(
         balance,
         accessAge: effectiveAccessAge(account, retirementAge),
         annualContribution: annualContributions.get(account.id) ?? 0,
+        annualSalary: account.annualSalary,
+        employerMatchRate: account.employerMatchRate,
+        employerMatchCapRate: account.employerMatchCapRate,
+        salaryColaRate: account.salaryColaRate ?? 0,
         returnMean,
         withdrawalTaxRate,
         earlyWithdrawalPenaltyUntilAge,

@@ -1178,6 +1178,12 @@ function renderAccounts() {
               <input type="number" min="0" step="0.5" data-field="employerMatchCapRate" value="${account.employerMatchCapRate != null ? (account.employerMatchCapRate * 100) : ""}" placeholder="e.g. 4" ${isRuleOf55Active ? "" : "disabled"}>
             </div>
           </div>
+          <div class="field">
+            <label>Salary COLA<button type="button" class="help-icon" data-help="Expected annual raise, applied to Annual salary every year through retirement -- grows the employer match's own contribution to the bridge/Check projection's balance growth along with it. Leave at 0 for a flat salary.">?</button></label>
+            <div class="input-affix suffix-percent">
+              <input type="number" min="0" step="0.5" data-field="salaryColaRate" value="${account.salaryColaRate != null ? (account.salaryColaRate * 100) : ""}" placeholder="0" ${isRuleOf55Active ? "" : "disabled"}>
+            </div>
+          </div>
           ${isRuleOf55Active ? employerNote : ""}
         </div>` : ""}
         ${showContribution ? `
@@ -1347,6 +1353,13 @@ function renderAccounts() {
       attachMoneyFormatting(salaryInput)
       salaryInput.addEventListener("moneycommit", (e) => {
         runExclusive(() => patchAccount(account.id, { annualSalary: parseMoneyInputCents(e.target.value) }))
+      })
+    }
+    const salaryColaInput = row.querySelector("input[data-field='salaryColaRate']")
+    if (salaryColaInput) {
+      salaryColaInput.addEventListener("change", (e) => {
+        const percent = e.target.value === "" ? null : parseFloat(e.target.value)
+        runExclusive(() => patchAccount(account.id, { salaryColaRate: percent === null ? null : percent / 100 }))
       })
     }
     const matchRateInput = row.querySelector("input[data-field='employerMatchRate']")
