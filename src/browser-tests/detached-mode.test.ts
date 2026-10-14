@@ -158,6 +158,41 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
+  it("Salary COLA is disabled until Rule of 55 is active, and its percent round-trips through a reload", async () => {
+    const { page: ui, errors } = await openDetachedPage()
+    await fillPlanFields(ui)
+
+    await ui.locator("#newAccountName").fill("New 401k")
+    await ui.locator("#newAccountBalance").fill("200000")
+    await ui.locator("#addAccountBtn").click()
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("New 401k") ?? false)
+
+    const row = ui.locator("#accountsList .account-row", { hasText: "New 401k" })
+    await row.locator("select[data-field='type']").selectOption("traditional-401k")
+    const colaInput = row.locator("input[data-field='salaryColaRate']")
+    await colaInput.waitFor({ state: "visible" })
+    // ruleOf55Active starts false for a fresh account (no separation age set yet) -- Salary COLA
+    // only means anything once there's a salary being grown, so it stays disabled until then, same
+    // as Annual salary/Employer match/...up to this % of pay right alongside it.
+    expect(await colaInput.isDisabled()).toBe(true)
+
+    await row.locator("[data-field='ruleOf55Active']").check()
+    await expect.poll(() => colaInput.isDisabled()).toBe(false)
+
+    await colaInput.fill("3")
+    await colaInput.press("Tab")
+    await ui.waitForSelector("#checkResult .findings-group", { timeout: 20000 }) // settle the debounced recheck before reloading
+
+    await ui.reload()
+    await ui.waitForSelector("#page-retirement.active", { timeout: 10000 })
+    await ui.waitForFunction(() => document.querySelector("#accountsList")?.textContent?.includes("New 401k") ?? false)
+    const reloadedRow = ui.locator("#accountsList .account-row", { hasText: "New 401k" })
+    // Round-tripped through patchAccount's percent/decimal conversion (3 -> 0.03 stored -> 3 shown
+    // again), not just whatever raw string was typed.
+    expect(await reloadedRow.locator("input[data-field='salaryColaRate']").inputValue()).toBe("3")
+    expect(errors).toEqual([])
+  }, 60000)
+
   it("boots directly into a complete, working example -- no setup needed, real Bridge/Monte Carlo content immediately", async () => {
     const { page: ui, errors } = await openDetachedPage()
     // No field-filling, no account-adding -- this is the page exactly as a first-time visitor
