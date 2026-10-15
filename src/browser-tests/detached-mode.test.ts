@@ -287,6 +287,30 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
+  it("the chart zoom button is disabled in narrow portrait and live-reenables on rotation to landscape (issue #69)", async () => {
+    // iOS Safari has no Screen Orientation Lock API support at all, so the zoom modal's own
+    // side-by-side layout (a fixed-320px findings column alone, see .chart-zoom-findings-col)
+    // can't be forced into landscape -- disabling it in narrow portrait is the fallback, rather
+    // than opening into a squished, barely-readable modal.
+    const { page: ui, errors } = await openDetachedPage(devices["iPhone 13"])
+    await ui.waitForSelector("#checkResult .findings-group", { timeout: 20000 })
+
+    expect(await ui.locator("#chartZoomOpenBtn").isDisabled()).toBe(true)
+    expect(await ui.locator("#chartZoomOpenBtn").getAttribute("title")).toContain("Rotate your device")
+    await ui.locator("#chartZoomOpenBtn").click({ force: true })
+    await ui.waitForTimeout(200)
+    expect(await ui.locator("#chartZoomBackdrop").isHidden()).toBe(true)
+
+    // Rotate to landscape (swap width/height, same as a real device rotation) -- the button should
+    // re-enable live, with no reload, and zoom should now actually open.
+    await ui.setViewportSize({ width: 844, height: 390 })
+    await expect.poll(() => ui.locator("#chartZoomOpenBtn").isDisabled()).toBe(false)
+    expect(await ui.locator("#chartZoomOpenBtn").getAttribute("title")).toBe("Zoom in")
+    await ui.locator("#chartZoomOpenBtn").click()
+    await expect.poll(() => ui.locator("#chartZoomBackdrop").isHidden()).toBe(false)
+    expect(errors).toEqual([])
+  }, 60000)
+
   it("the header chip reopens the same shared import modal file mode uses, with no Actual-vs-file choice to make", async () => {
     const { page: ui, errors } = await openDetachedPage()
     await ui.locator("#dataSourceChip").click()
