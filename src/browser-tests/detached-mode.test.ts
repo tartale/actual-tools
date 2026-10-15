@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
-import { chromium } from "playwright"
-import type { Browser, Page } from "playwright"
+import { chromium, devices } from "playwright"
+import type { Browser, BrowserContextOptions, Page } from "playwright"
 
 import { startAppServer } from "../app-server.ts"
 import type { RunningServer } from "../app-server.ts"
@@ -59,7 +59,7 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-async function openDetachedPage(): Promise<{ page: Page; errors: string[] }> {
+async function openDetachedPage(contextOptions: BrowserContextOptions = { viewport: { width: 1400, height: 1000 } }): Promise<{ page: Page; errors: string[] }> {
   server = await startAppServer({
     sessionPath: join(dir, "session.json"),
     dataSourceSessionPath: join(dir, "data-source.json"),
@@ -71,7 +71,7 @@ async function openDetachedPage(): Promise<{ page: Page; errors: string[] }> {
     uiDir: UI_DIR,
     mode: "detached",
   })
-  const opened = await (browser as Browser).newPage({ viewport: { width: 1400, height: 1000 } })
+  const opened = await (browser as Browser).newPage(contextOptions)
   page = opened
   const errors: string[] = []
   opened.on("pageerror", (error) => errors.push(error.message))
@@ -247,6 +247,22 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(await ui.locator("#retireAges").inputValue()).toBe("55")
     expect(await ui.locator("#planToAge").inputValue()).toBe("90")
     expect(await ui.locator("#fileModeAnnualExpense").inputValue()).toContain("40,000.00")
+    expect(errors).toEqual([])
+  }, 60000)
+
+  it("the Plan card's two columns stay equal width at a mobile viewport (issue #71)", async () => {
+    // A bare 1fr grid column floors at its own content's min-content width -- the native date
+    // picker control (#birthDate) has a wider intrinsic minimum than a plain text input
+    // (#retireAges), which used to skew BOTH columns for every row in the grid, not just this one.
+    // Needs the real iPhone 13 device profile (isMobile/hasTouch), not just a narrow viewport --
+    // that's what actually triggers the browser's touch-sized native date-input control the bug
+    // depends on; a plain desktop-mode viewport never shows the width gap at all.
+    const { page: ui, errors } = await openDetachedPage(devices["iPhone 13"])
+    const birthDateBox = await ui.locator("#birthDate").boundingBox()
+    const retireAgesBox = await ui.locator("#retireAges").boundingBox()
+    const planToAgeBox = await ui.locator("#planToAge").boundingBox()
+    expect(Math.abs((birthDateBox?.width ?? 0) - (retireAgesBox?.width ?? 0))).toBeLessThan(2)
+    expect(Math.abs((birthDateBox?.width ?? 0) - (planToAgeBox?.width ?? 0))).toBeLessThan(2)
     expect(errors).toEqual([])
   }, 60000)
 
