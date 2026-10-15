@@ -1472,7 +1472,20 @@ label.bt-group-check-label { display: inline-flex; align-items: center; gap: 8px
 .month-strip-arrow:hover { color: var(--ink-strong); }
 
 @media (max-width: 860px) {
-  .topbar { overflow-x: auto; }
+  /* Reflow onto a second row instead of relying on horizontal scroll to reach the action buttons
+     (privacy toggle, log out) at the bar's right edge -- #privacyToggle's own margin-left:auto
+     still pushes it (and log out) to the far right of whichever row they land on. */
+  .topbar { flex-wrap: wrap; row-gap: 8px; }
+  /* Flex items shrink to their own min-content width by default, which for the title/hint pair in
+     a .card-head wraps the TITLE mid-word (e.g. "Retirement" / "income" on separate lines) while
+     the hint crowds up against whatever's left of it with no visual gap at all -- wrapping the
+     pair as a whole onto its own second row instead reads far better than squeezing both onto one. */
+  .card-head { flex-wrap: wrap; row-gap: 4px; }
+  /* Fixed to its own natural (never-wrapped) width -- flexbox decides whether the hint fits
+     beside it on the same line, or wraps whole to its own line below, based on that; the hint
+     itself keeps its default shrink/wrap behavior either way (a short one like "1 open accounts"
+     still sits right beside the title same as before, only a long one drops to its own line). */
+  .card-head-title { flex: none; white-space: nowrap; }
   /* minmax(0, 1fr), not a bare 1fr -- a bare 1fr track floors at its own column's widest
      min-content child, and a native date-input control's own intrinsic minimum width (birth date)
      is wider than a plain text input's (retirement ages), skewing both columns' widths for every
