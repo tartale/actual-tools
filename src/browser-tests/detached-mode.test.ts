@@ -266,6 +266,27 @@ describe.skipIf(!browser)("Detached mode in a browser", () => {
     expect(errors).toEqual([])
   }, 60000)
 
+  it("the header reflows instead of needing horizontal scroll, and a long card-head hint wraps onto its own line instead of breaking the title (issue #70)", async () => {
+    const { page: ui, errors } = await openDetachedPage(devices["iPhone 13"])
+
+    const topbarOverflow = await ui.evaluate(() => {
+      const el = document.querySelector(".topbar")!
+      return el.scrollWidth - el.clientWidth
+    })
+    expect(topbarOverflow).toBe(0)
+    const viewport = ui.viewportSize()
+    const privacyToggleBox = await ui.locator("#privacyToggle").boundingBox()
+    expect((privacyToggleBox?.x ?? Infinity) + (privacyToggleBox?.width ?? 0)).toBeLessThanOrEqual(viewport?.width ?? 0)
+
+    // "Retirement income" (title) beside a hint long enough that the two together don't fit on one
+    // line -- the title used to shrink and wrap mid-word ("Retirement" / "income" on separate
+    // lines) right along with the hint; it should now stay on its own single line regardless; the
+    // hint instead wraps as a whole onto its own line below.
+    const titleBox = await ui.locator('[data-section="retirement-income"] .card-head-title').boundingBox()
+    expect(titleBox?.height ?? Infinity).toBeLessThan(28)
+    expect(errors).toEqual([])
+  }, 60000)
+
   it("the header chip reopens the same shared import modal file mode uses, with no Actual-vs-file choice to make", async () => {
     const { page: ui, errors } = await openDetachedPage()
     await ui.locator("#dataSourceChip").click()
