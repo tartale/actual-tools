@@ -1473,7 +1473,12 @@ label.bt-group-check-label { display: inline-flex; align-items: center; gap: 8px
 
 @media (max-width: 860px) {
   .topbar { overflow-x: auto; }
-  .summary, .plan-grid, .acct-fields, .income-grid { grid-template-columns: 1fr 1fr; }
+  /* minmax(0, 1fr), not a bare 1fr -- a bare 1fr track floors at its own column's widest
+     min-content child, and a native date-input control's own intrinsic minimum width (birth date)
+     is wider than a plain text input's (retirement ages), skewing both columns' widths for every
+     row in the grid, not just the one with the date field. minmax(0, ...) removes that floor so
+     the two columns split the row evenly regardless of what's in them. */
+  .summary, .plan-grid, .acct-fields, .income-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   main { padding: 0 18px 18px; }
   .page.active, .top-error:not([hidden]) { padding-top: 18px; }
 }
