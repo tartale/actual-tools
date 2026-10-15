@@ -3464,9 +3464,29 @@ document.getElementById("addExpenseAdjustmentBtn").addEventListener("click", asy
 // (chart-zoom-findings-col, see style.css) rather than growing the modal past its own max-height --
 // a narrow scrollbar in a column with width to spare reads very differently than one squeezed into
 // the inline sidebar's own tight column, which is why that fix stops here instead.
+// Issue #69 -- the zoom modal's own side-by-side layout (chart-zoom-columns) needs real width to
+// spare (the findings column alone is a fixed 320px -- see .chart-zoom-findings-col in style.css),
+// which a narrow portrait phone just doesn't have. iOS Safari has no Screen Orientation Lock API
+// support at all (Chrome for Android only supports it inside fullscreen), so forcing landscape
+// isn't reliably available across the mobile browsers this app needs to support -- disabling zoom
+// in that one orientation, rather than opening into a squished, barely-readable modal, is the safer
+// default. Matches the mobile breakpoint already used elsewhere (style.css's own max-width: 860px).
+function isNarrowPortraitForZoom() {
+  return window.matchMedia("(max-width: 860px) and (orientation: portrait)").matches
+}
+function syncChartZoomAvailability() {
+  const btn = document.getElementById("chartZoomOpenBtn")
+  const narrow = isNarrowPortraitForZoom()
+  btn.disabled = narrow
+  btn.title = narrow ? "Rotate your device to landscape to use zoom" : "Zoom in"
+}
+syncChartZoomAvailability()
+window.matchMedia("(max-width: 860px) and (orientation: portrait)").addEventListener("change", syncChartZoomAvailability)
+
 let zoomedNodes = [] // [{ node, home: { parent, nextSibling } }] -- where each goes back on close
 function openChartZoom() {
   if (zoomedNodes.length > 0) return // already open
+  if (isNarrowPortraitForZoom()) return // see syncChartZoomAvailability's own doc comment above
   // Each chart's own group-label ("Bridge · mean returns, 3% inflation") lives on a sibling in
   // #checkResult, not inside the chart wrap itself -- cloned as plain text into the modal (rather
   // than reparenting the real label) so the underlying page's own copy is untouched and doesn't

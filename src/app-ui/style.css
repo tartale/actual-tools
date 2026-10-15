@@ -92,6 +92,8 @@ body.busy .saving-pill { opacity: 1; }
   border: 1px solid var(--line); color: var(--ink-soft); cursor: pointer; padding: 0;
 }
 .icon-btn:hover { color: var(--ink); border-color: var(--accent); }
+.icon-btn:disabled { color: var(--ink-faint); border-color: var(--line-soft); cursor: default; }
+.icon-btn:disabled:hover { color: var(--ink-faint); border-color: var(--line-soft); }
 .icon-btn .slash { opacity: 0; transition: opacity 0.15s; }
 body.privacy .icon-btn { color: var(--accent-selected); border-color: var(--accent); }
 body.privacy .icon-btn .slash { opacity: 1; }
