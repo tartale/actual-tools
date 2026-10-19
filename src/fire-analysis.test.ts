@@ -4,6 +4,7 @@ import {
   allocateWithdrawal,
   bridgeFinding,
   calculateMortgagePayoff,
+  earliestViableRetirementAge,
   magiFinding,
   monteCarloFinding,
   projectAccountBalance,
@@ -581,6 +582,39 @@ describe("bridgeFinding", () => {
   it("warns, rather than failing, when everything has already unlocked", () => {
     const finding = bridgeFinding(bridgeResult({ retirementAge: 59, accessibleAtRetirement: 1000, depletionAge: 80 }), 100)
     expect(finding.level).toBe("warn")
+  })
+})
+
+describe("earliestViableRetirementAge", () => {
+  it("returns currentAge itself when the plan is already viable immediately", () => {
+    const accounts = [account({ id: "a1", category: "investment-taxable" })]
+    const balances = new Map([["a1", 1_000_000]])
+    const result = earliestViableRetirementAge(accounts, balances, new Map(), 60, 62, 10, 0)
+    expect(result).toBe(60)
+  })
+
+  it("scans forward to the first age that becomes viable once enough has accumulated", () => {
+    // $0 balance, $1,000/yr flat contribution (accumulation only, see annualContribution's own
+    // "flat, never grows" convention), $900/yr spend, no growth/inflation/tax (allocationPreset
+    // unset -> 0% return; default taxTreatment "none" -> 0% withdrawal tax) -- clean enough to
+    // verify every candidate age by hand:
+    // - age 60: $0 entering withdrawal -> depletes immediately. Not viable.
+    // - age 61: one accumulation year (age 60) -> $1,000 entering withdrawal. Covers age 61's own
+    //   $900 (-> $100 left), but comes up short on age 62's -> depletes. Not viable.
+    // - age 62: two accumulation years -> $2,000 entering withdrawal. $2,000 -> $1,100 (age 62) ->
+    //   $200 (age 63). Never runs dry before planToAge. Viable.
+    const accounts = [account({ id: "a1", category: "investment-taxable" })]
+    const balances = new Map([["a1", 0]])
+    const contributions = new Map([["a1", 1000]])
+    const result = earliestViableRetirementAge(accounts, balances, contributions, 60, 64, 900, 0)
+    expect(result).toBe(62)
+  })
+
+  it("returns null when currentAge already exceeds planToAge -- no age in range to even scan", () => {
+    const accounts = [account({ id: "a1", category: "investment-taxable" })]
+    const balances = new Map([["a1", 1_000_000]])
+    const result = earliestViableRetirementAge(accounts, balances, new Map(), 65, 60, 10, 0)
+    expect(result).toBeNull()
   })
 })
 

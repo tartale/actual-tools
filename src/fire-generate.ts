@@ -9,6 +9,7 @@ import type { MonteCarloAssumptions, MonteCarloCardMeta, RetirementIncomeStream 
 import {
   bridgeFinding,
   calculateMortgagePayoff,
+  earliestViableRetirementAge,
   historicalBridgeYear,
   magiFinding,
   monteCarloFinding,
@@ -415,6 +416,13 @@ export interface CheckResult {
   // planToAge -- empty (not an error) whenever household size/filing status/either reference file
   // is missing, or a scenario simply never crosses it. See the computation's own doc comment.
   acaCliffCrossings: { retirementAge: number; crossesAtAge: number; pctFPL: number }[]
+  // Issue #67 -- the earliest age (currentAge through planToAge) whose own bridgeFinding comes
+  // back "ok", found by scanning every age in that range the same way bridgeResults above scans
+  // only the user's own candidate retirementAges. Null when no age in range is viable (including
+  // the degenerate case where currentAge itself already exceeds planToAge). Additive to
+  // retirementAges, not a replacement -- a user comparing specific candidate ages side by side
+  // still does that via bridgeResults/bridgeFindings as before.
+  earliestViableRetirementAge: number | null
   // Passed straight through from options -- the client already has this from the Plan section's
   // own config (STATE.dashboard.expenseAdjustments), but exposing it here too keeps every
   // Bridge-chart marker input flowing through this same CheckResult, matching
@@ -806,6 +814,23 @@ export async function checkDashboard(
     return findings
   })
 
+  // Issue #67 -- see earliestViableRetirementAge's own doc comment (fire-analysis.ts) for why this
+  // is a full scan rather than a binary search.
+  const earliestViableAge = earliestViableRetirementAge(
+    accounts,
+    balances,
+    contributionsAnnualByAccount,
+    options.currentAge,
+    options.planToAge,
+    annualSpend,
+    inflationMean,
+    incomeStreams,
+    taxDeferredCapAt,
+    rothConversionAmountAt,
+    expenseAdjustmentAt,
+    hsaWithdrawalCapAt,
+  )
+
   // The ACA subsidy cliff, as a chart marker (see renderBridgeChart in app.js) rather than a text
   // line -- unlike the MAGI/tax-bracket finding above, this is inherently a "when does this happen"
   // fact, not a single-point-in-time one, so it belongs on the age axis. One entry per scenario,
@@ -877,6 +902,7 @@ export async function checkDashboard(
     inflationMean,
     bridgeFindings,
     bridgeResults,
+    earliestViableRetirementAge: earliestViableAge,
     monteCarloResults,
     monteCarloFindings,
     monteCarloHistory,

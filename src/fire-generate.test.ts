@@ -71,6 +71,17 @@ describe("checkDashboard in file mode (actualConfig: null)", () => {
     expect(result.inflationMean).toBe(baseOptions.fallbackInflationMean)
   })
 
+  // Issue #67 -- earliestViableRetirementAge itself is already thoroughly covered, with exact
+  // hand-worked arithmetic, in fire-analysis.test.ts; this just proves checkDashboard actually
+  // wires it up from real DataSource-fetched account data rather than a stub/hardcoded value, same
+  // "AccountDataSource seam" reasoning as this whole describe block (see its own doc comment above).
+  it("surfaces a real, DataSource-driven earliestViableRetirementAge", async () => {
+    const dataSource = fileAccountDataSource("accounts.csv", "name,balance\nBrokerage,2000000.00\n") // plenty to retire on right away
+    const accounts = classifyAccounts(await dataSource.fetchAccounts(), { accounts: [] }, "1970-01-01", null)
+    const result = await checkDashboard(null, dataSource, accounts, { ...baseOptions, fileModeSpend: { annualSpend: 1000_00, basis: null } }) // tiny spend
+    expect(result.earliestViableRetirementAge).toBe(baseOptions.currentAge)
+  })
+
   it("throws when fileModeSpend is missing -- there's nothing else it could fall back to", async () => {
     const dataSource = fileAccountDataSource("accounts.csv", "name,balance\nBrokerage,500000.00\n")
     const accounts = classifyAccounts(await dataSource.fetchAccounts(), { accounts: [] }, "1970-01-01", null)
