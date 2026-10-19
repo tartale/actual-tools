@@ -766,6 +766,51 @@ export function bridgeFinding(result: BridgeResult, planToAge: number): Finding 
   }
 }
 
+// Function to find the earliest retirement age (currentAge through planToAge, inclusive) whose own
+// simulateBridge/bridgeFinding comes back "ok" -- issue #67's reverse-solved "earliest viable
+// retirement age," reusing the exact same per-age computation checkDashboard's own bridgeResults
+// already does for the user's chosen candidate ages (fire-generate.ts), just scanned across every
+// age in range instead of only those candidates. A linear scan, not a binary search: viability
+// isn't guaranteed monotonic in retirement age across this app's full feature set -- the ACA
+// subsidy cliff and SEPP/Rule-of-55 access-age boundaries can each shift which years are reachable
+// in ways a binary search's monotonicity assumption could get wrong (see acaCliffCrossings' own
+// doc comment in fire-generate.ts, which notes the same non-monotonicity for a related scan). Cheap
+// enough to scan in full: a pure function over a handful of accounts and at most a few dozen
+// candidate ages, nothing like a Monte Carlo run. Returns null when no age in range is viable.
+export function earliestViableRetirementAge(
+  accounts: readonly ClassifiedAccount[],
+  balances: ReadonlyMap<string, number>,
+  annualContributions: ReadonlyMap<string, number>,
+  currentAge: number,
+  planToAge: number,
+  annualSpend: number,
+  inflationMean: number,
+  incomeStreams: readonly RetirementIncomeStream[] = [],
+  taxDeferredWithdrawalCapAt?: (age: number) => number | null,
+  rothConversionAmountAt?: (age: number, grossTaxDeferredWithdrawal: number) => number,
+  expenseAdjustmentAt?: (age: number) => { inflating: number; fixed: number },
+  hsaWithdrawalCapAt?: (age: number) => ReadonlyMap<string, number>,
+): number | null {
+  for (let retirementAge = currentAge; retirementAge <= planToAge; retirementAge++) {
+    const bridgeAccounts = toBridgeAccounts(accounts, balances, annualContributions, retirementAge)
+    const result = simulateBridge(
+      bridgeAccounts,
+      currentAge,
+      retirementAge,
+      planToAge,
+      annualSpend,
+      inflationMean,
+      incomeStreams,
+      taxDeferredWithdrawalCapAt,
+      rothConversionAmountAt,
+      expenseAdjustmentAt,
+      hsaWithdrawalCapAt,
+    )
+    if (bridgeFinding(result, planToAge).level === "ok") return retirementAge
+  }
+  return null
+}
+
 // Function to turn one retirement age's estimated MAGI into prose, read alongside bridgeFinding's
 // own funding-status finding for the same age (checkDashboard appends this right after it). Always
 // "info" -- IRMAA thresholds aren't vendored, so this never passes or fails anything on its own,

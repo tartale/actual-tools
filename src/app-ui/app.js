@@ -2763,6 +2763,16 @@ function renderSummaryStats(result) {
   const container = document.getElementById("summaryTiles")
   container.querySelectorAll(".tile-dynamic").forEach((el) => el.remove())
   const tiles = [{ label: "Projected Expenses", value: `${moneySpan(result.annualSpend)}/yr` }]
+  // Issue #67 -- the earliest age (currentAge through planToAge) the Bridge check actually funds
+  // every year, found by scanning every age in that range (see earliestViableRetirementAge's own
+  // doc comment in fire-analysis.ts), not just the user's own candidate retirementAges below. A
+  // real fact about this person's actual finances, not a what-if the user picked to explore (see
+  // CLAUDE.md's own privacy rule for that distinction) -- sensitive, so the age itself is wrapped
+  // in .money same as Rule of 55/debt-payoff ages just below.
+  tiles.push({
+    label: "Earliest Viable Retirement",
+    value: result.earliestViableRetirementAge == null ? "not within plan horizon" : `around age <span class="num money">${result.earliestViableRetirementAge}</span>`,
+  })
   result.ruleOf55Boosts.forEach((b) => {
     tiles.push({ label: escapeHtml(b.accountName), value: `Rule of 55, age <span class="num money">${b.to}</span>` })
   })
