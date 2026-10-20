@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Runs as root while this project's sandbox image is built (see build.sh).
+# PLUGINS_DIR points at claude-sandbox's built-in plugins.
 set -euo pipefail
 
 # Pinned by major only (see sandbox-toolchain-policy memory): typescript-5 because
