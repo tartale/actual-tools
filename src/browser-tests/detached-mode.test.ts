@@ -80,18 +80,35 @@ async function openDetachedPage(contextOptions: BrowserContextOptions = { viewpo
   return { page: opened, errors }
 }
 
+// runExclusive (app.js) deliberately DROPS a change rather than queuing it if a previous one's own
+// round trip (patchPlan/patchAccount, awaiting detachedState()) is still in flight -- a documented
+// tradeoff (see its own doc comment) to keep a double-click from interleaving two chains, not a bug.
+// A real person tabbing through fields leaves a visible gap between each; this waits for the same
+// gap deterministically (the page adds body.busy for the duration of each exclusive round) instead
+// of relying on Playwright's own fill+Tab happening to be slow enough, which is what let a field's
+// edit occasionally get silently dropped under full-suite parallel load (detachedState() is a real
+// fetch, not instant) -- surfacing much later as a reload reading back a stale/default value with
+// no error anywhere, not as a visible failure at the point the edit was actually lost.
+async function waitIdle(ui: Page): Promise<void> {
+  await ui.waitForFunction(() => !document.body.classList.contains("busy"))
+}
+
 // Fills the Plan card's own fields and commits each -- .press("Tab") forces the blur every one of
 // these fields' own "change" (or, for the money field, "moneycommit" on blur -- see
 // attachMoneyFormatting) listener needs, the same as a real person tabbing to the next field.
 async function fillPlanFields(ui: Page): Promise<void> {
   await ui.locator("#birthDate").fill("1975-01-01")
   await ui.locator("#birthDate").press("Tab")
+  await waitIdle(ui)
   await ui.locator("#retireAges").fill("55")
   await ui.locator("#retireAges").press("Tab")
+  await waitIdle(ui)
   await ui.locator("#planToAge").fill("90")
   await ui.locator("#planToAge").press("Tab")
+  await waitIdle(ui)
   await ui.locator("#fileModeAnnualExpense").fill("40000")
   await ui.locator("#fileModeAnnualExpense").press("Tab")
+  await waitIdle(ui)
 }
 
 // Opens the same shared import modal file mode's own header chips use (see #dataSourceChip's own
