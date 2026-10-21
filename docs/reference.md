@@ -39,7 +39,7 @@ Every task in this repo runs through one dispatcher, from any directory:
 ./actual budget set-values ARGS            # set category budgets
 ./actual budget anomalies ARGS             # flag categories with unusual spending
 ./actual transactions match-uncleared ARGS # tag matching uncleared transactions
-./actual service start                     # run the companion app as a container (see below)
+./actual service start                     # run the companion app in the background (see below)
 ./actual build image                       # build the image that service runs
 ./actual vendor check                      # check vendored third-party files against upstream
 ```
@@ -185,15 +185,22 @@ something a page helps with.
 ./actual build image [-t TAG] [--platform P]
 ```
 
-`service start` runs the app as a container (`docker compose up -d`) from
-the image `./actual build image` produces. `--dev` instead runs the sources
-directly in the foreground, restarting on every edit — that's the working
-loop, and the container is not involved in it. `status` answers by
-connecting to the port, since that's the only thing that settles whether
-anything is actually serving; a container can be running with a wedged
-server inside it. `stop` takes down the container (just this one mode's own
-compose service, never the other) and any `--dev` process holding the
-port, so it doesn't matter which way it was started.
+`service start` runs the app in the background, one of two ways depending on
+whether docker is available on this machine: as a container (`docker compose
+up -d`) from the image `./actual build image` produces, or — when docker
+isn't installed or its daemon isn't reachable — as a plain background `node`
+process, tracked by a pidfile and logfile under `.tmp/run/<mode>/`. Either
+way the published port and `--mode` semantics are identical; `service logs`
+and `service restart` work the same regardless of which path started it.
+`--dev` instead runs the sources directly in the foreground, restarting on
+every edit — that's the working loop, and neither the container nor the
+background process is involved in it. `status` answers by making a real
+request against the port, not just connecting to it, since a container or
+background process can be running with a wedged server inside it — it
+reports `up`, `wedged` (listening but not answering), or `down`. `stop` takes
+down whichever of the two was running (just this one mode's own compose
+service or background process, never the other mode's) and any `--dev`
+process holding the port, so it doesn't matter which way it was started.
 
 **`--mode`** (default `linked`) picks which of two independent deployments
 to act on — **linked** is today's app (Actual sync and file import both
@@ -201,15 +208,18 @@ available); **detached** is a completely separate, always-on deployment of
 issue #38's standalone FIRE calculator (see **Detached mode**, further
 below) with no connection of any kind, enforced server-side, not just
 hidden from the UI. Each mode gets its own fixed port so both can run at
-once: `4276` linked / `4277` detached as a container, `4278` / `4279`
-with `--dev`. Set directly via the `AB_MODE` environment variable when
-running `node src/app.ts` yourself instead of through this dispatcher
-(`compose.yaml` pins one per service; the dispatcher sets it for you for
-`--dev`) — unset or `"linked"` is today's app, `"detached"` skips the
-login screen entirely and goes straight to the calculator.
+once: `4276` linked / `4277` detached whether running as a container or as a
+background process, `4278` / `4279` with `--dev`. Set directly via the
+`AB_MODE` environment variable when running `node src/app.ts` yourself
+instead of through this dispatcher (`compose.yaml` pins one per service; the
+dispatcher sets it for you for both the background-process and `--dev`
+cases) — unset or `"linked"` is today's app, `"detached"` skips the login
+screen entirely and goes straight to the calculator.
 
 Three things about running the container that are worth knowing before
-they bite:
+they bite — these only apply when docker is available and `service start`
+takes that path; the background-process fallback never reads any of them,
+always using this repo's own `./data` directly:
 
 - **`AB_DATA_DIR`** — `config.json` lives in a mounted directory
   (`./data`), and a relative path there resolves against the *docker
