@@ -3,6 +3,23 @@
 # PLUGINS_DIR points at claude-sandbox's built-in plugins.
 set -euo pipefail
 
+# Built-in plugins:
+# "${PLUGINS_DIR}/languages/cpp.sh"
+# "${PLUGINS_DIR}/languages/go.sh"
+# "${PLUGINS_DIR}/languages/java.sh"
+# "${PLUGINS_DIR}/languages/python2.sh"
+# "${PLUGINS_DIR}/languages/python3.sh"
+# "${PLUGINS_DIR}/languages/react.sh"
+# "${PLUGINS_DIR}/languages/ruby.sh"
+# "${PLUGINS_DIR}/languages/rust.sh"
+# "${PLUGINS_DIR}/languages/typescript.sh"
+# "${PLUGINS_DIR}/tools/docker.sh"
+# "${PLUGINS_DIR}/tools/playwright.sh"
+
+# Project-specific packages:
+# apt-get update && apt-get install -y --no-install-recommends <packages>
+
+
 # Pinned by major only (see sandbox-toolchain-policy memory): typescript-5 because
 # typescript-eslint doesn't support the 7.x native port yet, playwright-1 to match this project's
 # own "^1" devDependency. Without this, languages/typescript.sh and tools/playwright.sh both fall
