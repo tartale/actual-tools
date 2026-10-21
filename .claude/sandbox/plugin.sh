@@ -29,7 +29,6 @@ set -euo pipefail
 export LANGUAGE_VERSIONS="typescript-5 playwright-1"
 
 "${PLUGINS_DIR}"/languages/typescript.sh
-"${PLUGINS_DIR}"/tools/docker.sh
 "${PLUGINS_DIR}"/tools/playwright.sh
 
 # Test runner for this repo's TypeScript tools. Installed globally so a fresh
