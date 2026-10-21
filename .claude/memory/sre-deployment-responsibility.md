@@ -1,10 +1,17 @@
 ---
 name: sre-deployment-responsibility
-description: The dev session is also SRE for this project now -- after shipping, rebuild the container image and restart the running instance, not just merge the PR
+description: SUPERSEDED 2026-10-21 by [[sandbox-native-service]] -- the NAS docker deployment this covered was retired when the sandbox's docker CLI/socket were removed; kept for historical reasoning only
 metadata:
   node_type: memory
   type: feedback
 ---
+
+**SUPERSEDED 2026-10-21**: this sandbox's docker CLI and socket were removed, and the NAS-hosted
+docker deployment this memory describes was retired -- the sandbox container itself is now the
+production host. See [[sandbox-native-service]] for the current deployment shape (native
+background process, pidfile scheme, SessionStart boot hook, hybrid docker-or-native `./actual
+service` support). Kept below only for historical reasoning about the old `.envrc`-sourcing /
+remote-docker-daemon gotchas, in case a future NAS-based deployment is ever reintroduced.
 
 The user asked (2026-09-16) to take on SRE duties in addition to development for this project: "as
 SRE, you'll spin up the project as a docker container, and if we have updates, you'll rebuild the
