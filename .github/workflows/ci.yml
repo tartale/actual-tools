@@ -61,8 +61,14 @@ jobs:
 
   # No `needs` here on purpose -- test/docker-build are PR-only gates above, already satisfied
   # before this merged. A push to main just builds this same commit for real and pushes it.
+  #
+  # Gated on the repo variable PUBLISH_IMAGES so it can be switched off without a code change --
+  # Settings > Secrets and variables > Actions > Variables, set it to "false" to pause publishing
+  # (e.g. while ghcr.io shouldn't get a new image yet) and delete it or set "true" to resume.
+  # Unset behaves as enabled, same as "true" -- the check is a negative match on "false", not a
+  # positive match on "true", on purpose.
   publish:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PUBLISH_IMAGES != 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: read
