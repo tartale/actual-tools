@@ -38,3 +38,31 @@ supervises these processes across a container restart.
 both and report; after merging a change to `main`, redeploy both the same way
 [[sre-deployment-responsibility]] used to describe (build isn't needed -- no build step exists;
 just `service restart` both modes, or let the next session start's hook catch it).
+
+**The sandbox's docker host IS the NAS (`tartalenas.local`/`10.0.1.3`) -- hairpin-NAT gotcha
+(found/fixed 2026-10-21)**: this sandbox container and the NAS's own `actual-http-api` server
+(linked mode's REST dependency, `data/session.json`'s `baseUrl`) run on the *same physical
+machine*. A bridged container can't loop back out to the host's own LAN-facing IP to reach a
+sibling service on that same host (classic docker hairpin-NAT limitation) -- so raw TCP from
+inside this sandbox to `tartalenas.local`/`10.0.1.3:5007` times out on every port, even though the
+host is right there and the NAS is healthy. Symptom in the app: linked mode's connected
+REST calls fail with `UND_ERR_CONNECT_TIMEOUT` even though "other tools" (anything hitting the NAS
+from outside this sandbox) work fine.
+
+**Fix**: the sandbox's docker run config needs `--add-host tartalenas.local:<gateway-ip>` (the
+docker bridge gateway, confirmed stable at `172.17.0.1` -- check `cat /proc/net/route`'s Gateway
+column, or `cat /etc/hosts` for the entry, if it's ever rebuilt differently). Two things that look
+like fixes but aren't:
+- `--add-host tartalenas.local:host-gateway` -- the magic keyword didn't survive Synology
+  Container Manager's own `/etc/hosts` regeneration on this NAS (DSM rewrites the file post-start
+  with its own template, visible by its header comment "Any manual change will be lost..." --
+  clobbers plain `ExtraHosts` silently even though `docker inspect` shows it set correctly).
+- `--add-host tartalenas.local:10.0.1.3` -- the real LAN IP, same as plain DNS resolution already
+  gave for free; still hits the hairpin-NAT dead end. Must be the **gateway** IP, not the host's
+  own LAN-facing IP, even though they're the same physical machine.
+
+**How to check after any sandbox restart** (this is a recurring risk, not a one-time fix -- a
+re-provision could silently drop the flag or revert to `host-gateway`/the LAN IP): `cat /etc/hosts`
+should show `172.17.0.1 tartalenas.local`; then confirm end-to-end with
+`curl -s --max-time 15 http://localhost:4276/api/retirement/check` (should return real account
+data, not hang).
