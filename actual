@@ -7,11 +7,11 @@ cd "${THIS_SCRIPT_DIR}"
 # shellcheck source=lib/cli-format.sh
 source "${THIS_SCRIPT_DIR}/lib/cli-format.sh"
 
-# Four fixed ports -- one per (linked|detached) x (container|--dev) combination, so all four can run
-# side by side without any of them ever landing on another by accident, matching compose.yaml's own
-# published ports and src/app.ts's own default. linked keeps its original two (4276 container / 4277
-# --dev, ending in this user's own 76/77 production/dev convention); detached (issue #38's standalone
-# FIRE calculator, see AB_MODE) takes the next two up.
+# Four fixed ports -- one per (linked|detached) x (prod|--dev) combination, so all four can run
+# side by side without any of them ever landing on another by accident, matching this sandbox's own
+# pre-published port mappings and src/app.ts's own default. linked keeps its original two (4276 prod /
+# 4277 --dev, ending in this user's own 76/77 production/dev convention); detached (issue #38's
+# standalone FIRE calculator, see AB_MODE) takes the next two up.
 LINKED_SERVICE_PORT=4276
 DETACHED_SERVICE_PORT=4277
 LINKED_DEV_PORT=4278
@@ -28,8 +28,16 @@ function defaultPort() {
   fi
 }
 
+# Function to print the directory this mode's running service keeps its pidfile/log in -- under
+# .tmp so it's scratch, never committed (see scratch-dir-on-the-mount memory), but still on the same
+# persistent mount as the rest of the repo, so it survives a sandbox container restart.
+function runDirForMode() {
+  echo "${THIS_SCRIPT_DIR}/.tmp/run/$1"
+}
+
 # Function to print the container name for a mode -- matches compose.yaml's own container_name for
-# each service.
+# each service. Only meaningful when docker is actually available (see dockerAvailable) -- a sandbox
+# with no docker runs this mode as a plain background process instead (see runDirForMode).
 function containerNameForMode() {
   if [[ "$1" == "detached" ]]; then echo "actual-tools-detached"; else echo "actual-tools"; fi
 }
@@ -37,6 +45,24 @@ function containerNameForMode() {
 # Function to print the compose service name for a mode -- matches compose.yaml's own service keys.
 function composeServiceForMode() {
   if [[ "$1" == "detached" ]]; then echo "app-detached"; else echo "app"; fi
+}
+
+# Function to report whether docker is actually usable here -- the CLI runs the app as a container
+# when it is, and as a plain background process when it isn't (no docker CLI, or no socket --
+# e.g. a sandbox that has deliberately dropped both, see sandbox-runs-the-service memory). Checked
+# fresh each time rather than cached: whether docker is available can change between commands in the
+# same session (a sandbox rebuild, a daemon restart) and a stale answer would silently mismatch how
+# the app was actually started.
+function dockerAvailable() {
+  command -v docker &> /dev/null && docker info &> /dev/null
+}
+
+function pidFileForMode() {
+  echo "$(runDirForMode "$1")/service.pid"
+}
+
+function logFileForMode() {
+  echo "$(runDirForMode "$1")/service.log"
 }
 
 # Function to display usage and exit. Takes the exit code: 0 for an explicit --help, 1 for an error.
@@ -52,7 +78,7 @@ function usage() {
     "test" "Run the unit test suite." \
     "budget" "Set category budgets or flag unusual spending. See './actual budget --help'." \
     "transactions" "Work with individual transactions. See './actual transactions --help'." \
-    "service" "Run the companion app as a container. See './actual service --help'." \
+    "service" "Run the companion app directly, in the background. See './actual service --help'." \
     "vendor" "Check vendored third-party files against upstream. See './actual vendor --help'."
   exit "${exitCode}"
 }
@@ -100,12 +126,14 @@ function serviceUsage() {
   cliUsage "./actual service SUBCOMMAND [ARGS]"
   echo >&2
   cliSection "Subcommands" \
-    "start" "Start the app in a container (docker compose up -d)." \
+    "start" "Start the app in the background (a plain node process, pidfile under .tmp/run)." \
+    "stop" "Stop the app, background or --dev process alike." \
+    "restart" "Stop then start -- picks up a code change without a separate build step." \
     "status" "Report whether the app is up, and where to reach it." \
-    "stop" "Stop the app, container or --dev process alike."
+    "logs" "Tail this mode's service log (follows, like tail -f; Ctrl-C to stop watching)."
   echo >&2
   cliSection "Options" \
-    "--dev" "start: run the sources directly instead, in the foreground, restarting on every edit. The container is not involved." \
+    "--dev" "start: run in the foreground instead, restarting on every edit." \
     "--mode linked|detached" "Which deployment to act on (default: linked -- today's app). detached is issue #38's standalone FIRE calculator, no connection of any kind." \
     "-p, --port N" "Port to check or serve on (default: ${LINKED_SERVICE_PORT} linked / ${DETACHED_SERVICE_PORT} detached, or ${LINKED_DEV_PORT} / ${DETACHED_DEV_PORT} with --dev)."
   exit "${exitCode}"
@@ -142,6 +170,15 @@ function requireDocker() {
 function portListening() {
   local port="$1"
   (exec 3<> "/dev/tcp/127.0.0.1/${port}") &> /dev/null
+}
+
+# Function to report whether the app is actually answering requests, not just holding the port open
+# -- same check the old container healthcheck used (the build-id route is the cheapest one that
+# proves the server is actually serving, on every mode). node's own http, not curl: alpine images
+# this ran in before had none, and there's no reason to assume this sandbox does either.
+function httpOk() {
+  local port="$1"
+  node -e "require('node:http').get('http://127.0.0.1:${port}/api/dev/build-id', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))" &> /dev/null
 }
 
 # Function to list the PIDs listening on a port, for stopping a --dev run. Prefers fuser, falls back
@@ -328,6 +365,8 @@ function commandService() {
     start) serviceStart "$@" ;;
     status) serviceStatus "$@" ;;
     stop) serviceStop "$@" ;;
+    restart) serviceRestart "$@" ;;
+    logs) serviceLogs "$@" ;;
     *)
       echo "Unknown service subcommand: ${subcommand}" >&2
       serviceUsage
@@ -357,12 +396,18 @@ function commandVendor() {
   esac
 }
 
-# Function to start the app: as a container by default, or straight from the sources with --dev.
+# Function to start the app: as a container when docker is available (the default anyone cloning
+# this repo gets), or as a plain background node process when it isn't (a sandbox that has
+# deliberately dropped docker and runs the service itself -- see sandbox-runs-the-service memory).
+# Picked fresh each call via dockerAvailable, not a flag -- whichever way it's actually running,
+# status/stop/restart need to agree with start about which one that was.
 #
-# --dev is the working loop, not a lesser mode of the same thing: it runs in the foreground under
-# node's own --watch, so editing app-server.ts/fire-*.ts/etc. restarts the server, and the page's
-# own hot-reload (a per-process build id the browser polls -- see app-server.ts/app.js) reloads any
-# tab left open on it. A container would have to be rebuilt for each of those edits.
+# --dev is the working loop either way, not a lesser mode of the same thing: it runs in the
+# foreground under node's own --watch, so editing app-server.ts/fire-*.ts/etc. restarts the server,
+# and the page's own hot-reload (a per-process build id the browser polls -- see
+# app-server.ts/app.js) reloads any tab left open on it. Neither the container nor the background
+# native start below has --watch -- picking up a code change needs an explicit `service restart`,
+# same as any other production process.
 function serviceStart() {
   local dev=false
   local mode="linked"
@@ -394,7 +439,7 @@ function serviceStart() {
 
   if [[ "${dev}" == true ]]; then
     # A different default per mode (see defaultPort) so up to four of these (two modes x
-    # container/--dev) never collide on a port by default -- each is reachable at once, and
+    # prod/--dev) never collide on a port by default -- each is reachable at once, and
     # `service stop`/`stop -p` on one can't accidentally take down another.
     AB_MODE="${mode}" exec node --watch ./src/app.ts --port "${port:-$(defaultPort "${mode}" true)}" "${passthrough[@]}"
   fi
@@ -408,37 +453,74 @@ function serviceStart() {
     serviceUsage
   fi
 
-  requireDocker
-  if ! docker image inspect actual-tools:local &> /dev/null; then
-    echo "No actual-tools:local image yet -- building it now (first run only)." >&2
-    buildImage
+  if portListening "${port}"; then
+    echo "Already running on port ${port}." >&2
+    echo
+    serviceStatus --mode "${mode}" --port "${port}"
+    return 0
   fi
-  local composeService
-  composeService="$(composeServiceForMode "${mode}")"
-  if [[ "${mode}" == "linked" ]]; then
-    # config.json is written here, so the directory has to exist before the mount does: docker
-    # would otherwise create it as root and the app could not write into it. Only for the default
-    # location -- an AB_DATA_DIR pointing at the daemon's host may well not be a path this side can
-    # create, and silently making a local directory of that name would hide the real problem rather
-    # than fix it. Detached mode has no volume at all (see compose.yaml's own doc comment on why),
-    # so there's nothing to create here for it.
-    if [[ -z "${AB_DATA_DIR:-}" ]]; then
-      mkdir -p "${THIS_SCRIPT_DIR}/data"
+
+  if dockerAvailable; then
+    if ! docker image inspect actual-tools:local &> /dev/null; then
+      echo "No actual-tools:local image yet -- building it now (first run only)." >&2
+      buildImage
     fi
-    # Published port only; inside the container it is always LINKED_SERVICE_PORT (4276). See
-    # compose.yaml.
-    AB_PORT="${port}" docker compose up -d "${composeService}"
+    local composeService
+    composeService="$(composeServiceForMode "${mode}")"
+    if [[ "${mode}" == "linked" ]]; then
+      # config.json is written here, so the directory has to exist before the mount does: docker
+      # would otherwise create it as root and the app could not write into it. Only for the default
+      # location -- an AB_DATA_DIR pointing at the daemon's host may well not be a path this side
+      # can create, and silently making a local directory of that name would hide the real problem
+      # rather than fix it. Detached mode has no volume at all (see compose.yaml's own doc comment
+      # on why), so there's nothing to create here for it.
+      if [[ -z "${AB_DATA_DIR:-}" ]]; then
+        mkdir -p "${THIS_SCRIPT_DIR}/data"
+      fi
+      # Published port only; inside the container it is always LINKED_SERVICE_PORT (4276). See
+      # compose.yaml.
+      AB_PORT="${port}" docker compose up -d "${composeService}"
+    else
+      # Same "published port only, always 4276 inside the container" story as AB_PORT above.
+      AB_DETACHED_PORT="${port}" docker compose up -d "${composeService}"
+    fi
   else
-    # Same "published port only, always 4276 inside the container" story as AB_PORT above.
-    AB_DETACHED_PORT="${port}" docker compose up -d "${composeService}"
+    local runDir
+    runDir="$(runDirForMode "${mode}")"
+    mkdir -p "${runDir}"
+
+    local args=(./src/app.ts --no-open --port "${port}")
+    if [[ "${mode}" == "linked" ]]; then
+      # Always this repo's own ./data, never AB_DATA_DIR -- that variable exists to translate a
+      # path for the REMOTE docker daemon's bind mount (the NAS sees this repo at a different path
+      # than the sandbox does, see compose.yaml's own doc comment), a problem that doesn't exist
+      # running natively in-process: this IS the filesystem the app will actually read/write on.
+      # config.json is rewritten on every edit in the app, session.json on login/logout. Detached
+      # mode gets neither: it never reads or writes any data source, by design (see app-server.ts's
+      # own doc comment on POST /api/retirement/detached/check).
+      local dataDir="${THIS_SCRIPT_DIR}/data"
+      mkdir -p "${dataDir}"
+      args+=(--config "${dataDir}/config.json" --session "${dataDir}/session.json")
+    fi
+
+    AB_MODE="${mode}" nohup node "${args[@]}" > "${runDir}/service.log" 2>&1 &
+    disown
+    echo "$!" > "$(pidFileForMode "${mode}")"
+
+    local waited=0
+    while [[ ${waited} -lt 10 ]] && ! portListening "${port}"; do
+      sleep 1
+      waited=$((waited + 1))
+    done
   fi
+
   echo
   serviceStatus --mode "${mode}" --port "${port}"
 }
 
-# Function to report whether the app is up. The port is the question that matters -- a container can
-# be running with a wedged server inside it -- so that is what decides "up"; the container is then
-# reported alongside as context, and only when docker is actually available.
+# Function to report whether the app is up. The port is the question that matters -- the process
+# could be alive but wedged -- so an actual HTTP request decides "up", not just a listening socket;
+# the pidfile is reported alongside as context on where to find logs/send signals.
 function serviceStatus() {
   local dev=false
   local mode="linked"
@@ -460,21 +542,32 @@ function serviceStatus() {
   local devFlag=""
   [[ "${dev}" == true ]] && devFlag=" --dev"
 
-  if portListening "${port}"; then
+  if httpOk "${port}"; then
     echo "● up      http://localhost:${port}/"
+  elif portListening "${port}"; then
+    echo "◐ wedged  something is listening on port ${port} but it isn't answering requests"
   else
     echo "○ down    nothing is listening on port ${port}"
   fi
 
-  # --dev is a plain node process, never a container -- nothing to report here.
-  if [[ "${dev}" != true ]] && command -v docker &> /dev/null && docker info &> /dev/null; then
-    local containerName container
-    containerName="$(containerNameForMode "${mode}")"
-    container="$(docker ps -a --filter "name=^${containerName}$" --format '{{.Status}}' 2> /dev/null || true)"
-    if [[ -n "${container}" ]]; then
-      echo "          container: ${container}"
+  # --dev is a plain node process, never a container, with no pidfile of its own -- nothing to
+  # report here.
+  if [[ "${dev}" != true ]]; then
+    if dockerAvailable; then
+      local containerName container
+      containerName="$(containerNameForMode "${mode}")"
+      container="$(docker ps -a --filter "name=^${containerName}$" --format '{{.Status}}' 2> /dev/null || true)"
+      if [[ -n "${container}" ]]; then
+        echo "          container: ${container}"
+      else
+        echo "          container: not created"
+      fi
     else
-      echo "          container: not created"
+      local pidFile
+      pidFile="$(pidFileForMode "${mode}")"
+      if [[ -f "${pidFile}" ]]; then
+        echo "          pid $(cat "${pidFile}"), log: $(logFileForMode "${mode}")"
+      fi
     fi
   fi
 
@@ -485,11 +578,13 @@ function serviceStatus() {
   fi
 }
 
-# Function to stop the app, whichever way it was started. Both are attempted rather than one being
-# inferred: a --dev run and a container can each be holding the port, and stopping only the kind
-# that was asked about leaves the other one running and the port still taken. Scoped to the one
-# compose SERVICE for this mode (docker compose rm -sf, not `down`) -- `down` tears down the whole
-# project, including the network the other mode's own service shares and depends on still being up.
+# Function to stop the app, however it was started. The container/native branch below is one or the
+# other, never both (see dockerAvailable), but its result is always followed by the port-based catch
+# below too: a --dev run can be holding the SAME port a container/background start was asked about,
+# and leaving it alone would mean "stop" didn't actually free the port. Docker's own removal is
+# scoped to the one compose SERVICE for this mode (docker compose rm -sf, not `down`) -- `down`
+# tears down the whole project, including the network the other mode's own service shares and
+# depends on still being up.
 function serviceStop() {
   local dev=false
   local mode="linked"
@@ -506,9 +601,10 @@ function serviceStop() {
   port="${port:-$(defaultPort "${mode}" "${dev}")}"
 
   local stopped=false
-  # --dev never touches docker at all (it's a plain node process, not a container) -- the container
-  # for this same mode may well be running at the same time on its own port, and must be left alone.
-  if [[ "${dev}" != true ]] && command -v docker &> /dev/null && docker info &> /dev/null; then
+  # --dev never touches docker, and has no pidfile of its own (see serviceStart) -- a container or
+  # background start for this same mode may well be running at the same time on its own port, and
+  # must be left alone.
+  if [[ "${dev}" != true ]] && dockerAvailable; then
     local containerName composeService
     containerName="$(containerNameForMode "${mode}")"
     composeService="$(composeServiceForMode "${mode}")"
@@ -516,8 +612,33 @@ function serviceStop() {
       docker compose rm -sf "${composeService}"
       stopped=true
     fi
+  elif [[ "${dev}" != true ]]; then
+    local pidFile pid
+    pidFile="$(pidFileForMode "${mode}")"
+    if [[ -f "${pidFile}" ]]; then
+      pid="$(cat "${pidFile}")"
+      if kill -0 "${pid}" 2> /dev/null; then
+        echo "Stopping pid ${pid}..." >&2
+        kill "${pid}" 2> /dev/null || true
+        local waited=0
+        while [[ ${waited} -lt 10 ]] && kill -0 "${pid}" 2> /dev/null; do
+          sleep 1
+          waited=$((waited + 1))
+        done
+        if kill -0 "${pid}" 2> /dev/null; then
+          echo "Still up after ${waited}s; forcing." >&2
+          kill -9 "${pid}" 2> /dev/null || true
+        fi
+        stopped=true
+      fi
+      rm -f "${pidFile}"
+    fi
   fi
 
+  # Catches anything still on the port the pidfile didn't account for -- a stray --dev process, or a
+  # background start from before this pidfile scheme existed. Prefers fuser, falls back to matching
+  # app.ts's own command line with this process tree excluded, so it can never match itself (see
+  # pgrep-self-match memory) -- never a bare pkill -f.
   if portListening "${port}"; then
     local pids
     pids="$(pidsOnPort "${port}")"
@@ -546,6 +667,35 @@ function serviceStop() {
   else
     echo "Nothing to stop."
   fi
+}
+
+# Function to restart the app -- stop then start, same mode/port/--dev. The one way to pick up a
+# code change without a separate build step (there is no build step at all -- see Dockerfile's own
+# doc comment: Node strips TypeScript types directly, so the sources ARE the artifact).
+function serviceRestart() {
+  serviceStop "$@"
+  echo
+  serviceStart "$@"
+}
+
+# Function to tail this mode's service log. --dev has no log file of its own (it runs in the
+# foreground, so its output is already on the terminal that started it).
+function serviceLogs() {
+  local mode="linked"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mode) mode="${2:-linked}"; shift 2 ;;
+      -h | --help) serviceUsage 0 ;;
+      *) shift ;;
+    esac
+  done
+  local logFile
+  logFile="$(logFileForMode "${mode}")"
+  if [[ ! -f "${logFile}" ]]; then
+    echo "No log file yet at ${logFile} -- has this mode been started?" >&2
+    exit 1
+  fi
+  exec tail -f "${logFile}"
 }
 
 # Main function
